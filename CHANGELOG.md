@@ -2,7 +2,7 @@
 
 ## 0.1.0 „Toolbox“ – 2026-10-14
 
-Erste Version (mit Cube Escape 0.56 „Pit Crew“, Cubegen 0.22.0 „Wingman“, Roboter-Generator 1.18.0 „Ground Crew“).
+Erste Version (mit Cube Escape 0.56 „Pit Crew“, Cubegen 0.23.0 „Wingman“, Roboter-Generator 1.18.0 „Ground Crew“).
 
 * **Gemeinsame Regeln** statt dreifach gepflegter hookify-Dateien: `git-kein-force-push` und `git-stash-geteilt` (vorher in
   allen drei Repos), `unity-nie-auf-checkout` (vorher Cube Escape und Cubegen; jetzt auch `--project-path` und
