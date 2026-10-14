@@ -1,0 +1,17 @@
+{
+  "description": "ce-shared: gemeinsame Regeln (rules/*.md im hookify-Format) und Subagent-Profile (.claude/agent-guard.json)",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
