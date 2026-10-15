@@ -7,6 +7,7 @@
 - no VERSION_*.md / *_NOTES.md / *_PROGRESS.md style note files in the repo's main folder - error;
 - version report standard ("docs.versions" folder): a report whose file name contains the current version - warning
   when missing; CHANGELOG ("docs.changelog") mentions the current version - warning when not.
+- embedded tool copies (<tools_dir>, ce_sync.py): missing/edited = error, older than the plugin = warning.
 Output: result line first, then one line per finding. Exit code 1 on errors (--strict: warnings too), 2 when the
 configuration is unusable.
 """
@@ -96,8 +97,15 @@ def check_versions(root: Path, config: dict) -> list[tuple[str, str]]:
     return findings
 
 
+def check_embedded(root: Path, config: dict) -> list[tuple[str, str]]:
+    """Embedded tool copies (ce_sync.py): edited or missing = error, older than the plugin = warning."""
+    import ce_sync
+    return ce_sync.check(root, config, ce_sync.source_dir())
+
+
 def lint(root: Path, config: dict) -> list[tuple[str, str]]:
-    return check_limits(root, config) + check_sections(root) + check_note_files(root) + check_versions(root, config)
+    return (check_limits(root, config) + check_sections(root) + check_note_files(root) + check_versions(root, config)
+            + check_embedded(root, config))
 
 
 def main(argv: list[str]) -> int:

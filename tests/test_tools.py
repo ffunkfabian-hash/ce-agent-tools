@@ -19,6 +19,7 @@ import ce_check  # noqa: E402
 import ce_common  # noqa: E402
 import ce_lint  # noqa: E402
 import ce_release  # noqa: E402
+import ce_sync  # noqa: E402
 import ce_worktrees  # noqa: E402
 import precommit  # noqa: E402
 
@@ -64,6 +65,7 @@ class RepoCase(unittest.TestCase):
         write(self.root, "AGENTS.md", GOOD_AGENTS)
         write(self.root, "CLAUDE.md", "# Claude\n@AGENTS.md\n")
         write(self.root, "docs/versions/1.2.0.md", "report\n")
+        ce_sync.sync(self.root, self.config, ce_sync.source_dir())
 
     def set_config(self, config):
         write(self.root, ".ce-repo.json", json.dumps(config))
@@ -89,6 +91,64 @@ class CommonTests(RepoCase):
         config = dict(self.config, version={"file": "version.py", "pattern": "NOPE=(.*)"})
         with self.assertRaises(ce_common.RepoError):
             ce_common.read_version(self.root, config)
+
+
+class SyncTests(RepoCase):
+    def tools(self):
+        return self.root / "scripts" / "ce_tools"
+
+    def test_copies_have_header_checksum_and_are_up_to_date(self):
+        copy = (self.tools() / "ce_lint.py").read_text()
+        lines = copy.splitlines()
+        self.assertTrue(lines[0].startswith("#!"))
+        self.assertRegex(lines[1], r"^# GENERATED from ce-agent-tools 0\.4\.0 - do not edit$")
+        self.assertRegex(lines[2], r"^# ce-sha256: [0-9a-f]{64}$")
+        self.assertEqual(ce_sync.check(self.root, self.config, ce_sync.source_dir()), [])
+        code, out = run_main(ce_sync, "--repo", str(self.root), "--check")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(run_main(ce_sync, "--repo", str(self.root))[1].strip().split(": ")[1], "up to date")
+
+    def test_hand_edit_is_an_error_and_sync_repairs_it(self):
+        path = self.tools() / "ce_check.py"
+        path.write_text(path.read_text() + "\n# tweak\n")
+        findings = ce_sync.check(self.root, self.config, ce_sync.source_dir())
+        self.assertEqual([f[0] for f in findings], ["error"])
+        self.assertEqual(run_main(ce_sync, "--repo", str(self.root), "--check")[0], 1)
+        code, out = run_main(ce_lint, "--repo", str(self.root))
+        self.assertEqual(code, 1)
+        self.assertIn("edited by hand", out)
+        run_main(ce_sync, "--repo", str(self.root))
+        self.assertEqual(run_main(ce_sync, "--repo", str(self.root), "--check")[0], 0)
+
+    def test_older_copy_is_a_warning_and_missing_dir_an_error(self):
+        source = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(source))
+        for name in ce_sync.SYNC_FILES:
+            (source / name).write_text((ce_sync.source_dir() / name).read_text() + "# newer\n")
+        findings = ce_sync.check(self.root, self.config, source)
+        self.assertEqual({f[0] for f in findings}, {"warning"})
+        self.assertEqual(len(findings), len(ce_sync.SYNC_FILES))
+        import shutil
+        shutil.rmtree(self.tools())
+        self.assertEqual(ce_sync.check(self.root, self.config, None)[0][0], "error")
+
+    def test_custom_tools_dir(self):
+        config = dict(self.config, tools_dir="tools/shared")
+        ce_sync.sync(self.root, config, ce_sync.source_dir())
+        self.assertTrue((self.root / "tools" / "shared" / "heavy_lock.py").is_file())
+
+    def test_copies_run_without_the_plugin(self):
+        env = {k: v for k, v in os.environ.items() if k != "CE_TOOLS"}
+        env["HOME"] = str(self.root.parent)  # no default plugin path either
+        done = subprocess.run([sys.executable, "-I", str(self.tools() / "ce_lint.py"), "--repo", str(self.root)],
+                              capture_output=True, text=True, env=env, cwd=self.root.parent)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        lock = subprocess.run([sys.executable, str(self.tools() / "heavy_lock.py"), "status"], capture_output=True,
+                              text=True, env=dict(env, CE_HEAVY_LOCK_FILE=str(self.root / "l")))
+        self.assertEqual(lock.stdout.strip(), "free")
+        done = subprocess.run([sys.executable, str(self.tools() / "ce_sync.py"), "--repo", str(self.root), "--check"],
+                              capture_output=True, text=True, env=env, cwd=self.root.parent)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
 
 class CheckTests(RepoCase):
