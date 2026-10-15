@@ -381,6 +381,51 @@ class ReleaseTests(RepoCase):
         # a second run is blocked: tag and branch exist
         self.assertEqual(run_main(ce_release, "--repo", str(self.root))[0], 1)
 
+    def bare_remote(self):
+        remote = self.root.parent / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        git(self.root, "remote", "add", "origin", str(remote))
+        return remote
+
+    def remote_refs(self, remote):
+        return subprocess.run(["git", "-C", str(remote), "for-each-ref", "--format=%(objectname) %(refname)"],
+                              capture_output=True, text=True).stdout
+
+    def test_execute_on_throwaway_repo_tag_branch_and_push_point_at_head(self):
+        remote = self.bare_remote()
+        head = git(self.root, "rev-parse", "HEAD")
+        code, out = run_main(ce_release, "--repo", str(self.root), "--execute")
+        self.assertEqual(code, 0, out)
+        self.assertIn("EXECUTE", out.splitlines()[0])
+        self.assertEqual(git(self.root, "cat-file", "-t", "v1.2.0"), "tag", "annotated tag")
+        self.assertEqual(git(self.root, "rev-parse", "v1.2.0^{commit}"), head)
+        self.assertEqual(git(self.root, "rev-parse", "release/1.2.0"), head)
+        self.assertEqual(git(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main", "the checkout is not switched")
+        refs = self.remote_refs(remote)
+        self.assertIn(f"{head} refs/heads/release/1.2.0", refs)
+        self.assertIn("refs/tags/v1.2.0", refs)
+        self.assertNotIn("refs/heads/main", refs, "only branch and tag are pushed")
+
+    def test_execute_refuses_dirty_tree_and_existing_tag_without_touching_the_remote(self):
+        remote = self.bare_remote()
+        write(self.root, "dirty.txt", "x")
+        code, out = run_main(ce_release, "--repo", str(self.root), "--execute")
+        self.assertEqual(code, 1)
+        self.assertIn("working tree not clean", out)
+        (self.root / "dirty.txt").unlink()
+        git(self.root, "tag", "v1.2.0")
+        code, out = run_main(ce_release, "--repo", str(self.root), "--execute")
+        self.assertEqual(code, 1)
+        self.assertIn("tag v1.2.0 exists already", out)
+        self.assertEqual(self.remote_refs(remote), "")
+        self.assertNotIn("release/1.2.0", self.refs())
+
+    def test_failing_push_is_reported_as_failure(self):
+        git(self.root, "remote", "add", "origin", str(self.root.parent / "does-not-exist.git"))
+        code, out = run_main(ce_release, "--repo", str(self.root), "--execute")
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL git push", out)
+
     def test_existing_remote_ref_blocks(self):
         remote = self.root.parent / "remote.git"
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
