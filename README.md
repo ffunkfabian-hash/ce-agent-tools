@@ -75,3 +75,19 @@ python3 -m unittest discover -s tests
 
 Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. Version in `plugin.json` und
 `marketplace.json` gemeinsam anheben (der Test prüft es), Eintrag in `CHANGELOG.md`.
+
+## Plugin `ai-relay` – Aufgaben an kostenlose KIs
+
+Gibt kleine, **lesende** Aufgaben (Diff prüfen, Logs zusammenfassen, einstufen, Doku abgleichen) an Ollama, Gemini, Groq
+und OpenRouter ab, um Kontingent zu sparen und eine zweite Meinung zu holen. DeepSeek nur mit `--provider deepseek`
+(kostenpflichtig, Server in China).
+
+```bash
+python3 plugins/ai-relay/scripts/relay.py init        # config.json + keys.env (Rechte 600), Cloud bleibt aus
+python3 plugins/ai-relay/scripts/relay.py providers   # Schlüssel, Limits, Pausen
+git diff main...HEAD | python3 plugins/ai-relay/scripts/relay.py ask --task review
+```
+
+Einrichtung: Schlüssel in `~/.config/ai-relay/keys.env` (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`,
+`DEEPSEEK_API_KEY`), dann in `config.json` `"cloud_consent": true`; private Ordner in `local_only_paths`. Ollama:
+`brew install ollama && ollama pull qwen2.5-coder:7b`. Details für Agenten: `skills/ai-relay/SKILL.md`.

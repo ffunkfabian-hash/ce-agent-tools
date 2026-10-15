@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 „Backchannel“ – 2026-10-15
+
+Zweites Plugin im Marketplace: **`ai-relay`** (global nutzbar, nicht nur für die drei Repos).
+
+* `scripts/relay.py` (nur Standardbibliothek): `ask` (review, summarize, classify, docs, ask), `providers`, `stats`, `init`.
+  Anbieter Ollama (lokal), Gemini, Groq, OpenRouter; DeepSeek (kostenpflichtig, nur mit `--provider deepseek`).
+* **Datenschutz zuerst:** ohne `cloud_consent` läuft nur Ollama; Geheimnisse werden vor dem Cloud-Versand ersetzt;
+  `local_only_paths` und `AI_RELAY_LOCAL_ONLY` sperren die Cloud je Ordner.
+* **Sparsam und robust:** Reihenfolge mit Ausweichen, Pause nach Limit (429), Tageslimits je Anbieter, Nutzungsprotokoll
+  ohne Inhalte, Antwort höchstens 15 Zeilen und als „ungeprüft“ gekennzeichnet.
+* Skill `ai-relay` (wann abgeben, wann nicht) und Befehl `/relay`; Tests mit Fake-Server in `tests/test_relay.py`.
+
 ## 0.1.0 „Toolbox“ – 2026-10-14
 
 Erste Version (mit Cube Escape 0.56 „Pit Crew“, Cubegen 0.23.0 „Wingman“, Roboter-Generator 1.18.0 „Ground Crew“).
