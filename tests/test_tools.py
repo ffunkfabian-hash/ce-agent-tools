@@ -564,6 +564,15 @@ class PrecommitHookTests(RepoCase):
         self.assertEqual(precommit.decide(self.payload("git commit -m x")), {})
         self.assertIn("vor-commit-doku", precommit.decide(self.payload("git commit -am x"))["systemMessage"])
 
+    def test_runs_the_repo_own_check_skills(self):
+        write(self.root, ".agents/skills/check_skills.py", "import sys; print('skill broken: ce-x'); sys.exit(1)\n")
+        write(self.root, "README.md", "r\n")
+        git(self.root, "add", "-A")
+        message = precommit.decide(self.payload())["systemMessage"]
+        self.assertIn(".agents/skills/check_skills.py", message)
+        self.assertIn("skill broken: ce-x", message)
+        self.assertNotIn("hookSpecificOutput", precommit.decide(self.payload()))
+
     def test_runs_the_repo_own_check_docs_and_ignores_other_tools(self):
         write(self.root, "Tools/check_docs.py", "import sys; print('docs broken: x.md'); sys.exit(1)\n")
         write(self.root, "README.md", "r\n")

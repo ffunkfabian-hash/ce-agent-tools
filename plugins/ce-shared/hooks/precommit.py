@@ -15,6 +15,7 @@ from pathlib import Path
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 LINT = PLUGIN_ROOT / "tools" / "ce_lint.py"
 DOC_CHECKS = ("Tools/check_docs.py", "tools/check_docs.py", "scripts/check_docs.py")
+SKILL_CHECK = ".agents/skills/check_skills.py"
 COMMIT = re.compile(r"(?:^|[;&|(]\s*)git\s+(?:-[Cc]\s+\S+\s+)*commit(?![\w-])")
 TIMEOUT = 8
 
@@ -70,6 +71,10 @@ def decide(payload):
             if code != 0:
                 notes.append(f"{relative}: " + "\n".join(lines[-12:]))
             break
+    if (root / SKILL_CHECK).is_file():
+        code, lines = run_tool([sys.executable, SKILL_CHECK], root)
+        if code != 0:
+            notes.append(f"{SKILL_CHECK}: " + "\n".join(lines[-12:]))
     if not notes:
         return {}
     return {"systemMessage": "**[vor-commit-doku]** Docs/Skills im Commit, Prüfung meldet:\n" + "\n\n".join(notes)
