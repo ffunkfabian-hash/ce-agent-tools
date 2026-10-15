@@ -394,10 +394,31 @@ class WorktreeTests(RepoCase):
 
     def test_main_summary_line_and_missing_repo(self):
         code, out = run_main(ce_worktrees, "--repos", str(self.root), str(self.root.parent / "nope"),
-                             "--projects", str(self.projects))
+                             "--projects", str(self.projects), "--list")
         self.assertEqual(code, 0)
         self.assertIn("2 Worktree(s) in 2 Repo(s)", out.splitlines()[0])
         self.assertIn("nope: (kein Repo", out)
+
+    def test_table_has_title_and_hint_and_json_is_valid(self):
+        self.session(self.tree, minutes_old=5)
+        folder = self.projects / ce_worktrees.project_dir_name(str(self.tree))
+        (folder / "abcdef12-0000.jsonl").write_text(
+            '{"type":"custom-title","customTitle":"Alt"}\n{"type":"user"}\n{"type":"custom-title","customTitle":"Neu"}\n')
+        code, out = run_main(ce_worktrees, "--repos", str(self.root), "--projects", str(self.projects))
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertTrue(lines[1].startswith("Repo "))
+        row = next(line for line in lines if "demo-wt" in line)
+        self.assertIn("Neu (", row)
+        self.assertIn("feature", row)
+        self.assertIn("ja", row)
+        self.assertIn("NICHT LÖSCHEN: Sitzung aktiv", row)
+        self.assertTrue(any("(Hauptordner)" in line for line in lines))
+        data = json.loads(run_main(ce_worktrees, "--repos", str(self.root), "--projects", str(self.projects),
+                                   "--json")[1])
+        self.assertEqual(len(data[0]["worktrees"]), 2)
+        titles = [w["session"]["title"] for w in data[0]["worktrees"] if w["session"]]
+        self.assertEqual(titles, ["Neu"])
 
 
 class PrecommitHookTests(RepoCase):

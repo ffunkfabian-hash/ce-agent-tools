@@ -6,11 +6,12 @@ as it can be found: Claude Code keeps sessions of a folder in ~/.claude/projects
 (newest file = latest session, "active" when it changed within --active-minutes, default 60), and running claude/codex
 processes whose working directory is the worktree (lsof, when available). A worktree is marked "NICHT LÖSCHEN" when
 a session uses it (active or running process), when it has open changes, or when its branch has commits main lacks.
-Default repos: the four of the standard (CE_REPOS = path list separated by ':' overrides). Read-only.
+Output: table by default (--list: long form, --json: data). Default repos: the four of the standard (CE_REPOS = path list separated by ':' overrides). Read-only.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -66,7 +67,30 @@ def latest_session(path: str, projects: Path) -> dict | None:
     if not files:
         return None
     newest = max(files, key=lambda f: f.stat().st_mtime)
-    return {"id": newest.stem, "age_minutes": (time.time() - newest.stat().st_mtime) / 60}
+    return {"id": newest.stem, "age_minutes": (time.time() - newest.stat().st_mtime) / 60,
+            "title": session_title(newest)}
+
+
+def session_title(file: Path) -> str | None:
+    """The newest customTitle/aiTitle/summary in the last 256 KB of a session file (None: none found)."""
+    try:
+        with file.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 262144))
+            lines = handle.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if '"customTitle"' not in line and '"aiTitle"' not in line and '"type":"summary"' not in line:
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        title = data.get("customTitle") or data.get("aiTitle") or data.get("summary")
+        if title:
+            return str(title)
+    return None
 
 
 def process_cwds() -> dict[str, list[str]]:
@@ -142,12 +166,51 @@ def format_state(state: dict) -> str:
     return f"  {state['path']}\n    {state['branch'] or '(detached)'} | {clean} | {track} | Sitzung {session}{mark}"
 
 
+def short_session(state: dict) -> str:
+    session = state["session"]
+    if not session:
+        return "-"
+    age = session["age_minutes"]
+    when = f"{age:.0f} min" if age < 120 else f"{age / 60:.0f} h"
+    title = (session.get("title") or session["id"][:8]).replace("\n", " ")
+    return f"{title[:40]} ({when})"
+
+
+def table_rows(collected) -> list[list[str]]:
+    rows = [["Repo", "Worktree", "Branch", "Sitzung", "sauber?", "+ahead/-behind", "Hinweis"]]
+    for repo, states in collected:
+        for state in states:
+            path = Path(state["path"])
+            name = "(Hauptordner)" if path == repo else path.name
+            if not state["exists"]:
+                rows.append([repo.name, name, "-", "-", "Ordner fehlt", "-", "prunable" if state["prunable"] else ""])
+                continue
+            clean = "?" if state["dirty"] is None else ("ja" if not state["dirty"] else f"nein ({state['dirty']})")
+            track = "?" if state["ahead"] is None else f"+{state['ahead']}/-{state['behind']}"
+            note = f"{DO_NOT_DELETE}: {'; '.join(state['reasons'])}" if state["protected"] else ""
+            rows.append([repo.name, name, state["branch"] or "(detached)", short_session(state), clean, track, note])
+    return rows
+
+
+def format_table(rows: list[list[str]]) -> str:
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
+    lines = []
+    for row in rows:
+        lines.append(" | ".join(cell.ljust(w) for cell, w in zip(row, widths)) + " | " + row[-1])
+        if row is rows[0]:
+            lines.append("-+-".join("-" * w for w in widths) + "-+-" + "-" * 7)
+    return "\n".join(line.rstrip() for line in lines)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repos", nargs="+", help="repositories (default: the four standard repos or CE_REPOS)")
     parser.add_argument("--base", default="main", help="base branch for ahead/behind")
     parser.add_argument("--active-minutes", type=float, default=60)
     parser.add_argument("--projects", default=str(HOME / ".claude" / "projects"), help="Claude Code session folder")
+    parser.add_argument("--table", action="store_true", help="compact table (default output)")
+    parser.add_argument("--list", action="store_true", help="the long per-worktree listing instead of the table")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args(argv)
     if args.repos:
         repos = [Path(r) for r in args.repos]
@@ -156,9 +219,15 @@ def main(argv: list[str]) -> int:
     else:
         repos = DEFAULT_REPOS
     collected = collect(repos, Path(args.projects), args.base, args.active_minutes)
+    if args.json:
+        print(json.dumps([{"repo": str(repo), "worktrees": states} for repo, states in collected], indent=1))
+        return 0
     total = sum(len(states) for _, states in collected)
     protected = sum(1 for _, states in collected for s in states if s["protected"])
     print(f"{total} Worktree(s) in {len(collected)} Repo(s), {protected} geschützt ({DO_NOT_DELETE})")
+    if not args.list:
+        print(format_table(table_rows(collected)))
+        return 0
     for repo, states in collected:
         print(f"{repo.name}:" + ("" if states else " (kein Repo oder keine Worktrees)"))
         for state in states:
