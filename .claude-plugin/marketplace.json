@@ -4,8 +4,8 @@
     "name": "Fabian F"
   },
   "metadata": {
-    "description": "Gemeinsame Agenten-Werkzeuge: Schutzregeln (ce-shared) und Delegation an kostenlose KIs (ai-relay)",
-    "version": "0.3.0"
+    "description": "Gemeinsame Agenten-Werkzeuge für Cube Escape, Cubegen und den Roboter-Generator",
+    "version": "0.1.0"
   },
   "plugins": [
     {
@@ -13,12 +13,6 @@
       "source": "./plugins/ce-shared",
       "description": "Gemeinsame Schutzregeln (Git, Unity, GitHub Actions) und der Wächter für Subagent-Profile",
       "version": "0.1.0"
-    },
-    {
-      "name": "ai-relay",
-      "source": "./plugins/ai-relay",
-      "description": "Kleine lesende Aufgaben an kostenlose KI-Anbieter abgeben (Ollama, Gemini, Groq, OpenRouter, DeepSeek auf Anforderung)",
-      "version": "0.2.0"
     }
   ]
 }
