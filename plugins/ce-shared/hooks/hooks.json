@@ -1,5 +1,5 @@
 {
-  "description": "ce-shared: gemeinsame Regeln (rules/*.md im hookify-Format) und Subagent-Profile (.claude/agent-guard.json)",
+  "description": "ce-shared: gemeinsame Regeln (rules/*.md im hookify-Format), Subagent-Profile (.claude/agent-guard.json) und Vor-Commit-Doku-Prüfung (warnt)",
   "hooks": {
     "PreToolUse": [
       {
@@ -9,6 +9,16 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py\"",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/precommit.py\"",
+            "timeout": 20
           }
         ]
       }

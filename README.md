@@ -10,6 +10,8 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 |---|---|
 | `plugins/ce-shared/rules/*.md` | gemeinsame Regeln im hookify-Format (siehe unten), ausgewertet bei jedem Bash-/Datei-Werkzeug |
 | `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents |
+| `plugins/ce-shared/hooks/precommit.py` | PreToolUse vor `git commit`: bei geänderten Docs/Skills `ce_lint.py` + repo-eigenes `check_docs.py`, nur Warnung |
+| `plugins/ce-shared/tools/` | gemeinsame Werkzeuge (siehe „Werkzeuge“), lesen `.ce-repo.json` des Repos |
 | `tests/test_guard.py` | jede Regel mit treffenden und nicht treffenden Befehlen, Gleichstand mit den ersetzten hookify-Regeln, Profile |
 
 ### Gemeinsame Regeln
@@ -48,6 +50,19 @@ Läuft ein Werkzeug in einem Subagent, nennt der Hook-Eingang ihn (`agent_type`)
 - Ohne Profil (Hauptunterhaltung, fremde Agenten) entscheidet der Wächter nichts.
 
 Die `tools`-Zeile der Agenten-Datei legt fest, *welche* Werkzeuge ein Subagent hat; das Profil, *was* er damit tun darf.
+
+## Werkzeuge
+
+Alle mit `--repo <Pfad>` (Standard: aktuelles Verzeichnis, gesucht wird `.ce-repo.json` aufwärts). Die Repos rufen sie über
+dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/plugins/ce-shared/tools`).
+
+| Aufruf | Wirkung |
+|---|---|
+| `heavy_lock.py run [--what X] [--checkout P] -- <Befehl>` / `status` | die eine Sperre für schwere Läufe (`~/Library/Caches/CubeEscape/heavy-run.lock`), hält bis zum letzten Enkelprozess; als Modul: `held()`, `HeavyLock`, `Groups`, `run_group`/`run_forwarding` |
+| `ce_check.py quick\|full [--verbose]` | Befehle aus `.ce-repo.json › check`; Ergebnis zuerst; `full` wiederholt nach Fehlern einmal `check.rerun_failed` |
+| `ce_lint.py [--strict]` | Längen (`limits`), AGENTS.md-Abschnitte, keine Notiz-Dateien im Hauptordner, Versionsbericht/CHANGELOG |
+| `ce_release.py [--execute] [--no-push] [--remote R]` | Trockenlauf Standard: prüft Version, CHANGELOG, sauberen Baum, Tag `<tag_prefix><Version>`, Branch `<branch_prefix><Version>`, Remote; mit `--execute` Tag, Branch, Push (nie `--force`) |
+| `ce_worktrees.py [--repos P…] [--active-minutes N]` | Worktrees der vier Repos (`CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, laufende Prozesse), „NICHT LÖSCHEN“ |
 
 ## Einbinden
 
