@@ -5,8 +5,8 @@
 - AGENTS.md has the `##` sections Projekt, Wahrheit und Aktualität, Befehle, Regeln, Definition of Done, in this order
   (a heading may continue after the keyword: "Regeln und Verbote") - error when missing, warning when out of order;
 - no VERSION_*.md / *_NOTES.md / *_PROGRESS.md style note files in the repo's main folder - error;
-- version report standard ("docs.versions" folder): a report whose file name contains the current version - warning
-  when missing; CHANGELOG ("docs.changelog") mentions the current version - warning when not.
+- version report standard ("docs.versions" folder): a report whose file name contains the current version or is
+  <major>.<minor>.md - warning when the folder exists without one (no folder: silent, CHANGELOG-only repo); CHANGELOG ("docs.changelog") mentions the current version - warning when not.
 - embedded tool copies (<tools_dir>, ce_sync.py): missing/edited = error, older than the plugin = warning.
 Output: result line first, then one line per finding. Exit code 1 on errors (--strict: warnings too), 2 when the
 configuration is unusable.
@@ -83,10 +83,9 @@ def check_versions(root: Path, config: dict) -> list[tuple[str, str]]:
     folder = docs.get("versions")
     if folder:
         reports = root / folder
-        if not reports.is_dir():
-            findings.append(("warning", f"{folder}: version report folder missing"))
-        elif not any(version in entry.name for entry in reports.iterdir()):
-            findings.append(("warning", f"{folder}: no report for version {version}"))
+        short = ".".join(version.split(".")[:2])  # 0.30.1 -> 0.30: a report per minor version
+        if reports.is_dir() and not any(version in entry.name or entry.stem == short for entry in reports.iterdir()):
+            findings.append(("warning", f"{folder}: no report for version {version} (or {short}.md)"))
     changelog = docs.get("changelog")
     if changelog:
         path = root / changelog

@@ -249,6 +249,19 @@ class LintTests(RepoCase):
         self.assertEqual(self.lint("--strict")[0], 1)
 
 
+    def test_minor_report_counts_and_missing_folder_is_silent(self):
+        write(self.root, "VERSION_X.txt", "")  # irrelevant file, keeps the folder logic honest
+        (self.root / "VERSION_X.txt").unlink()
+        write(self.root, "version.py", 'VERSION = "1.2.1"\n')
+        write(self.root, "CHANGELOG.md", "## 1.2.1\n")
+        (self.root / "docs/versions/1.2.0.md").rename(self.root / "docs/versions/1.2.md")
+        self.assertEqual(self.lint(), (0, "demo lint: ok\n"))
+        (self.root / "docs/versions/1.2.md").unlink()
+        self.assertIn("no report for version 1.2.1", self.lint()[1])
+        (self.root / "docs/versions").rmdir()
+        self.assertEqual(self.lint(), (0, "demo lint: ok\n"))
+
+
 class ReleaseTests(RepoCase):
     def setUp(self):
         super().setUp()
