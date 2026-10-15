@@ -91,3 +91,10 @@ python3 -m unittest discover -s tests
 
 Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. Version in `plugin.json` und
 `marketplace.json` gemeinsam anheben (der Test prüft es), Eintrag in `CHANGELOG.md`.
+
+## Zuständigkeit
+
+Änderungen an den gemeinsamen Werkzeugen und Regeln (dieses Plugin, `~/.claude/CLAUDE.md`, `~/.claude/templates/`) macht
+die Übersichts-Sitzung des Nutzers oder eine Sitzung mit ausdrücklichem Auftrag dafür; Repo-Sitzungen melden
+Änderungswünsche, statt selbst zu ändern. Nach jeder Änderung im Plugin: `python3 plugins/ce-shared/tools/ce_sync.py --all`
+und `--check`, damit die eingebetteten Kopien der Repos nachziehen.
