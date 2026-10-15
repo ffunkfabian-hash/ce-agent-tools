@@ -1,6 +1,6 @@
 {
   "name": "ai-relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Gibt kleine, lesende Aufgaben (Diff prüfen, Logs zusammenfassen, einstufen, Doku abgleichen) an kostenlose KI-Anbieter ab - lokal Ollama, dann Gemini, Groq, OpenRouter, DeepSeek nur auf Anforderung - mit Geheimnis-Filter, Tageslimits und Ausweichen bei Limits. Spart Kontingent und liefert eine zweite Meinung.",
   "author": {
     "name": "Fabian F"

@@ -150,6 +150,20 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(json.loads(out)["text"], "gemini: ok")
         self.assertEqual({k.lower(): v for k, v in SEEN[-1][2].items()}["x-goog-api-key"], "g")
 
+    def test_panel_asks_several_providers(self):
+        os.environ["GROQ_API_KEY"] = "k"
+        os.environ["GEMINI_API_KEY"] = "g"
+        code, out, _ = run(["ask", "--task", "review", "--panel", "3"])
+        self.assertEqual(code, 0)
+        for name in ("ollama/", "groq/", "gemini/"):
+            self.assertIn("ai-relay · " + name, out)
+        self.assertEqual(len(SEEN), 3 + 0)  # one request per provider (tags lookup is a GET)
+        MODE["groq"] = 429
+        code, out, err = run(["ask", "--task", "review", "--panel", "3"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("ai-relay · groq/", out)
+        self.assertIn("ausgefallen", err)
+
     def test_deepseek_only_when_explicit(self):
         os.environ["DEEPSEEK_API_KEY"] = "d"
         self.write_config(True, order={"default": ["deepseek"]})

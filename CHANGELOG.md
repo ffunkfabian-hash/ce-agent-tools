@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 „Roundtable“ – 2026-10-15
+
+* **`ask --panel N`** fragt bis zu N Anbieter parallel und zeigt jede Antwort einzeln (ausgefallene Anbieter erscheinen auf
+  stderr); ohne `--panel` bleibt es beim Ausweichen nacheinander.
+
 ## 0.2.0 „Backchannel“ – 2026-10-15
 
 Zweites Plugin im Marketplace: **`ai-relay`** (global nutzbar, nicht nur für die drei Repos).

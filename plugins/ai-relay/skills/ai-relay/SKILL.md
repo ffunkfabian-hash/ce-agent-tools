@@ -27,7 +27,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/relay.py" ask --task classify --prompt "L
 ```
 
 Aufgaben: `review`, `summarize`, `classify`, `docs`, `ask` (die letzten drei brauchen `--prompt`). Weitere Schalter:
-`--provider X` (erzwingen), `--max-lines N`, `--json`, `--dry-run` (Reihenfolge und Ersetzungen zeigen, nichts senden).
+`--provider X` (erzwingen), `--panel N` (bis zu N Anbieter gleichzeitig fragen, alle Antworten zeigen – für heikle Diffs: was mehrere unabhängig melden, ist wahrscheinlicher echt), `--max-lines N`, `--json`, `--dry-run` (Reihenfolge und Ersetzungen zeigen, nichts senden).
 `relay.py providers` zeigt Schlüssel, Limits, Pausen; `relay.py stats` den Verbrauch.
 
 ## Regeln

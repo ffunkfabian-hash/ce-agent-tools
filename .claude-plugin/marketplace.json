@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Gemeinsame Agenten-Werkzeuge: Schutzregeln (ce-shared) und Delegation an kostenlose KIs (ai-relay)",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
@@ -18,7 +18,7 @@
       "name": "ai-relay",
       "source": "./plugins/ai-relay",
       "description": "Kleine lesende Aufgaben an kostenlose KI-Anbieter abgeben (Ollama, Gemini, Groq, OpenRouter, DeepSeek auf Anforderung)",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

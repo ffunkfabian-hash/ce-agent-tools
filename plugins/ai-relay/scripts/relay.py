@@ -14,6 +14,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DEFAULTS = {
@@ -306,35 +307,50 @@ def cmd_ask(args, stdin_text):
             print("übersprungen " + line)
         return 0 if usable else 3
     errors = list(skipped)
-    for name in usable:
+
+    def attempt(name):
         provider = cfg["providers"][name]
         cloud = provider["kind"] != "ollama"
-        payload = redacted if cloud else data
-        user = f"{instruction}<input>\n{payload}\n</input>"
+        user = f"{instruction}<input>\n{redacted if cloud else data}\n</input>"
         started = time.time()
         try:
             model, text = call_provider(name, provider, system, user, cfg["timeout_s"])
             if not text.strip():
                 raise ProviderError("leere Antwort")
         except (ProviderError, KeyError, IndexError, TypeError) as err:
-            cooldown = getattr(err, "cooldown", 0)
-            if cooldown:
-                set_cooldown(name, cooldown)
-            errors.append(f"{name}: {err}")
+            if getattr(err, "cooldown", 0):
+                set_cooldown(name, err.cooldown)
             log_usage({"ts": time.time(), "provider": name, "task": args.task, "in": len(user), "ok": False,
                        "err": str(err)[:120]})
-            continue
+            return {"provider": name, "error": str(err)}
         log_usage({"ts": time.time(), "provider": name, "model": model, "task": args.task, "in": len(user),
                    "out": len(text), "ms": int((time.time() - started) * 1000), "ok": True})
-        answer = trim(text, lines)
+        return {"provider": name, "model": model, "text": trim(text, lines), "redacted": hidden if cloud else 0}
+
+    def show(result):
         if args.json:
-            print(json.dumps({"provider": name, "model": model, "text": answer, "redacted": hidden if cloud else 0},
-                             ensure_ascii=False))
-        else:
-            note = f", {hidden} Geheimnisse ersetzt" if cloud and hidden else ""
-            print(f"[ai-relay · {name}/{model}{note} · ungeprüft - Befunde selbst verifizieren]")
-            print(answer)
-        return 0
+            return json.dumps(result, ensure_ascii=False)
+        note = f", {result['redacted']} Geheimnisse ersetzt" if result["redacted"] else ""
+        return (f"[ai-relay · {result['provider']}/{result['model']}{note} · ungeprüft - Befunde selbst verifizieren]\n"
+                + result["text"])
+
+    if args.panel:  # ask several providers at once and show every answer
+        with ThreadPoolExecutor(max_workers=max(1, min(args.panel, len(usable)))) as pool:
+            results = list(pool.map(attempt, usable[:args.panel]))
+        good = [r for r in results if "text" in r]
+        errors += [f"{r['provider']}: {r['error']}" for r in results if "error" in r]
+        if good:
+            print("\n\n".join(show(r) for r in good))
+            for line in errors[len(skipped):]:
+                print("  (ausgefallen) " + line, file=sys.stderr)
+            return 0
+    else:
+        for name in usable:
+            result = attempt(name)
+            if "text" in result:
+                print(show(result))
+                return 0
+            errors.append(f"{name}: {result['error']}")
     print("ai-relay: kein Anbieter konnte antworten", file=sys.stderr)
     for line in errors:
         print("  " + line, file=sys.stderr)
@@ -399,6 +415,7 @@ def main(argv=None, stdin_text=None):
     ask.add_argument("--prompt", help="instruction (required for classify and ask)")
     ask.add_argument("--provider", help="force one provider (otherwise config order with fallback)")
     ask.add_argument("--file", action="append", help="read this file as input (repeatable)")
+    ask.add_argument("--panel", type=int, metavar="N", help="ask up to N providers in parallel and show all answers")
     ask.add_argument("--max-lines", type=int)
     ask.add_argument("--json", action="store_true")
     ask.add_argument("--dry-run", action="store_true", help="show the provider order and redactions, send nothing")
