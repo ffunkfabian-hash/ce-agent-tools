@@ -152,6 +152,69 @@ class SyncTests(RepoCase):
 
 
 class CheckTests(RepoCase):
+    def setUp(self):
+        super().setUp()
+        cache = tempfile.TemporaryDirectory()
+        self.addCleanup(cache.cleanup)
+        patcher = mock.patch.dict(os.environ, {"CE_CHECK_CACHE": cache.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_quick_is_targeted_and_expands_files(self):
+        self.init_git()
+        write(self.root, "new.py", "x\n")
+        (self.root / "version.py").write_text('VERSION = "1.2.0"  # touched\n')
+        probe = "import sys; print('FILES', *sys.argv[1:])"
+        self.set_config(dict(self.config, check={"quick": [sys.executable, "-c", "print('ALL')"],
+                                                 "targeted": [sys.executable, "-c", probe, "{files}"]}))
+        out = run_main(ce_check, "quick", "--repo", str(self.root), "--verbose")[1]
+        self.assertIn("FILES .ce-repo.json new.py version.py", out)
+        out = run_main(ce_check, "quick", "--repo", str(self.root), "--no-targeted", "--verbose")[1]
+        self.assertIn("ALL", out)
+        self.assertNotIn("FILES", out)
+
+    def test_second_full_without_change_gets_a_hint_but_runs(self):
+        self.init_git()
+        self.set_config(dict(self.config, check={"full": [sys.executable, "-c", "print('full')"]}))
+        git(self.root, "commit", "-qam", "cfg")
+        first = run_main(ce_check, "full", "--repo", str(self.root))
+        self.assertEqual(first[0], 0)
+        self.assertNotIn("hint", first[1])
+        second = run_main(ce_check, "full", "--repo", str(self.root))
+        self.assertEqual(second[0], 0, "never blocks")
+        self.assertIn("voller Lauf nur einmal vor Abschluss", second[1])
+        write(self.root, "change.txt", "x")
+        self.assertNotIn("hint", run_main(ce_check, "full", "--repo", str(self.root))[1])
+
+    def test_old_run_gives_no_hint(self):
+        self.init_git()
+        self.set_config(dict(self.config, check={"full": [sys.executable, "-c", "pass"]}))
+        run_main(ce_check, "full", "--repo", str(self.root))
+        file = ce_check.state_file(self.root)
+        state = json.loads(file.read_text())
+        state["time"] -= 31 * 60
+        file.write_text(json.dumps(state))
+        self.assertNotIn("hint", run_main(ce_check, "full", "--repo", str(self.root))[1])
+
+    def test_full_repeats_last_failures_first_and_skips_full_if_still_red(self):
+        self.init_git()
+        flag = self.root / "fixed"
+        calls = self.root / "calls"
+        write(self.root, "t.py", "import sys, pathlib\n"
+              f"pathlib.Path({str(calls)!r}).open('a').write(' '.join(sys.argv[1:]) + ';')\n"
+              f"sys.exit(0 if pathlib.Path({str(flag)!r}).exists() else 1)\n")
+        self.set_config(dict(self.config, check={"full": [sys.executable, "t.py", "full"],
+                                                 "rerun_failed": [sys.executable, "t.py", "failed"]}))
+        self.assertEqual(run_main(ce_check, "full", "--repo", str(self.root))[0], 1)
+        calls.write_text("")
+        code, out = run_main(ce_check, "full", "--repo", str(self.root))
+        self.assertEqual(code, 1)
+        self.assertEqual(calls.read_text(), "failed;", "only the repeat ran")
+        self.assertIn("full run skipped", out)
+        flag.write_text("x")
+        calls.write_text("")
+        self.assertEqual(run_main(ce_check, "full", "--repo", str(self.root))[0], 0)
+        self.assertEqual(calls.read_text(), "failed;full;", "repeat first, then the full run")
     def test_quick_green_result_first(self):
         code, out = run_main(ce_check, "quick", "--repo", str(self.root))
         self.assertEqual(code, 0)
