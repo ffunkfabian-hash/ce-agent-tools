@@ -34,7 +34,7 @@ MODELS = {"luna": ("gpt-6-luna", "medium"), "sol": ("gpt-6.1-sol", "high")}
 OFFLINE_CORE_NAMES = {"SaveSystem.cs", "SettingsStore.cs"}
 INFRASTRUCTURE = re.compile(
     r"(^|/)Packages/|(^|/)ProjectSettings/|\.asmdef$|(^|/)(package\.json|packages-lock\.json|manifest\.json)$|"
-    r"(^|/)(ce_(?:check|contract|interfaces|judge|codex_cloud|report|sync|nightly|lint|docs)|"
+    r"(^|/)(ce_(?:check|contract|interfaces|judge|codex_cloud|report|sync|nightly|lint|docs|api(?:_budget)?)|"
     r"heavy_lock|testplan|quick_check|check_docs|check_skills|guard|precommit|verify)(\.py|\.sh)?$|schema|contract", re.I)
 CORE_CANDIDATE = re.compile(r"^(?:Assets/Scripts/|Assets/Tests/Runner/|Packages/|ProjectSettings/)|\.asmdef$", re.I)
 

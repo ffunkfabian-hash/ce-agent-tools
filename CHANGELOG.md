@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 „Tokenharbor“ – 2026-10-21
+
+- `./ce api login|status|budget|ask`: lokaler Console-Browser-Login im isolierten Nexogen-Profil; explizite Textanfragen ohne Werkzeuge, automatische Wiederholungen oder Zugangsdaten im Repo.
+- Vorabzählung und atomare Kostenreservierung begrenzen Anfrage und UTC-Kalendermonat. Unbekannte Ergebnisse bleiben reserviert; tatsächliche Kosten werden aus vollständiger Usage geschätzt, auch bei Überschreitungen. Parallele Aufrufe teilen denselben lokalen Ledger.
+- Stabiles Systempräfix nutzt 5-Minuten-Caching; kalte Cache-Schreibkosten bestimmen die vorsichtige Reservation. Preisstand läuft nach 30 Tagen ab; Konfiguration und Bedienablauf in Nexogen, technische Grenzen in [Version 0.8](docs/versions/0.8.md).
+
 ## 0.7.1 – 2026-10-21
 
 - `ce_report.hints()` warnt bei hohem Spitzen-Input (> 150.000 Tokens je Anfrage, auch unter 300 Nachrichten) sowie bei mehrfachem Cache-Neuaufbau (`cache_creation_input_tokens` > 2× Spitzen-Input nach >5-Minuten-Pausen); Tests in `tests/test_report_usage.py` ergänzt.
