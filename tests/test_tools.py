@@ -697,3 +697,54 @@ class ContractTests(unittest.TestCase):
             self.assertIn("gültig", out)
             self.assertIn("4 Befunde", out)
         self.assertEqual(run_main(ce_contract, "list")[0], 0)
+
+
+class SearchTests(unittest.TestCase):
+    """0.5.0: ce_search.py - local FTS5 index over the repos' docs, incremental, with an MCP stdio server."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "cubeescape-demo"
+        (self.root / "docs").mkdir(parents=True)
+        (self.root / "docs" / "LESSONS.md").write_text("# Lehren\n\n## Viewer\n- **Z-Fighting bei gestauchten Flächen** → Koplanar-Regel ([Quelle](TECHNIK.md))\n")
+        (self.root / "docs" / "TECHNIK.md").write_text("# Technik\n\n## Viewer-Prüfung\nDer Determinismus-Test rendert jedes Modell achtmal; Z-Fighting zeigt sich als Flackern.\n\n## Cache\nSchlüssel aus Inhaltshashes.\n")
+        (self.root / "tool.py").write_text('"""Renders the viewer eight times (determinism)."""\n\ndef render_eight():\n    """eight renders, z-fighting check"""\n    return 8\n')
+        self.index = Path(self.tmp.name) / "index.sqlite"
+        self.env = mock.patch.dict(os.environ, {"CE_SEARCH_INDEX": str(self.index), "CE_SEARCH_EMBED": "0"})
+        self.env.start(); self.addCleanup(self.env.stop)
+
+    def test_index_query_kinds_and_incremental_rebuild(self):
+        import ce_search
+        first = ce_search.build([self.root], None, log=lambda line: None)
+        self.assertEqual(first["files"], 3)
+        hits = ce_search.search("Z-Fighting", k=5)
+        self.assertEqual(hits[0]["path"], "docs/LESSONS.md", hits)           # lessons rank first, code last
+        self.assertEqual([h["kind"] for h in hits], ["lesson", "doc", "code"])
+        self.assertEqual(ce_search.search("Z-Fighting Determinismus", k=5)[0]["path"], "docs/TECHNIK.md")  # AND of all tokens
+        self.assertEqual(ce_search.search("determinism", kind="code")[0]["path"], "tool.py")
+        self.assertEqual(ce_search.search("Inhaltshash", repo="demo")[0]["heading"], "Cache")
+        second = ce_search.build([self.root], None, log=lambda line: None)
+        self.assertEqual(second["files"], 0, "unchanged files are skipped")
+        (self.root / "docs" / "TECHNIK.md").unlink()
+        third = ce_search.build([self.root], None, log=lambda line: None)
+        self.assertNotIn("docs/TECHNIK.md", [h["path"] for h in ce_search.search("Determinismus", k=10)])
+        self.assertEqual(ce_search.status()["files"], {"cubeescape-demo": 2})
+
+    def test_mcp_server_answers_initialize_list_and_call(self):
+        import ce_search, subprocess
+        ce_search.build([self.root], None, log=lambda line: None)
+        requests = "\n".join(json.dumps(r) for r in [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "ce_search", "arguments": {"query": "Z-Fighting", "k": 2}}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "nope", "arguments": {}}}]) + "\n"
+        tools = Path(__file__).resolve().parent.parent / "plugins" / "ce-shared" / "tools"
+        out = subprocess.run([sys.executable, str(tools / "ce_search.py"), "serve"], input=requests, capture_output=True, text=True,
+                             env=os.environ.copy(), timeout=60).stdout
+        replies = [json.loads(line) for line in out.splitlines() if line.strip()]
+        self.assertEqual([r["id"] for r in replies], [1, 2, 3, 4])
+        self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "ce-search")
+        self.assertEqual({t["name"] for t in replies[1]["result"]["tools"]}, {"ce_search", "ce_search_status"})
+        self.assertIn("LESSONS.md", replies[2]["result"]["content"][0]["text"])
+        self.assertTrue(replies[3]["result"].get("isError"))

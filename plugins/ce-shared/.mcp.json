@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ce-search": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/tools/ce_search.py",
+        "serve"
+      ],
+      "description": "lokale Suche über Docs, Lehren, Skills, Versionsberichte und Code-Kommentare aller Cube-Escape-Repos"
+    }
+  }
+}

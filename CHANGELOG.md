@@ -24,6 +24,11 @@
   abgeleitet und gegen alle grün) und `ce_contract.py validate` (Teilmenge von JSON Schema ohne Abhängigkeit; Formate additiv, ein
   Format-5-Vertrag prüft gegen v4, bis v5 existiert). Toolgen prüft beim Export (`verify_output.py`), Cube Escape beim Import
   (`Tools/tests/test_toolgen_contracts.py`); `ce_sync` kopiert die Schemas nach `<tools_dir>/contracts/`.
+* **`ce_search.py` – lokales RAG:** SQLite-FTS5-Index (BM25) über Markdown, Lehren, Skills, Versionsberichte, Datendateien und
+  Code-Kommentare aller Repos, in Abschnitte je Überschrift zerlegt (1 700 Dateien / 14 000 Abschnitte in 1,6 s, 20 MB), inkrementell
+  nach Inhaltshash; optionale Embeddings (`sentence-transformers`, hybrides Ranking) ohne Pflicht. Lehren und Skills vor Docs, Code zuletzt.
+  CLI `index|query|status` und MCP-Server (`serve`, stdio; Plugin `.mcp.json` „ce-search“ mit `ce_search`, `ce_search_status`).
+  `ce_nightly` baut den Index nach den Läufen neu. Tests `SearchTests`.
 * **Nicht mehr schwer:** Aufnahmen (MP4), Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen nehmen keine Sperre
   (Regel; die Repos passen ihre Aufrufe an).
 
