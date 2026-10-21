@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 „Pactguard“ – 2026-10-21
+
+- Vertragswächter lehnen doppelte Schlüssel, nichtendliche Zahlen und falsche Arm-/Achsentypen ab; Arm-Referenzen werden aufgelöst. Lesender Interface-Audit verwendet die nativen Fachrepo-Prüfungen und ein Robogen-Abnehmerprofil.
+- Richter akzeptiert nur Modellantworten auf stdout; ungültige Indexpfade ändern keinen Index, C# wird gefunden, Kontaktbögen halten Breite und Transparenz ein. Alle bestätigten Fehler mit Gegenproben abgesichert.
+- Kopierpakete werden vor der ersten Ausgabe vollständig geprüft; Prüftiefen und verbleibende Bild-/Rig-Abnahmen bleiben ausdrücklich sichtbar. [Version](docs/versions/0.6.md).
+
 ## 0.5.0 „Split Rail“ – 2026-10-21
 
 - Mac-Nachprüfung: Arbeitskopie-Diffs im Richter, echte launchd-Aktivierung, konkrete Nachtlauf-Auswahl und Sperrhalter-Anzeige korrigiert. Nexogen-Verzeichnis mit alten Pfad-Aliasen unterstützt; 142 Werkzeugtests grün.

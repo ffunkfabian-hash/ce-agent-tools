@@ -41,7 +41,13 @@ case "$cmd" in
   lock)     res="${1:-status}"; [ $# -gt 0 ] && shift; [ "$res" != status ] || exec python3 "$tools/heavy_lock.py" status; exec python3 "$tools/heavy_lock.py" run --resource "$res" "$@";;
   status)   python3 "$tools/heavy_lock.py" status; exec python3 "$tools/ce_search.py" status;;
   docs)     exec python3 "$tools/ce_docs.py" "$@";;
-  contract) exec python3 "$tools/ce_contract.py" validate "$@";;
+  contract)
+    case "${1:-}" in
+      audit) shift; exec python3 "$tools/ce_interfaces.py" audit "$@";;
+      robot-package) shift; exec python3 "$tools/ce_interfaces.py" robot-package "$@";;
+      validate|list) exec python3 "$tools/ce_contract.py" "$@";;
+      *) exec python3 "$tools/ce_contract.py" validate "$@";;
+    esac;;
   report)   exec python3 "$tools/ce_report.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
   mail)     exec python3 "$tools/ce_await_mail.py" --name "$@";;

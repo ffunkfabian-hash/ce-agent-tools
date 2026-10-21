@@ -240,7 +240,13 @@ def build(roots: list[Path], index: Path | None, log=print) -> dict:
 def fts_query(text: str) -> str:
     """Tokens ANDed, each as a prefix match; quotes and operators stripped (never a syntax error for the user)."""
     tokens = re.findall(r"[\wÀ-ɏ]+", text)
-    return " ".join(f'"{t}"*' for t in tokens if len(t) > 1) or '""'
+    # unicode61 drops '#' and '+', so C# / C++ are indexed as token "c".
+    # Retain this one-character token only for explicit language spellings.
+    language_c = bool(re.search(r"(?i)(?<!\w)c(?:#|\+{2})(?!\w)", text))
+    terms = [f'"{t}"*' for t in dict.fromkeys(tokens) if len(t) > 1]
+    if language_c:
+        terms.append('"c"')
+    return " ".join(terms) or '""'
 
 
 def search(query: str, k: int = 8, repo: str | None = None, kind: str | None = None, index: Path | None = None) -> list[dict]:
@@ -379,6 +385,10 @@ def main(argv: list[str]) -> int:
         roots = repos(args.repo)
         if not roots:
             print("ce_search: keine Repos gefunden (CE_REPOS, --repo oder ~/Claude/<repo>)")
+            return 2
+        missing = [root for root in roots if not root.is_dir()]
+        if missing:
+            print("ce_search: ungültige Repo-Wurzel(n): " + ", ".join(map(str, missing)), file=sys.stderr)
             return 2
         result = build(roots, args.index)
         print(json.dumps(result, ensure_ascii=False))

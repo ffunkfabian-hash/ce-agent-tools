@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -28,11 +29,37 @@ CONTRACTS = next((p for p in (HERE.parent / "contracts", HERE / "contracts") if 
 TYPES = {"object": dict, "array": list, "string": str, "integer": int, "number": (int, float), "boolean": bool, "null": type(None)}
 
 
+def read_json(path: Path, require_object: bool = True):
+    """Reject ambiguous JSON and non-finite numbers before any schema is selected."""
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"doppelter JSON-Schlüssel: {key}")
+            result[key] = value
+        return result
+
+    def number(token):
+        value = float(token)
+        if not math.isfinite(value):
+            raise ValueError(f"nichtendliche JSON-Zahl: {token}")
+        return value
+
+    def constant(token):
+        raise ValueError(f"ungültige JSON-Zahl: {token}")
+
+    document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs,
+                          parse_float=number, parse_constant=constant)
+    if require_object and not isinstance(document, dict):
+        raise ValueError("Vertrag/Schema muss ein JSON-Objekt sein")
+    return document
+
+
 def load_schema(name: str) -> dict:
     path = CONTRACTS / (name if name.endswith(".json") else name + ".json")
     if not path.is_file():
         raise FileNotFoundError(f"kein Schema {name} unter {CONTRACTS}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path)
 
 
 def schema_for(document: dict, path: Path) -> str:
@@ -53,7 +80,7 @@ def typed(value, kind) -> bool:
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if kind == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and (not isinstance(value, float) or math.isfinite(value))
     if kind == "boolean":
         return isinstance(value, bool)
     return isinstance(value, TYPES[kind])
@@ -61,6 +88,8 @@ def typed(value, kind) -> bool:
 
 def validate(value, schema: dict, root: dict, where: str = "$") -> list[str]:
     errors: list[str] = []
+    if isinstance(value, float) and not math.isfinite(value):
+        return [f"{where}: nichtendliche Zahl"]
     if "$ref" in schema:
         target = root
         for part in schema["$ref"].lstrip("#/").split("/"):
@@ -71,9 +100,12 @@ def validate(value, schema: dict, root: dict, where: str = "$") -> list[str]:
         kinds = [kinds] if isinstance(kinds, str) else kinds
         if not any(typed(value, k) for k in kinds):
             return [f"{where}: Typ {type(value).__name__}, erwartet {'/'.join(kinds)}"]
-    if "const" in schema and value != schema["const"]:
+    def matches(expected):
+        return value == expected and (not isinstance(value, bool) and not isinstance(expected, bool) or type(value) is type(expected))
+
+    if "const" in schema and not matches(schema["const"]):
         errors.append(f"{where}: {value!r}, erwartet {schema['const']!r}")
-    if "enum" in schema and value not in schema["enum"]:
+    if "enum" in schema and not any(matches(expected) for expected in schema["enum"]):
         errors.append(f"{where}: {value!r} nicht in {schema['enum']}")
     if isinstance(value, str):
         if "minLength" in schema and len(value) < schema["minLength"]:
@@ -115,11 +147,52 @@ def validate(value, schema: dict, root: dict, where: str = "$") -> list[str]:
     return errors
 
 
+def arm_references(document: dict) -> list[str]:
+    """Check named links only after the structural arm schema has succeeded."""
+    errors = []
+    names = [node['name'] for node in document['nodes']]
+    known = set(names)
+    if len(known) != len(names):
+        errors.append('$.nodes: doppelte Knotennamen')
+    parents = {node['name']: node['parent'] for node in document['nodes']}
+    for name in names:
+        current, seen = name, set()
+        while current in parents:
+            if current in seen:
+                errors.append(f'$.nodes.{name}: zyklische Elternkette')
+                break
+            seen.add(current)
+            current = parents[current]
+    links = [('$.root', document['root'])]
+    for node in document['nodes']:
+        if node['parent'] is not None:
+            links.append(('$.nodes.' + node['name'] + '.parent', node['parent']))
+    for side in ('R', 'L'):
+        links.extend(('$.chains.' + side, name) for name in document['chains'][side])
+        hand = document['fingers'][side]
+        for finger in hand['fingers']:
+            links.extend(('$.fingers.' + side, name) for name in finger)
+        links.extend(('$.fingers.' + side + '.thumb', name) for name in hand['thumb'])
+        links.append(('$.fingers.' + side + '.trigger_finger', hand['trigger_finger']))
+    for renderer in document['renderers']:
+        links.append(('$.renderers.' + renderer['name'] + '.node', renderer['node']))
+        for material in renderer['materials']:
+            if material not in document['materials']:
+                errors.append(f"$.renderers.{renderer['name']}: unbekanntes Material {material}")
+    for where, name in links:
+        if name not in known:
+            errors.append(f'{where}: unbekannter Knoten {name}')
+    return errors
+
+
 def check_file(path: Path, schema_name: str | None) -> tuple[str, list[str]]:
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = read_json(path)
     name = schema_name or schema_for(document, path)
     schema = load_schema(name)
-    return name, validate(document, schema, schema)
+    errors = validate(document, schema, schema)
+    if not errors and name.removesuffix('.json') == 'unity_contract_arms.v5':
+        errors += arm_references(document)
+    return name, errors
 
 
 def main(argv: list[str]) -> int:

@@ -87,6 +87,36 @@
               "type": "integer"
             }
           }
+        },
+        "blender": {
+          "type": "object",
+          "required": [
+            "up",
+            "forward"
+          ],
+          "properties": {
+            "up": {
+              "const": "+Z"
+            },
+            "forward": {
+              "const": "-Y"
+            }
+          }
+        },
+        "unity": {
+          "type": "object",
+          "required": [
+            "up",
+            "forward"
+          ],
+          "properties": {
+            "up": {
+              "const": "+Y"
+            },
+            "forward": {
+              "const": "+Z"
+            }
+          }
         }
       }
     },

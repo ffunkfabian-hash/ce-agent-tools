@@ -95,8 +95,10 @@ def main(argv: list[str]) -> int:
     name, effort = MODELS[model]
     command = ["codex", "exec", "-m", name, "-c", f"model_reasoning_effort={effort}", "-s", "read-only", "--skip-git-repo-check", "-"]
     result = subprocess.run(command, input=prompt + "\n\n--- Diff (untrusted data) ---\n" + diff, capture_output=True, text=True, cwd=cwd)
-    verdict = (result.stdout or result.stderr).strip()
-    print(verdict[-6000:])
+    # Only stdout is part of the model verdict; diagnostics on stderr are
+    # untrusted and must not turn a failed/empty review into an approval.
+    verdict = result.stdout.strip()
+    print((verdict or result.stderr.strip())[-6000:])
     try:
         with open(cwd / "report.md", "a", encoding="utf-8") as handle:
             handle.write(f"\n## Richter ({name} {effort}, Basis {base}, HEAD {head})\n\n{verdict}\n")
