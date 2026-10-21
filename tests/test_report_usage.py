@@ -119,6 +119,26 @@ class ReportUsageTests(unittest.TestCase):
         self.assertEqual(info["usage"]["requests"], 1)
         self.assertEqual(info["usage"]["total_input_tokens"], 10)
 
+    def test_hints_flag_high_peak_context_and_repeated_cache_creation_after_ttl_expiry(self):
+        high_peak = self.analyse_records([
+            record("a", {"input_tokens": 200, "cache_creation_input_tokens": 180_000,
+                          "cache_read_input_tokens": 0, "output_tokens": 50}),
+        ])
+        high_hints = ce_report.hints(high_peak)
+        self.assertTrue(any("Spitzen-Input 180,200 Tokens" in h for h in high_hints))
+        self.assertFalse(any("Cache-Schreiben" in h for h in high_hints))
+
+        thrashing = self.analyse_records([
+            record("a", {"input_tokens": 100, "cache_creation_input_tokens": 80_000,
+                          "cache_read_input_tokens": 0, "output_tokens": 20}),
+            record("b", {"input_tokens": 100, "cache_creation_input_tokens": 85_000,
+                          "cache_read_input_tokens": 0, "output_tokens": 20}),
+            record("c", {"input_tokens": 100, "cache_creation_input_tokens": 90_000,
+                          "cache_read_input_tokens": 0, "output_tokens": 20}),
+        ])
+        thrash_hints = ce_report.hints(thrashing)
+        self.assertTrue(any("Cache-Schreiben (255,000 Tokens) > 2× Spitzen-Input (90,100)" in h for h in thrash_hints))
+
 
 if __name__ == "__main__":
     unittest.main()

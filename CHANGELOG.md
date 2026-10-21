@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 – 2026-10-21
+
+- `ce_report.hints()` warnt bei hohem Spitzen-Input (> 150.000 Tokens je Anfrage, auch unter 300 Nachrichten) sowie bei mehrfachem Cache-Neuaufbau (`cache_creation_input_tokens` > 2× Spitzen-Input nach >5-Minuten-Pausen); Tests in `tests/test_report_usage.py` ergänzt.
+
 ## 0.7.0 „Clearpath“ – 2026-10-21
 
 - Richter wählt nach Risiko und Diffgröße: Spielstand/Einstellungen, Kernpfade aus der CE-Testkarte und Prüf-/Paket-/Sperrinfrastruktur gehen auch bei kleinen Diffs an Sol; Routine bleibt Luna. CLI nennt den Grund und macht manuelle Abweichungen sichtbar.

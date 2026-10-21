@@ -23,6 +23,7 @@ from collections import Counter
 from pathlib import Path
 
 BIG_DOC = 60_000
+MAX_CONTEXT_TOKENS = 150_000
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 
@@ -256,6 +257,14 @@ def hints(info: dict) -> list[str]:
     out = []
     if info["messages"] > 300:
         out.append("über 300 Nachrichten: neue Sitzung beginnen (› Sitzungen kurz halten)")
+    usage = info.get("usage") or {}
+    max_input = usage.get("max_input_tokens_per_request")
+    if isinstance(max_input, int) and max_input > MAX_CONTEXT_TOKENS:
+        out.append(f"Spitzen-Input {max_input:,} Tokens (> {MAX_CONTEXT_TOKENS:,}): neue Sitzung beginnen (› Sitzungen kurz halten)")
+    creation = usage.get("cache_creation_input_tokens")
+    if isinstance(creation, int) and isinstance(max_input, int) and max_input > 0 and creation > max(100_000, 2 * max_input):
+        out.append(f"Cache-Schreiben ({creation:,} Tokens) > 2× Spitzen-Input ({max_input:,}): "
+                   "mehrfacher Cache-Neuaufbau nach >5-min-Pausen; schwere Läufe ans Ende bündeln (› Schwere Läufe und Sperren)")
     if info["agents"].get("inherit"):
         out.append(f"{info['agents']['inherit']} Unteragent(en) ohne model – erben das Hauptmodell (› Unteragenten und Modelle)")
     if info["checks_repeated_same_command"]:
