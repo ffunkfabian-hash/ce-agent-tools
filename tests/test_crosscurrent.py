@@ -212,3 +212,20 @@ class CrosscurrentTests(unittest.TestCase):
             path = ce_nightly.plist_path(); path.parent.mkdir(parents=True); path.write_text('keep')
             self.assertEqual(ce_nightly.uninstall(), 1)
             self.assertEqual(path.read_text(), 'keep')
+
+    def test_antigravity_transcript_is_parsed_by_ce_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'conv/.system_generated/logs/transcript.jsonl'
+            path.parent.mkdir(parents=True)
+            records = [
+                {'type': 'USER_INPUT', 'created_at': '2026-10-21T18:00:00Z', 'content': 'hi'},
+                {'type': 'PLANNER_RESPONSE', 'created_at': '2026-10-21T18:00:01Z', 'tool_calls': [
+                    {'name': 'run_command', 'args': {'CommandLine': json.dumps('./check')}},
+                    {'name': 'call_mcp_tool', 'args': {'ToolName': json.dumps('ce_search')}},
+                    {'name': 'edit_file', 'args': {'Path': json.dumps('a.py')}},
+                ]},
+                {'type': 'GENERIC', 'created_at': '2026-10-21T18:00:02Z', 'content': 'ok'},
+            ]
+            path.write_text('\n'.join(json.dumps(r) for r in records))
+            info = ce_report.analyse(path)
+            self.assertEqual((info['messages'], info['checks'], info['searches'], info['tools']['Edit']), (2, 1, 1, 1))

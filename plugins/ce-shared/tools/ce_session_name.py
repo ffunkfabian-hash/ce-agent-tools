@@ -35,8 +35,10 @@ def abbreviation(repo_name: str) -> str:
 
 
 def detect_place(system: str, env: dict, agent: str) -> str:
-    """Mac / Cloud / Codex-Mac / Codex-Cloud from the machine itself: macOS is the Mac, everything else (Linux container) the cloud."""
+    """Mac / Cloud / Codex-Mac / Codex-Cloud / Gemini-Mac from the machine itself: macOS is the Mac, everything else (Linux container) the cloud."""
     base = "Mac" if system == "Darwin" else "Cloud"
+    if agent == "gemini" or (agent == "auto" and any(key.startswith("ANTIGRAVITY_") for key in env)):
+        return "Gemini-" + base
     codex = agent == "codex" or (agent == "auto" and any(key.startswith("CODEX_") for key in env))
     if base == "Cloud" and agent == "auto" and not codex and not any(key in env for key in CLOUD_MARKERS):
         base = "Cloud"  # a bare Linux box is treated as a cloud session as well
@@ -85,7 +87,7 @@ def session_name(abbrev: str, place: str, version: str = "", name: str = "", tas
 
 
 def branch_name(agent: str, abbrev: str, version: str = "", name: str = "", task: str = "") -> str:
-    prefix = "codex" if agent == "codex" else "claude"
+    prefix = "codex" if agent == "codex" else "gemini" if agent == "gemini" else "claude"
     parts = [abbrev.lower(), version, slug(name)] if version else [abbrev.lower(), slug(task or "aufgabe")]
     return prefix + "/" + "-".join(part for part in parts if part)
 
@@ -103,18 +105,18 @@ def main(argv=None) -> int:
     parser.add_argument("--name", default="", help="the code name (English, chosen by the session; never reuse one from the CHANGELOG)")
     parser.add_argument("--task", default="", help="short task for sessions without a version")
     parser.add_argument("--version", default="", help="fixed version (continuation of the same work); default: next free minor")
-    parser.add_argument("--agent", choices=("auto", "claude", "codex"), default="auto")
+    parser.add_argument("--agent", choices=("auto", "claude", "codex", "gemini"), default="auto")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--offline", action="store_true", help="do not ask origin for branch names")
     parser.add_argument("--reserve", action="store_true", help="create the branch at HEAD and push it to origin (the reservation)")
-    parser.add_argument("--topics", action="store_true", help="list the open claude/ and codex/ branches of origin (same subject open?)")
+    parser.add_argument("--topics", action="store_true", help="list the open claude/, codex/ and gemini/ branches of origin (same subject open?)")
     args = parser.parse_args(argv)
 
     config_path = args.repo / ".ce-repo.json"
     config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
     abbrev = abbreviation(config.get("name", args.repo.resolve().name))
     place = detect_place(platform.system(), dict(os.environ), args.agent)
-    agent = "codex" if place.startswith("Codex") else "claude"
+    agent = "codex" if place.startswith("Codex") else "gemini" if place.startswith("Gemini") else "claude"
     version = ""
     branches = [] if args.offline else remote_branches(args.repo)
     if not args.task or args.version or args.name:
@@ -124,7 +126,7 @@ def main(argv=None) -> int:
     print("Sitzungsname:", session_name(abbrev, place, version, args.name, args.task))
     print("Branch:      ", branch)
     if args.topics:
-        for other in sorted(b for b in branches if b.startswith(("claude/", "codex/"))):
+        for other in sorted(b for b in branches if b.startswith(("claude/", "codex/", "gemini/"))):
             print("offen:       ", other)
     if args.reserve:
         return reserve(args.repo, branch)
