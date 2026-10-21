@@ -101,7 +101,7 @@ class SyncTests(RepoCase):
         copy = (self.tools() / "ce_lint.py").read_text()
         lines = copy.splitlines()
         self.assertTrue(lines[0].startswith("#!"))
-        self.assertRegex(lines[1], r"^# GENERATED from ce-agent-tools 0\.4\.0 - do not edit$")
+        self.assertRegex(lines[1], r"^# GENERATED from ce-agent-tools 0\.5\.0 - do not edit$")
         self.assertRegex(lines[2], r"^# ce-sha256: [0-9a-f]{64}$")
         self.assertEqual(ce_sync.check(self.root, self.config, ce_sync.source_dir()), [])
         code, out = run_main(ce_sync, "--repo", str(self.root), "--check")
@@ -145,7 +145,7 @@ class SyncTests(RepoCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         lock = subprocess.run([sys.executable, str(self.tools() / "heavy_lock.py"), "status"], capture_output=True,
                               text=True, env=dict(env, CE_HEAVY_LOCK_FILE=str(self.root / "l")))
-        self.assertEqual(lock.stdout.strip(), "free")
+        self.assertEqual(lock.stdout.split()[:2], ["shared", "free"])
         done = subprocess.run([sys.executable, str(self.tools() / "ce_sync.py"), "--repo", str(self.root), "--check"],
                               capture_output=True, text=True, env=env, cwd=self.root.parent)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
@@ -186,6 +186,18 @@ class CheckTests(RepoCase):
         write(self.root, "change.txt", "x")
         self.assertNotIn("hint", run_main(ce_check, "full", "--repo", str(self.root))[1])
 
+    def test_nightly_runs_its_own_commands_or_reports_the_missing_key(self):
+        """0.5.0: ./check nightly bundles the image stages; a repo without check.nightly is a configuration problem."""
+        code, out = run_main(ce_check, "nightly", "--repo", str(self.root))
+        self.assertEqual(code, 2, out)
+        self.assertIn("check.nightly missing", out)
+        config = json.loads((self.root / ".ce-repo.json").read_text())
+        config["check"]["nightly"] = [[sys.executable, "-c", "print('night')"]]
+        (self.root / ".ce-repo.json").write_text(json.dumps(config))
+        code, out = run_main(ce_check, "nightly", "--repo", str(self.root), "--verbose")
+        self.assertEqual(code, 0, out)
+        self.assertIn("night", out)
+
     def test_old_run_gives_no_hint(self):
         self.init_git()
         self.set_config(dict(self.config, check={"full": [sys.executable, "-c", "pass"]}))
@@ -195,6 +207,18 @@ class CheckTests(RepoCase):
         state["time"] -= 31 * 60
         file.write_text(json.dumps(state))
         self.assertNotIn("hint", run_main(ce_check, "full", "--repo", str(self.root))[1])
+
+    def test_nightly_runs_its_own_commands_or_reports_the_missing_key(self):
+        """0.5.0: ./check nightly bundles the image stages; a repo without check.nightly is a configuration problem."""
+        code, out = run_main(ce_check, "nightly", "--repo", str(self.root))
+        self.assertEqual(code, 2, out)
+        self.assertIn("check.nightly missing", out)
+        config = json.loads((self.root / ".ce-repo.json").read_text())
+        config["check"]["nightly"] = [[sys.executable, "-c", "print('night')"]]
+        (self.root / ".ce-repo.json").write_text(json.dumps(config))
+        code, out = run_main(ce_check, "nightly", "--repo", str(self.root), "--verbose")
+        self.assertEqual(code, 0, out)
+        self.assertIn("night", out)
 
     def test_full_repeats_last_failures_first_and_skips_full_if_still_red(self):
         self.init_git()

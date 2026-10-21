@@ -157,7 +157,8 @@ class Contract(LockCase):
 
     def test_status_cli(self):
         self.assertEqual(subprocess.run([sys.executable, str(SCRIPT), "status"], capture_output=True, text=True,
-                                        env=os.environ.copy()).stdout.strip(), "free")
+                                        env=os.environ.copy()).stdout.split(), ["shared", "free", "unity", "free",
+                                                                                "blender", "free", "gpu", "free"])
         with heavy.held("probe", "/x"):
             out = subprocess.run([sys.executable, str(SCRIPT), "status"], capture_output=True, text=True,
                                  env=os.environ.copy()).stdout
@@ -295,3 +296,52 @@ class ProcessGroups(LockCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Resources(LockCase):
+    """0.5.0: one lock per resource (unity, blender, gpu); callers without a resource keep the shared file."""
+
+    def test_lock_path_per_resource(self):
+        self.assertEqual(heavy.lock_path(), str(self.lock))
+        self.assertEqual(heavy.lock_path("unity"), str(self.lock.parent / "heavy-unity.lock"))
+        self.assertEqual(heavy.lock_path("blender"), str(self.lock.parent / "heavy-blender.lock"))
+        with mock.patch.dict(os.environ, {"CE_HEAVY_RESOURCE": "gpu"}):
+            self.assertEqual(heavy.lock_path(), str(self.lock.parent / "heavy-gpu.lock"))
+        with self.assertRaises(ValueError):
+            heavy.lock_path("metal")
+
+    def test_different_resources_run_side_by_side(self):
+        with heavy.held("regression", "/a", out=self.lines.append, resource="unity") as unity:
+            self.assertTrue(unity.held)
+            self.assertEqual(unity["resource"], "unity")
+            with heavy.held("bake", "/b", out=self.lines.append, resource="blender") as blender:
+                self.assertTrue(blender.held)  # did not wait for unity
+            self.assertEqual(self.lines, [])  # nothing waited
+            self.assertIsNotNone(heavy.holder("unity"))
+            self.assertIsNone(heavy.holder("blender"))
+            self.assertIsNone(heavy.holder())  # the shared file stays free
+            self.assertEqual(heavy.holder_pids(), [os.getpid()])
+
+    def test_same_resource_queues(self):
+        with heavy.held("regression", "/a", resource="unity"):
+            with mock.patch.dict(os.environ, CE_HEAVY_HELD=""):  # another session, not a child of this holder
+                proc = self.cli("run", "--resource", "unity", "--what", "second", "--", sys.executable, "-c", "pass",
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            time.sleep(1.0)
+            self.assertIsNone(proc.poll())  # still waiting
+        self.assertEqual(proc.wait(timeout=20), 0)
+        self.assertIn("heavy lock (unity): waiting", proc.stdout.read())
+
+    def test_shared_callers_do_not_wait_for_resources(self):
+        with heavy.held("bake", "/b", resource="blender"):
+            with mock.patch.dict(os.environ, CE_HEAVY_HELD=""):  # another session
+                with heavy.held("old caller", "/c", out=self.lines.append) as old:
+                    self.assertTrue(old.held)
+        self.assertEqual(self.lines, [])
+
+    def test_child_on_another_resource_queues_for_it(self):
+        with heavy.held("regression", "/a", resource="unity"):
+            self.assertEqual(os.environ["CE_HEAVY_HELD"], "unity")
+            self.assertIsNone(heavy.skipped(resource="blender"))  # queues for blender
+            self.assertIsNotNone(heavy.skipped(resource="unity"))  # same resource: inside the parent
+            self.assertIsNotNone(heavy.skipped())  # shared-file step inside a holder: old behaviour

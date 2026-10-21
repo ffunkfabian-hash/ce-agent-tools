@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""One heavy run at a time on this Mac - the queue shared by Cube Escape, Cubegen, the robot generator and Toolgen.
+"""One heavy run per resource at a time on this Mac - the queues shared by Cube Escape, Cubegen, the robot generator
+and Toolgen.
 
-Heavy steps (full Unity regression, player measurements, Blender full tiers, check_output.sh, unity_check.py) wait for
-one lock file instead of running side by side (two full regressions at once left 3.8 GB free memory):
+Heavy steps wait for the lock of the resource they use instead of running side by side (0.5.0 "Split Rail": before,
+one lock for everything made every session wait behind every other; 20 min to 2 h of waiting per session):
 
-    python3 heavy_lock.py run [--what LABEL] [--checkout PATH] -- <command ...>   wait, run, release
-    python3 heavy_lock.py status                                                 who holds it right now
+    unity    full Unity regression, player measurements, unity_check.py, Unity builds
+    blender  Blender standard/full tiers, surface bakes, check_output.sh, golden renders
+    gpu      Metal renders and anything else that needs the GPU for itself
+
+Two resources may run at once (a Unity regression next to a Blender bake); two steps on the same resource queue.
+Recordings, screenshots, contact sheets, targeted tests and quick tiers are not heavy and take no lock.
+
+    python3 heavy_lock.py run --resource unity|blender|gpu [--what LABEL] [--checkout PATH] -- <command ...>
+    python3 heavy_lock.py status                            who holds which resource right now
 
 Contract (this file is the one copy; the repositories call it through CE_TOOLS and keep only thin wrappers):
-- an exclusive flock(2) on ~/Library/Caches/CubeEscape/heavy-run.lock, held by the waiting process for the whole heavy
-  step; the file is never deleted;
+- an exclusive flock(2) on ~/Library/Caches/CubeEscape/heavy-<resource>.lock, held by the waiting process for the
+  whole heavy step; the file is never deleted. Without a resource (old callers, CE_HEAVY_RESOURCE unset) the old
+  shared file heavy-run.lock is used: such steps still queue behind each other, but not behind resource-aware ones;
 - the holder writes one JSON line {"pid", "what", "checkout", "since"} into it; a waiting run prints it (and again every
   five minutes); pause_sessions.py spares that pid and its children;
 - the lock's file descriptor is never inherited (O_CLOEXEC, close_fds): a background child (caffeinate, a Blender
@@ -19,11 +28,13 @@ Contract (this file is the one copy; the repositories call it through CE_TOOLS a
   check_output.sh) keeps the lock even when its parent died first. Children that leave the group on purpose
   (their own start_new_session) do not. A holder that starts its heavy children itself (testplan.py) does the same
   with Groups;
-- CE_HEAVY_LOCK=0 skips the queue; CE_HEAVY_HELD=1 marks the children of a holder, so a heavy step inside another one
-  does not wait for its own parent. CE_HEAVY_LOCK_FILE moves the lock (tests only).
+- CE_HEAVY_LOCK=0 skips the queue; CE_HEAVY_HELD=<resource|1> marks the children of a holder, so a heavy step on the
+  same resource inside another one does not wait for its own parent (a step on another resource queues for that one). CE_HEAVY_RESOURCE names the resource for callers that cannot pass it.
+  CE_HEAVY_LOCK_FILE moves the lock directory and file (tests only): the resource is added to its stem.
 
 API (union of the former copies): held() / HeavyLock (acquire, release, state, .held, .skipped, info access like a
-dict), holder(), holder_pid(), skipped(), run_group() = run_forwarding(), Groups, Interrupted.
+dict; all take resource=), holder(resource), holder_pid(wait, resource), holder_pids(), skipped(), lock_path(resource),
+RESOURCES, run_group() = run_forwarding(), Groups, Interrupted.
 Pure Python (no bpy): generate_robot.py imports it inside Blender.
 """
 from __future__ import annotations
@@ -43,6 +54,7 @@ except ImportError:  # pragma: no cover - no flock (Windows): nothing to queue o
     fcntl = None
 
 DEFAULT = os.path.join(os.path.expanduser("~"), "Library", "Caches", "CubeEscape", "heavy-run.lock")
+RESOURCES = ("unity", "blender", "gpu")
 POLL_SECONDS = 2.0
 REPORT_SECONDS = 300.0  # a waiting run says every five minutes that it still waits
 GROUP_POLL = 0.1  # how often run_group looks whether the process group of a finished command is empty
@@ -50,17 +62,37 @@ STRAGGLER_SECONDS = 5.0  # after this long it says which group still keeps the l
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def lock_path() -> str:
-    return os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT
+def resource_name(resource: str | None = None) -> str | None:
+    """The resource of a step: the argument, else CE_HEAVY_RESOURCE, else None (the shared file). Unknown names fail
+    loudly - a typo would silently open a new queue."""
+    name = (resource or os.environ.get("CE_HEAVY_RESOURCE") or "").strip().lower() or None
+    if name is not None and name not in RESOURCES:
+        raise ValueError("unknown heavy resource %r (one of %s)" % (name, ", ".join(RESOURCES)))
+    return name
 
 
-def skipped(env=None) -> str | None:
-    """Why this process does not queue (None: it does)."""
+def lock_path(resource: str | None = None) -> str:
+    """The lock file: heavy-<resource>.lock next to the shared heavy-run.lock (CE_HEAVY_LOCK_FILE moves both)."""
+    base = os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT
+    name = resource_name(resource)
+    if name is None:
+        return base
+    stem, ext = os.path.splitext(base)
+    stem = stem[:-4] if stem.endswith("-run") else stem
+    return "%s-%s%s" % (stem, name, ext or ".lock")
+
+
+def skipped(env=None, resource: str | None = None) -> str | None:
+    """Why this process does not queue (None: it does). CE_HEAVY_HELD names what the parent holds ("1" = the shared
+    file, else a resource): a step on that same resource inside it does not wait; a shared-file step inside any holder
+    does not wait either (old behaviour); a step on another resource queues for that resource."""
     env = os.environ if env is None else env
     if env.get("CE_HEAVY_LOCK", "1").strip() == "0":
         return "CE_HEAVY_LOCK=0"
-    if env.get("CE_HEAVY_HELD") == "1":
-        return "the parent holds the lock (CE_HEAVY_HELD=1)"
+    held = env.get("CE_HEAVY_HELD", "")
+    name = resource_name(resource)
+    if held and (name is None or held == name):
+        return "the parent holds the lock (CE_HEAVY_HELD=%s)" % held
     return None
 
 
@@ -74,12 +106,12 @@ def describe(text: str) -> str:
         return text.strip() or "unknown"
 
 
-def holder() -> str | None:
-    """The current holder in words, or None while nobody holds the lock."""
+def holder(resource: str | None = None) -> str | None:
+    """The current holder of that resource's lock in words, or None while nobody holds it."""
     if fcntl is None:
         return None
     try:
-        fd = os.open(lock_path(), os.O_RDONLY | os.O_CLOEXEC)
+        fd = os.open(lock_path(resource), os.O_RDONLY | os.O_CLOEXEC)
     except OSError:
         return None
     try:
@@ -93,13 +125,23 @@ def holder() -> str | None:
         os.close(fd)
 
 
-def holder_pid(wait: float = 1.0) -> int | None:
+def holder_pids(wait: float = 1.0) -> list[int]:
+    """The PIDs of every current holder (shared file and each resource) - pause_sessions.py spares them."""
+    pids = []
+    for resource in (None,) + RESOURCES:
+        pid = holder_pid(wait, resource)
+        if pid is not None:
+            pids.append(pid)
+    return pids
+
+
+def holder_pid(wait: float = 1.0, resource: str | None = None) -> int | None:
     """The PID the holder wrote (pause_sessions.py spares it and its children), None while the lock is free. A holder
     that has just taken the lock writes its line a moment later - waits up to `wait` seconds for it."""
     deadline = time.monotonic() + wait
-    while holder() is not None:
+    while holder(resource) is not None:
         try:
-            with open(lock_path(), encoding="utf-8") as handle:
+            with open(lock_path(resource), encoding="utf-8") as handle:
                 return int(json.loads(handle.read()).get("pid"))
         except (OSError, ValueError, TypeError, AttributeError):
             if time.monotonic() >= deadline:
@@ -116,8 +158,9 @@ class HeavyLock:
     state() is one line for reports: "held, waited 12 s" / "skipped (CE_HEAVY_LOCK=0)" / ..."""
 
     def __init__(self, what: str, checkout: str | None = None, out=None, poll: float = POLL_SECONDS,
-                 report: float = REPORT_SECONDS):
+                 report: float = REPORT_SECONDS, resource: str | None = None):
         self.what, self.checkout = what, checkout or os.getcwd()
+        self.resource = resource_name(resource)
         self.out = out or (lambda line: print(line, flush=True))
         self.poll, self.report = poll, report
         self.fd: int | None = None
@@ -136,12 +179,12 @@ class HeavyLock:
     def acquire(self) -> "HeavyLock":
         if self.fd is not None or self.skipped:
             return self
-        self.skipped = skipped()
+        self.skipped = skipped(resource=self.resource)
         if fcntl is None:  # pragma: no cover
             self.skipped = self.skipped or "no flock on this system"
         if self.skipped:
             return self
-        path = lock_path()
+        path = lock_path(self.resource)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)  # never inherited (O_CLOEXEC, PEP 446)
         start = last = time.monotonic()
@@ -155,8 +198,8 @@ class HeavyLock:
                     who = describe(os.pread(fd, 4096, 0).decode("utf-8", "replace"))
                     now = time.monotonic()
                     if not announced:
-                        self.out("heavy lock: waiting for %s - held by %s (CE_HEAVY_LOCK=0 skips the queue)"
-                                 % (path, who))
+                        self.out("heavy lock (%s): waiting for %s - held by %s (CE_HEAVY_LOCK=0 skips the queue)"
+                                 % (self.resource or "shared", path, who))
                         announced = True
                     elif now - last >= self.report:
                         self.out("heavy lock: still waiting after %.0f min for %s" % ((now - start) / 60, who))
@@ -170,11 +213,13 @@ class HeavyLock:
             self.out("heavy lock: free after %.0f s" % self.waited)
         self.info = {"pid": os.getpid(), "what": self.what, "checkout": self.checkout,
                      "since": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if self.resource:
+            self.info["resource"] = self.resource
         os.ftruncate(fd, 0)
         os.pwrite(fd, (json.dumps(self.info) + "\n").encode(), 0)
         self.fd = fd
         self._previous_held = os.environ.get("CE_HEAVY_HELD")
-        os.environ["CE_HEAVY_HELD"] = "1"
+        os.environ["CE_HEAVY_HELD"] = self.resource or "1"
         return self
 
     def release(self) -> None:
@@ -199,9 +244,10 @@ class HeavyLock:
 
 
 @contextlib.contextmanager
-def held(what: str, checkout: str | None = None, out=None, poll: float = POLL_SECONDS):
-    """Waits for the lock, holds it while the block runs (yields the HeavyLock; .skipped says why it did not queue)."""
-    lock = HeavyLock(what, checkout, out, poll).acquire()
+def held(what: str, checkout: str | None = None, out=None, poll: float = POLL_SECONDS, resource: str | None = None):
+    """Waits for the lock of `resource` (unity, blender, gpu; None = shared file), holds it while the block runs
+    (yields the HeavyLock; .skipped says why it did not queue)."""
+    lock = HeavyLock(what, checkout, out, poll, resource=resource).acquire()
     try:
         yield lock
     finally:
@@ -359,18 +405,21 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run")
+    run.add_argument("--resource", choices=RESOURCES, help="which resource the step needs (default: CE_HEAVY_RESOURCE "
+                     "or the shared file)")
     run.add_argument("--what", help="what runs (shown to waiting runs)")
     run.add_argument("--checkout", help="where it runs")
     run.add_argument("rest", nargs=argparse.REMAINDER)
     sub.add_parser("status")
     args = parser.parse_args(argv)
     if args.command == "status":
-        print(holder() or "free")
+        for resource in (None,) + RESOURCES:
+            print("%-8s %s" % (resource or "shared", holder(resource) or "free"))
         return 0
     command = args.rest[1:] if args.rest[:1] == ["--"] else args.rest
     if not command:
         parser.error("run -- <command ...>")
-    with held(args.what or os.path.basename(command[0]), args.checkout) as lock:
+    with held(args.what or os.path.basename(command[0]), args.checkout, resource=args.resource) as lock:
         if lock.skipped:
             print("heavy lock: %s" % lock.state(), flush=True)
         # close_fds=False: fds the caller passed on on purpose (copy locks) stay with the child; this lock does not -
