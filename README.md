@@ -106,7 +106,7 @@ Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. V
 
 ## Zuständigkeit
 
-Änderungen an den gemeinsamen Werkzeugen und Regeln (dieses Plugin; die globalen Regeln im Repo `~/Claude/cubeescape-rules`,
+Änderungen an den gemeinsamen Werkzeugen und Regeln (dieses Plugin; die globalen Regeln im Repo `~/Claude/cubeescape-nexogen`,
 auf das `~/.claude/CLAUDE.md` und `~/.claude/templates/` verlinken) macht
 die Übersichts-Sitzung des Nutzers oder eine Sitzung mit ausdrücklichem Auftrag dafür; Repo-Sitzungen melden
 Änderungswünsche, statt selbst zu ändern. Nach jeder Änderung im Plugin: `python3 plugins/ce-shared/tools/ce_sync.py --all`
