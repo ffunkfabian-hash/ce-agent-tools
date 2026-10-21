@@ -12,6 +12,14 @@
 * **`ce_check.py nightly`:** dritte Stufe aus `.ce-repo.json` › `check.nightly` – die gebündelten Bildstufen eines Repos
   (volle Stufen, Bakes, Golden-Hashes, Determinismus, volle Regression ohne Anlass) laufen einmal täglich auf `main`, nicht vor
   jedem Commit; Repos ohne den Schlüssel melden das (Exit 2).
+* **`ce_docs.py`:** der eine Doku-Prüfer aller Repos (Links, Anker nach GitHub-Regel, Code-Zäune und Inline-Code ausgenommen,
+  SKILL.md-Front-Matter, JSON, `bash -n`), Listen in `.ce-repo.json` › `docs` (`check`, `json`, `shell`); Cube Escapes `check_docs.py`
+  behält nur das Fehlerregister und ruft ihn, Toolgens ist ein Wrapper. Fand beim ersten Lauf einen toten Anker in CE.
+* **`ce_nightly.py`:** ein Nachtlauf für alle Repos (`--all`, `CE_REPOS`), ruft je Repo `ce_check nightly` nacheinander, ein Bericht
+  unter `~/Library/Caches/CubeEscape/nightly/`, macOS-Benachrichtigung; `install` legt den LaunchAgent (03:00) an.
+* **Werkzeuge aus cubeescape-rules hierher:** `ce_session_name.py` (jetzt mit `--reserve`: der Branch auf `origin` ist die Reservierung,
+  `--topics`), `ce_await_mail.py` (liest das Postfach-Issue #16), `ce_codex_quota.py`, `ce_codex_cloud.py` samt Tests; das Regel-Repo
+  behält dünne Wrapper unter `templates/`. Alle neuen Dateien in `SYNC_FILES`.
 * **Nicht mehr schwer:** Aufnahmen (MP4), Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen nehmen keine Sperre
   (Regel; die Repos passen ihre Aufrufe an).
 

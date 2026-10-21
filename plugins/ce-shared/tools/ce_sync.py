@@ -27,7 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
 
 SYNC_FILES = ["heavy_lock.py", "ce_common.py", "ce_check.py", "ce_lint.py", "ce_release.py", "ce_worktrees.py",
-              "ce_sync.py"]
+              "ce_sync.py", "ce_docs.py", "ce_nightly.py", "ce_session_name.py", "ce_await_mail.py",
+              "ce_codex_quota.py", "ce_codex_cloud.py"]
 DEFAULT_TOOLS_DIR = "scripts/ce_tools"
 DEFAULT_PLUGIN_TOOLS = Path.home() / ".claude" / "plugins" / "marketplaces" / "ce-agent-tools" / "plugins" / "ce-shared" / "tools"
 HEADER = "# GENERATED from ce-agent-tools {version} - do not edit"

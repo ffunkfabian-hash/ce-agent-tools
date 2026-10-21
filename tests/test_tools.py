@@ -618,3 +618,45 @@ class PrecommitHookTests(RepoCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DocsAndNightlyTests(unittest.TestCase):
+    """0.5.0: ce_docs.py (the one doc checker) and ce_nightly.py (the one nightly run)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "repo"
+        (self.root / "docs").mkdir(parents=True)
+        (self.root / ".ce-repo.json").write_text(json.dumps({
+            "name": "x", "version": {"file": "V", "pattern": "(.*)"}, "check": {"quick": ["true"]},
+            "docs": {"json": ["data/*.json"], "shell": ["*.sh"]}}))
+        (self.root / "V").write_text("0.1")
+
+    def test_docs_finds_missing_targets_anchors_and_bad_json(self):
+        (self.root / "README.md").write_text("# Titel\n\n## Ein Abschnitt\n\n[ok](docs/a.md#zwei-worte) [weg](docs/b.md) [anker](docs/a.md#fehlt)\n"
+                                             "`[nicht](code.md)`\n```\n[auch nicht](fence.md)\n```\n")
+        (self.root / "docs" / "a.md").write_text("# Zwei Worte\n")
+        (self.root / "data").mkdir(); (self.root / "data" / "x.json").write_text("{nope")
+        (self.root / "s.sh").write_text("echo (\n")
+        import ce_docs
+        rows, problems = ce_docs.check(self.root, json.loads((self.root / ".ce-repo.json").read_text()))
+        errors = sorted(p["error"].split(":")[0] for p in problems)
+        self.assertEqual(errors, ["Abschnittsanker fehlt", "JSON", "Lokales Ziel fehlt", "Shell-Syntax"], problems)
+        self.assertEqual(sum(r["local_links"] for r in rows), 3)
+        code, out = run_main(ce_docs, "--repo", str(self.root))
+        self.assertEqual(code, 1)
+        self.assertIn("4 Befunde", out)
+
+    def test_nightly_runs_each_repo_with_check_nightly_and_skips_the_rest(self):
+        import ce_nightly
+        other = Path(self.tmp.name) / "other"; other.mkdir()
+        (other / ".ce-repo.json").write_text(json.dumps({"name": "o", "version": {"file": "V", "pattern": "(.*)"},
+                                                         "check": {"quick": ["true"], "nightly": [[sys.executable, "-c", "print('nacht')"]]}}))
+        (other / "V").write_text("0.1")
+        with mock.patch.object(ce_nightly, "LOG_DIR", Path(self.tmp.name) / "logs"), mock.patch.object(ce_nightly, "notify"):
+            code, out = run_main(ce_nightly, "--repo", str(self.root), "--repo", str(other))
+        self.assertEqual(code, 0, out)
+        self.assertIn("übersprungen", out)
+        self.assertIn("nacht", out)
+        self.assertRegex(out, r"other\s+green")

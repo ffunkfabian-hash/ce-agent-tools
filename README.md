@@ -58,6 +58,11 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 
 | Aufruf | Wirkung |
 |---|---|
+| `ce_docs.py [--json R]` | Markdown-Links/-Anker, SKILL-Front-Matter, JSON, Shell-Syntax nach `.ce-repo.json › docs` – der eine Doku-Prüfer |
+| `ce_nightly.py [--all\|--repo P] [install\|status]` | ein Nachtlauf für alle Repos (`check.nightly` je Repo), Bericht, LaunchAgent |
+| `ce_session_name.py [--name N] [--reserve] [--topics]` | Sitzungsname und Branch; `--reserve` pusht den Branch (= Reservierung) |
+| `ce_await_mail.py --name N [--issue …]` | wartet auf eine Nachricht an diese Sitzung im Postfach-Issue (cubeescape-rules#16) |
+| `ce_codex_quota.py`, `ce_codex_cloud.py` | Codex-Kontingent lesen, Codex-Cloud-Aufträge |
 | `heavy_lock.py run --resource unity\|blender\|gpu [--what X] [--checkout P] -- <Befehl>` / `status` | eine Sperre **je Ressource** für schwere Läufe (`~/Library/Caches/CubeEscape/heavy-<resource>.lock`; ohne `--resource` die alte gemeinsame Datei `heavy-run.lock`), hält bis zum letzten Enkelprozess; Unity-Regression und Blender-Bake laufen nebeneinander, zwei Läufe derselben Ressource nacheinander. Aufnahmen, Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen sind nicht schwer und nehmen keine Sperre. Als Modul: `held(..., resource=)`, `HeavyLock`, `holder_pids()`, `Groups`, `run_group`/`run_forwarding` |
 | `ce_check.py quick\|full\|nightly [--verbose] [--no-targeted]` | Befehle aus `.ce-repo.json › check`; Ergebnis zuerst; `full` wiederholt nach Fehlern einmal `check.rerun_failed`; `nightly` = gebündelte Bildstufen einmal täglich auf `main` (0.5.0) |
 | `ce_lint.py [--strict]` | Längen (`limits`), AGENTS.md-Abschnitte, keine Notiz-Dateien im Hauptordner, Versionsbericht/CHANGELOG |
