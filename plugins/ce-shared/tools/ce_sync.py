@@ -136,6 +136,17 @@ def check(root: Path, config: dict, source: Path | None = None) -> list[tuple[st
             if digest(current) != stored:
                 findings.append(("warning", f"{where}/{name}: from ce-agent-tools {version}, plugin has "
                                             f"{plugin_version(source) or '?'} - run ce_sync.py"))
+    for folder in DATA_DIRS:
+        origin = source.parent / folder if source else target / folder
+        if not origin.is_dir():
+            findings.append(("error", f"{where}/{folder}: missing data directory"))
+            continue
+        for item in sorted(origin.iterdir()):
+            if item.suffix not in (".json", ".md"):
+                continue
+            copy = target / folder / item.name
+            if not copy.is_file() or copy.read_bytes() != item.read_bytes():
+                findings.append(("error", f"{where}/{folder}/{item.name}: missing or changed - run ce_sync.py"))
     return findings
 
 

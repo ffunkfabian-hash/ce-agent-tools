@@ -13,6 +13,8 @@ Every number names the rule it belongs to (› Kontingent sparen, › Suche und 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import time
 import json
 import re
 import sys
@@ -28,11 +30,22 @@ def newest_transcript() -> Path | None:
     return files[-1] if files else None
 
 
-def events(path: Path):
+def events(path: Path, since=None):
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
-                yield json.loads(line)
+                record = json.loads(line)
+                if since is not None:
+                    stamp = record.get("timestamp")
+                    if not isinstance(stamp, str):
+                        continue
+                    try:
+                        when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        continue
+                    if when < since:
+                        continue
+                yield record
             except ValueError:
                 continue
 
@@ -59,7 +72,7 @@ def tool_results(record: dict):
             yield text
 
 
-def analyse(path: Path) -> dict:
+def analyse(path: Path, since=None) -> dict:
     messages = 0
     tools: Counter = Counter()
     agents: Counter = Counter()
@@ -67,7 +80,7 @@ def analyse(path: Path) -> dict:
     largest = (0, "")
     waited = 0.0
     last_command = ""
-    for record in events(path):
+    for record in events(path, since):
         if record.get("type") in ("user", "assistant"):
             messages += 1
         for name, data in tool_uses(record):
@@ -92,8 +105,8 @@ def analyse(path: Path) -> dict:
             if name.startswith("mcp__") and "search" in name:
                 searches += 1
         for text in tool_results(record):
-            if len(text) > largest[0]:
-                largest = (len(text), last_command)
+            if len(text.encode("utf-8")) > largest[0]:
+                largest = (len(text.encode("utf-8")), last_command)
             for match in re.finditer(r"heavy lock[^\n]*?free after (\d+) s", text):
                 waited += int(match[1])
             for match in re.finditer(r"held, waited (\d+) s", text):
@@ -121,7 +134,7 @@ def hints(info: dict) -> list[str]:
     if info["agents"].get("inherit"):
         out.append(f"{info['agents']['inherit']} Unteragent(en) ohne model – erben das Hauptmodell (› Unteragenten und Modelle)")
     if info["checks_repeated_same_command"]:
-        out.append("Prüflauf mit identischem Befehl wiederholt – nach Korrektur nur den gezielten Test (› Richter und Selbstkorrektur)")
+        out.append("Prüflauf mit identischem Befehl wiederholt; der Transcript belegt keine unveränderten Eingaben (› Richter und Selbstkorrektur)")
     if info["big_doc_reads"] and not info["searches"]:
         out.append("lange Docs gelesen, nie gesucht – ce_search/rg zuerst (› Suche und Gedächtnis)")
     if info["largest_output_bytes"] > 40_000:
@@ -132,8 +145,25 @@ def hints(info: dict) -> list[str]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("transcript", nargs="?", type=Path)
+    parser.add_argument("--since", help="aggregate Claude transcripts since e.g. 7d (record timestamps, not file mtime)")
+    parser.add_argument("--root", type=Path, help="transcript root (default ~/.claude/projects)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.since:
+        match = re.fullmatch(r"(\d+)([dh])", args.since)
+        if not match:
+            parser.error("--since expects e.g. 7d or 24h")
+        cutoff = time.time() - int(match[1]) * (86400 if match[2] == "d" else 3600)
+        root = args.root or Path.home() / ".claude" / "projects"
+        rows = [analyse(path, cutoff) for path in sorted(root.glob("*/*.jsonl"))]
+        rows = [row for row in rows if row["messages"] or row["tools"]]
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False))
+        else:
+            print("Claude-Transcripts | Nachrichten | Prüfläufe | gleicher Befehl | Suchen | Sperrwartezeit (s)")
+            for row in rows:
+                print(f"{Path(row['transcript']).stem} | {row['messages']} | {row['checks']} | {row['checks_repeated_same_command']} | {row['searches']} | {row['heavy_lock_waited_s']}")
+        return 0
     path = args.transcript or newest_transcript()
     if not path or not path.is_file():
         print("ce_report: kein Transcript gefunden")

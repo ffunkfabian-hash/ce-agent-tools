@@ -2,6 +2,8 @@
 
 ## 0.5.0 „Split Rail“ – 2026-10-21
 
+- Mac-Nachprüfung: Arbeitskopie-Diffs im Richter, echte launchd-Aktivierung, konkrete Nachtlauf-Auswahl und Sperrhalter-Anzeige korrigiert. Nexogen-Verzeichnis mit alten Pfad-Aliasen unterstützt; 142 Werkzeugtests grün.
+
 * **`heavy_lock.py`: eine Sperre je Ressource** statt einer für alles (`--resource unity|blender|gpu`, Datei
   `heavy-<resource>.lock`; Modul `held(..., resource=)`, `CE_HEAVY_RESOURCE` für Aufrufer ohne Argument). Eine Unity-Regression
   und ein Blender-Bake laufen nebeneinander; zwei Läufe derselben Ressource warten aufeinander. Aufrufer ohne Ressource nutzen weiter
@@ -76,3 +78,12 @@ Erste Version (mit Cube Escape 0.56 „Pit Crew“, Cubegen 0.23.0 „Wingman“
   Schleife über Regeldateien. Jetzt nur innerhalb eines Befehls.
 * **Werkzeug-Profile der Subagents** (`.claude/agent-guard.json` im Repo): Bash-Erlaubnislisten und Schreibpfade je
   Agent, durchgesetzt über `agent_type` im Hook-Eingang.
+
+### Gegenprüfung und Fortsetzung auf dem Mac (21.10.2026)
+
+- `./ce` nach Sitzung, Codex und Beleg gruppiert, alte Aufrufe kompatibel; Wochenbericht `report --since 7d`.
+- Gesamtsperre koordiniert alte und neue Aufrufer; `gpu` exklusiv, verschachtelte globale Upgrades schlagen verständlich fehl.
+- Richter erhält Prompt und Diff über stdin; Prozessfehler und unklare Schlusszeilen gelten nicht als Freigabe.
+- Suchlauf spart ausgeschlossene Bäume aus, findet tatsächliche Mac-Pfade; Synchronisierung prüft Schemas und Agenten mit.
+- Nachtlauf: kein Index/Meldung im Trockenlauf, sauberes main, kein Grün ohne Tests, `caffeinate`, optionale deduplizierte Fehler-Issues.
+- Strukturschema für vorhandenes Arm-Paket (Vertrag 5); semantische Abnahme bleibt beim Produzenten/Abnehmer.

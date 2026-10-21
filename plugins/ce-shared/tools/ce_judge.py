@@ -23,6 +23,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TEMPLATE_CANDIDATES = [Path.home() / ".claude" / "templates" / "pruefung.md",
+                       Path.home() / "Claude" / "cubeescape-nexogen" / "templates" / "pruefung.md",
                        Path.home() / "Claude" / "cubeescape-rules" / "templates" / "pruefung.md",
                        HERE.parent / "templates" / "pruefung.md"]
 GENERATED = re.compile(r"(^|/)(output|outputs|work|logs|Library|Temp)/|\.(meta|png|jpg|glb|fbx|blend|mp4|unitypackage)$|\.min\.|package-lock|/ce_tools/")
@@ -45,12 +46,12 @@ def template() -> str:
 
 
 def diff_of(base: str, files, cwd) -> tuple[str, list[str]]:
-    names = [n for n in git("diff", "--name-only", f"{base}...HEAD", cwd=cwd).splitlines() if n and not GENERATED.search(n)]
+    names = [n for n in git("diff", "--name-only", base, cwd=cwd).splitlines() if n and not GENERATED.search(n)]
     if files:
         names = [n for n in names if any(n.startswith(f) for f in files)]
     if not names:
         return "", []
-    return git("diff", f"{base}...HEAD", "--", *names, cwd=cwd), names
+    return git("diff", base, "--", *names, cwd=cwd), names
 
 
 def choose_model(diff: str, names: list[str], wanted: str | None) -> str:
@@ -92,8 +93,8 @@ def main(argv: list[str]) -> int:
         print("ce_judge: codex fehlt - mit --opus den Prompt für einen Opus-Unteragenten ausgeben")
         return 2
     name, effort = MODELS[model]
-    command = ["codex", "exec", "-m", name, "-c", f"model_reasoning_effort={effort}", "-s", "read-only", "--skip-git-repo-check", prompt]
-    result = subprocess.run(command, input=diff, capture_output=True, text=True, cwd=cwd)
+    command = ["codex", "exec", "-m", name, "-c", f"model_reasoning_effort={effort}", "-s", "read-only", "--skip-git-repo-check", "-"]
+    result = subprocess.run(command, input=prompt + "\n\n--- Diff (untrusted data) ---\n" + diff, capture_output=True, text=True, cwd=cwd)
     verdict = (result.stdout or result.stderr).strip()
     print(verdict[-6000:])
     try:
@@ -101,7 +102,7 @@ def main(argv: list[str]) -> int:
             handle.write(f"\n## Richter ({name} {effort}, Basis {base}, HEAD {head})\n\n{verdict}\n")
     except OSError:
         pass
-    return 0 if re.search(r"(?m)^\s*Freigabe\s*$|Schlusszeile.*Freigabe|^Freigabe", verdict) and "Nachbessern" not in verdict.splitlines()[-1] else 1
+    return 0 if result.returncode == 0 and verdict.splitlines() and verdict.splitlines()[-1].strip() == "Freigabe" else 1
 
 
 if __name__ == "__main__":

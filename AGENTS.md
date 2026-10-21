@@ -1,5 +1,7 @@
 # ce-agent-tools – Regeln für KI-Agenten
 
+Zentraler Repo-Einstieg: [Nexogen](https://github.com/ffunkfabian-hash/cubeescape-nexogen), Verzeichnis `repos.json` und Live-Status `./status`. Globale Regeln dort, Werkzeugquelle hier.
+
 Gemeinsames Plugin für Cube Escape, Cubegen und den Roboter-Generator (`README.md`). Antworten, Doku und
 Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
 
@@ -15,3 +17,7 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
   `AGENTS.md` › „Plugins und Hooks“.
 - Committen, taggen und pushen nur auf Wunsch des Nutzers; nie `--force`. Kein GitHub-Workflow ohne Wunsch (globale
   Regel „GitHub Actions sparsam“).
+
+## Erfahrungen
+
+Werkzeug-Fallen und Gründe stehen im [README](README.md), Abschnitt „Erfahrungen“. Schwesterprojekte lesen diese Stelle vor Integrationsänderungen.

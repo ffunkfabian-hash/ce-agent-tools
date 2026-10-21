@@ -2,7 +2,7 @@
 """ce_docs.py [--repo PATH] [--json REPORT] - local Markdown links and anchors, skill front matter, JSON and shell syntax.
 
 0.5.0: the one doc checker of the repos (before: Tools/check_docs.py in Cube Escape, scripts/check_docs.py in Toolgen and the
-generators, check.py in cubeescape-rules). Configuration in .ce-repo.json > docs:
+generators, check.py in cubeescape-nexogen). Configuration in .ce-repo.json > docs:
 
     "docs": {"versions": "docs/versions", "changelog": "CHANGELOG.md",
              "check": ["README.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "docs/**/*.md", ".agents/skills/**/SKILL.md"],

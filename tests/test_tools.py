@@ -121,8 +121,11 @@ class SyncTests(RepoCase):
         self.assertEqual(run_main(ce_sync, "--repo", str(self.root), "--check")[0], 0)
 
     def test_older_copy_is_a_warning_and_missing_dir_an_error(self):
-        source = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: __import__("shutil").rmtree(source))
+        source = Path(tempfile.mkdtemp()) / "tools"
+        source.mkdir()
+        self.addCleanup(lambda: __import__("shutil").rmtree(source.parent))
+        for folder in ce_sync.DATA_DIRS:
+            __import__("shutil").copytree(ce_sync.source_dir().parent / folder, source.parent / folder)
         for name in ce_sync.SYNC_FILES:
             (source / name).write_text((ce_sync.source_dir() / name).read_text() + "# newer\n")
         findings = ce_sync.check(self.root, self.config, source)
@@ -654,6 +657,9 @@ class DocsAndNightlyTests(unittest.TestCase):
         (other / ".ce-repo.json").write_text(json.dumps({"name": "o", "version": {"file": "V", "pattern": "(.*)"},
                                                          "check": {"quick": ["true"], "nightly": [[sys.executable, "-c", "print('nacht')"]]}}))
         (other / "V").write_text("0.1")
+        git(other, "init", "-q", "-b", "main")
+        git(other, "add", "-A")
+        git(other, "commit", "-qm", "init")
         with mock.patch.object(ce_nightly, "LOG_DIR", Path(self.tmp.name) / "logs"), mock.patch.object(ce_nightly, "notify"):
             code, out = run_main(ce_nightly, "--repo", str(self.root), "--repo", str(other))
         self.assertEqual(code, 0, out)

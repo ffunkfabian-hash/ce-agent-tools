@@ -23,7 +23,8 @@ from pathlib import Path
 
 ABBREVIATIONS = {
     "cubeescape": "CE", "cube-escape": "CE", "cubeescape-toolgen": "TG", "toolgen": "TG", "robogen": "RG", "cubegen": "CG", "cubeescape-robogen": "RG", "cubeescape-cubegen": "CG",
-    "cubeescape-design": "DS", "cubeescape-reference": "REF", "cubeescape-rules": "RULES",
+    "cubeescape-design": "DS", "cubeescape-reference": "REF", "cubeescape-rules": "RULES", "cubeescape-nexogen": "NX",
+    "cubeescape-formgen": "FG", "cubeescape-motiongen": "MG",
 }
 CLOUD_MARKERS = ("CLAUDE_CODE_CONTAINER_ID", "CLAUDE_CODE_REMOTE", "CCR_AGENT_PROXY_ENABLED")
 

@@ -116,7 +116,7 @@ def run_mode(root: Path, config: dict, mode: str, targeted: bool = False) -> dic
     results = [run_one(argv, root) for argv in argvs]
     failed = [r for r in results if r["code"] != 0]
     rerun = None
-    if failed and mode == "full" and check.get("rerun_failed"):
+    if failed and len(argvs) == 1 and mode == "full" and check.get("rerun_failed"):
         rerun = run_one(commands_of(check["rerun_failed"])[0], root)
         results.append(rerun)
     green = not failed or (rerun is not None and rerun["code"] == 0)

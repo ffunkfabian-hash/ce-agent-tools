@@ -1,25 +1,50 @@
 #!/bin/sh
 # ce - one entry for the shared tools of a repo (0.5.0): ./ce <command> [args]
-#   check [--full|--nightly]   reserve <Name>   topics   search <query>   judge [--opus]   diff A B   sheet|clip|still …
-#   lock <unity|blender|gpu> -- <cmd>   status   docs   contract <json…>   report   sync [--check]
+#   check [--full|--nightly]   session reserve|topics|mail   codex quota|cloud|judge
+#   evidence clip|sheet|still|diff   search query|index|status   lock <resource>|status   docs   report
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 case "$cmd" in
+  session)
+    sub="${1:-help}"; [ $# -gt 0 ] && shift
+    case "$sub" in
+      reserve) exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
+      topics) exec python3 "$tools/ce_session_name.py" --task Blick --topics "$@";;
+      mail) exec python3 "$tools/ce_await_mail.py" "$@";;
+      *) echo "session reserve <Name> | topics | mail --name <Name>"; exit 2;;
+    esac;;
+  codex)
+    sub="${1:-help}"; [ $# -gt 0 ] && shift
+    case "$sub" in
+      quota|cloud) exec python3 "$tools/ce_codex_${sub}.py" "$@";;
+      judge) exec python3 "$tools/ce_judge.py" "$@";;
+      *) echo "codex quota | cloud | judge"; exit 2;;
+    esac;;
+  evidence)
+    sub="${1:-help}"; [ $# -gt 0 ] && shift
+    case "$sub" in
+      diff) exec python3 "$tools/ce_imagediff.py" "$@";;
+      clip|sheet|still) exec python3 "$tools/ce_media.py" "$sub" "$@";;
+      *) echo "evidence clip | sheet | still | diff"; exit 2;;
+    esac;;
   check)    mode=quick; case "${1:-}" in --full) mode=full; shift;; --nightly) mode=nightly; shift;; esac; exec python3 "$tools/ce_check.py" "$mode" "$@";;
   reserve)  exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
   topics)   exec python3 "$tools/ce_session_name.py" --task Blick --topics;;
-  search)   exec python3 "$tools/ce_search.py" query "$@";;
+  search)
+    case "${1:-}" in query|index|status|serve) exec python3 "$tools/ce_search.py" "$@";; esac
+    exec python3 "$tools/ce_search.py" query "$@";;
   index)    exec python3 "$tools/ce_search.py" index "$@";;
   judge)    exec python3 "$tools/ce_judge.py" "$@";;
   diff)     exec python3 "$tools/ce_imagediff.py" "$@";;
   sheet|clip|still) exec python3 "$tools/ce_media.py" "$cmd" "$@";;
-  lock)     res="$1"; shift; exec python3 "$tools/heavy_lock.py" run --resource "$res" "$@";;
+  lock)     res="${1:-status}"; [ $# -gt 0 ] && shift; [ "$res" != status ] || exec python3 "$tools/heavy_lock.py" status; exec python3 "$tools/heavy_lock.py" run --resource "$res" "$@";;
   status)   python3 "$tools/heavy_lock.py" status; exec python3 "$tools/ce_search.py" status;;
   docs)     exec python3 "$tools/ce_docs.py" "$@";;
   contract) exec python3 "$tools/ce_contract.py" validate "$@";;
   report)   exec python3 "$tools/ce_report.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
   mail)     exec python3 "$tools/ce_await_mail.py" --name "$@";;
+  help|--help|-h) sed -n 2,4p "$0";;
   *)        sed -n 2,4p "$0"; exit 2;;
 esac

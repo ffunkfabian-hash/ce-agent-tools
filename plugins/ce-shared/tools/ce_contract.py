@@ -39,7 +39,7 @@ def schema_for(document: dict, path: Path) -> str:
     """unity_contract*.json with format N -> unity_contract.vN (falls back to the highest schema <= N)."""
     stem = re.sub(r"_(fps|robot|fps_clips|game)$", "", path.stem)
     fmt = document.get("format")
-    candidates = sorted(CONTRACTS.glob(f"{stem}.v*.json"))
+    candidates = sorted(CONTRACTS.glob(f"{stem}.v*.json"), key=lambda p: int(p.stem.rsplit(".v", 1)[1]))
     if not candidates:
         raise FileNotFoundError(f"kein Schema für {stem} unter {CONTRACTS}")
     if isinstance(fmt, int):
@@ -97,6 +97,9 @@ def validate(value, schema: dict, root: dict, where: str = "$") -> list[str]:
             if key in value:
                 errors += validate(value[key], sub, root, f"{where}.{key}")
         extra = schema.get("additionalProperties")
+        if extra is False:
+            for key in value.keys() - schema.get("properties", {}).keys():
+                errors.append(f"{where}.{key}: additional property is not allowed")
         if isinstance(extra, dict):
             for key, item in value.items():
                 if key not in schema.get("properties", {}):

@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import json
+import contextlib
 import plistlib
 import shutil
 import subprocess
@@ -40,7 +42,8 @@ def repos(args) -> list[Path]:
     if env:
         return [Path(p).expanduser().resolve() for p in env.split(":") if p]
     base = Path(os.environ.get("CE_HOME", HOME / "Claude"))
-    return [base / name for name in DEFAULT_REPOS if (base / name).is_dir()]
+    from ce_common import standard_repos
+    return standard_repos(DEFAULT_REPOS, HOME)
 
 
 def has_nightly(root: Path) -> bool:
@@ -61,6 +64,11 @@ def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
     log(f"=== {root.name}: {' '.join(command)}")
     if dry_run:
         return "dry-run", 0.0
+    branch = subprocess.run(["git", "branch", "--show-current"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    if branch != "main" or dirty:
+        log("Nachtlauf benötigt einen sauberen main-Checkout; keine fremden Arbeitsstände ausführen")
+        return "red (checkout)", 0.0
     start = time.monotonic()
     with subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
         for line in proc.stdout:
@@ -95,10 +103,22 @@ def run(args) -> int:
             log(f"=== {root.name}: kein check.nightly in .ce-repo.json - übersprungen")
             results.append((root.name, "übersprungen", 0.0))
             continue
-        state, seconds = run_one(root, log, args.dry_run)
+        lines = []
+        def repo_log(line):
+            lines.append(line)
+            log(line)
+        try:
+            state, seconds = run_one(root, repo_log, args.dry_run)
+        except (OSError, subprocess.SubprocessError) as error:
+            state, seconds = "red (start)", 0.0
+            repo_log(str(error))
         results.append((root.name, state, seconds))
+        if state.startswith("red") and getattr(args, "report_issues", False) and not args.dry_run:
+            report_issue(root, lines, log)
     # the search index follows the repos (ce_search.py): a few seconds, never a reason for a red night
     try:
+        if args.dry_run:
+            raise RuntimeError("dry-run: kein Index-Schreibzugriff")
         import ce_search
         summary = ce_search.build([r for r in targets if r.is_dir()], None, log=log)
         log(f"=== Suchindex: {summary['total_chunks']} Abschnitte, {summary['seconds']} s, Embeddings {'ja' if summary['embeddings'] else 'nein'}")
@@ -109,43 +129,106 @@ def run(args) -> int:
         log(f"{name:24} {state:14} {seconds / 60:5.1f} min")
     handle.close()
     red = [name for name, state, _ in results if state.startswith("red")]
-    notify("CE Nachtlauf", ("rot: " + ", ".join(red)) if red else "alle grün")
+    executed = any(state == "green" or state.startswith("red") for _, state, _ in results)
+    if not args.dry_run:
+        notify("CE Nachtlauf", ("rot: " + ", ".join(red)) if red else "alle grün" if executed else "keine Prüfungen ausgeführt")
     print(f"Bericht: {report}")
-    return 1 if red else 0
+    return 1 if red else 0 if executed or args.dry_run else 2
+
+
+def report_issue(root: Path, lines: list[str], log) -> None:
+    """Opt-in external reporting, one open issue per repo; never turn reporting failure into a green test."""
+    title = "Nachtlauf fehlgeschlagen"
+    try:
+        current = subprocess.run(["gh", "issue", "list", "--state", "open", "--search", title + " in:title", "--json", "title"],
+                                 cwd=root, capture_output=True, text=True, check=True)
+        if any(item["title"] == title for item in json.loads(current.stdout)):
+            log("Nachtlauf-Issue bereits offen")
+            return
+        body = "Automatischer Nachtlauf fehlgeschlagen. Ausschnitt:\n\n```text\n" + "\n".join(lines[-30:])[-4000:] + "\n```"
+        subprocess.run(["gh", "issue", "create", "--title", title, "--label", "eingang", "--body-file", "-"],
+                       input=body, cwd=root, capture_output=True, text=True, check=True)
+        log("Nachtlauf-Issue angelegt")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        log(f"Issue-Meldung fehlgeschlagen: {error}")
+
+
+@contextlib.contextmanager
+def awake():
+    child = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) if shutil.which("caffeinate") else None
+    try:
+        yield
+    finally:
+        if child is not None:
+            child.terminate()
+            child.wait(timeout=5)
 
 
 def plist_path() -> Path:
     return HOME / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 
-def install(hour: int) -> int:
-    plist = {"Label": LABEL, "ProgramArguments": [sys.executable, str(Path(__file__).resolve()), "--all"],
+def install(hour: int, report_issues: bool = False, repo_paths: list[str] | None = None) -> int:
+    legacy = HOME / "Library" / "LaunchAgents" / "com.cubeescape.nightly.plist"
+    if legacy.exists():
+        print(f"Bestehenden CE-Nachtlauf zuerst abgleichen/deaktivieren: {legacy}; keine zweite Planung angelegt")
+        return 2
+    plist = {"Label": LABEL, "ProgramArguments": [sys.executable, str(Path(__file__).resolve()),
+                         *([part for root in repo_paths for part in ["--repo", str(Path(root).expanduser().resolve())]] if repo_paths else ["--all"]),
+                         *(["--report-issues"] if report_issues else [])],
              "StartCalendarInterval": {"Hour": hour, "Minute": 0}, "StandardOutPath": str(LOG_DIR / "launchd.out"),
              "StandardErrorPath": str(LOG_DIR / "launchd.err"), "EnvironmentVariables": {"PATH": os.environ.get("PATH", "")}}
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     plist_path().parent.mkdir(parents=True, exist_ok=True)
     with open(plist_path(), "wb") as handle:
         plistlib.dump(plist, handle)
-    if shutil.which("launchctl"):
-        subprocess.run(["launchctl", "unload", str(plist_path())], check=False, capture_output=True)
-        subprocess.run(["launchctl", "load", str(plist_path())], check=False)
-    print(f"installiert: {plist_path()} ({hour:02d}:00 täglich)")
+    if not shutil.which("launchctl"):
+        print(f"Konfiguration geschrieben, nicht aktiviert (launchctl fehlt): {plist_path()}")
+        return 2
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{LABEL}"
+    loaded = subprocess.run(["launchctl", "print", target], capture_output=True, text=True)
+    if loaded.returncode == 0:
+        stopped = subprocess.run(["launchctl", "bootout", target], capture_output=True, text=True)
+        if stopped.returncode:
+            print(f"Nachtlauf nicht neu geladen: {stopped.stderr.strip()}")
+            return 1
+    started = subprocess.run(["launchctl", "bootstrap", domain, str(plist_path())], capture_output=True, text=True)
+    checked = subprocess.run(["launchctl", "print", target], capture_output=True, text=True)
+    if started.returncode or checked.returncode:
+        print(f"Nachtlauf nicht aktiviert: {(started.stderr or checked.stderr).strip()}")
+        return 1
+    print(f"aktiviert: {plist_path()} ({hour:02d}:00 täglich)")
     return 0
 
 
 def uninstall() -> int:
-    if plist_path().exists():
-        if shutil.which("launchctl"):
-            subprocess.run(["launchctl", "unload", str(plist_path())], check=False, capture_output=True)
-        plist_path().unlink()
-        print("entfernt")
-    else:
-        print("nicht installiert")
+    if not shutil.which("launchctl"):
+        print("Nicht entfernt: launchctl fehlt; Aktivierung nicht prüfbar")
+        return 2
+    target = f"gui/{os.getuid()}/{LABEL}"
+    loaded = subprocess.run(["launchctl", "print", target], capture_output=True, text=True)
+    if loaded.returncode == 0:
+        stopped = subprocess.run(["launchctl", "bootout", target], capture_output=True, text=True)
+        checked = subprocess.run(["launchctl", "print", target], capture_output=True, text=True)
+        if stopped.returncode or checked.returncode == 0:
+            print(f"Nicht entfernt: Nachtlauf konnte nicht entladen werden: {stopped.stderr.strip()}")
+            return 1
+    plist_path().unlink(missing_ok=True)
+    print("entfernt")
     return 0
 
 
 def status() -> int:
-    print("installiert" if plist_path().exists() else "nicht installiert")
+    checked = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], capture_output=True, text=True) if shutil.which("launchctl") else None
+    if checked is not None and checked.returncode == 0:
+        print("aktiviert" + (" (plist fehlt)" if not plist_path().exists() else ""))
+    elif not plist_path().exists():
+        print("nicht installiert")
+    elif checked is None:
+        print("konfiguriert, Aktivierung nicht prüfbar (launchctl fehlt)")
+    else:
+        print("konfiguriert, nicht aktiviert")
     logs = sorted(LOG_DIR.glob("ce_nightly-*.log"))
     if logs:
         print(f"letzter Bericht: {logs[-1]}")
@@ -159,15 +242,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--all", action="store_true", help="all repos (default when no --repo is given)")
     parser.add_argument("--repo", action="append", help="repository path (repeatable)")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--report-issues", action="store_true", help="failed runs create an eingang issue (opt-in)")
     parser.add_argument("--hour", type=int, default=3)
     args = parser.parse_args(argv)
+    if not 0 <= args.hour <= 23:
+        parser.error("--hour muss zwischen 0 und 23 liegen")
     if args.command == "install":
-        return install(args.hour)
+        return install(args.hour, args.report_issues, args.repo)
     if args.command == "uninstall":
         return uninstall()
     if args.command == "status":
         return status()
-    return run(args)
+    with awake() if not args.dry_run else contextlib.nullcontext():
+        return run(args)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ce://contracts/unity_contract_arms.v5",
+  "title": "Toolgen shared ego arm package (format 5)",
+  "description": "Structural validation of the existing Toolgen 0.19 export imported by Cube Escape 0.106; no producer format change. Semantic rig/clip validation remains in producer and consumer tests.",
+  "type": "object",
+  "required": [
+    "format",
+    "kind",
+    "generator",
+    "version",
+    "asset",
+    "model",
+    "rig",
+    "root",
+    "nodes",
+    "chains",
+    "fingers",
+    "materials",
+    "renderers",
+    "files"
+  ],
+  "properties": {
+    "format": {
+      "type": "integer",
+      "const": 5
+    },
+    "kind": {
+      "const": "ego_arms"
+    },
+    "generator": {
+      "const": "toolgen"
+    },
+    "rig": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "hash"
+      ],
+      "properties": {
+        "id": {
+          "const": "ego_arms"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1
+    },
+    "chains": {
+      "type": "object",
+      "required": [
+        "R",
+        "L"
+      ]
+    },
+    "fingers": {
+      "type": "object",
+      "required": [
+        "R",
+        "L"
+      ]
+    },
+    "renderers": {
+      "type": "array",
+      "minItems": 1
+    },
+    "materials": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "files": {
+      "type": "object",
+      "required": [
+        "fbx",
+        "glb"
+      ]
+    }
+  }
+}

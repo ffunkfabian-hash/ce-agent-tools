@@ -1,0 +1,27 @@
+{
+  "name": "ce-agent-tools",
+  "version": {
+    "file": "plugins/ce-shared/.claude-plugin/plugin.json",
+    "pattern": "\"version\"\\s*:\\s*\"([^\"]+)\""
+  },
+  "check": {
+    "quick": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-q"
+    ]
+  },
+  "docs": {
+    "changelog": "CHANGELOG.md",
+    "lessons": "README.md#erfahrungen"
+  },
+  "heavy_lock": false,
+  "coordination": {
+    "repo": "ffunkfabian-hash/cubeescape-nexogen",
+    "registry": "https://github.com/ffunkfabian-hash/cubeescape-nexogen/blob/main/repos.json"
+  }
+}

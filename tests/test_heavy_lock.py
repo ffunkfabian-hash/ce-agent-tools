@@ -332,16 +332,42 @@ class Resources(LockCase):
         self.assertEqual(proc.wait(timeout=20), 0)
         self.assertIn("heavy lock (unity): waiting", proc.stdout.read())
 
-    def test_shared_callers_do_not_wait_for_resources(self):
-        with heavy.held("bake", "/b", resource="blender"):
-            with mock.patch.dict(os.environ, CE_HEAVY_HELD=""):  # another session
-                with heavy.held("old caller", "/c", out=self.lines.append) as old:
-                    self.assertTrue(old.held)
-        self.assertEqual(self.lines, [])
+    def test_legacy_and_resource_callers_exclude_each_other(self):
+        for held_resource, next_resource in [("blender", None), (None, "unity"), ("unity", "gpu"), ("gpu", "blender")]:
+            with self.subTest(held=held_resource, waiting=next_resource):
+                with heavy.held("first", resource=held_resource):
+                    env = dict(os.environ, CE_HEAVY_HELD="")
+                    args = [sys.executable, str(SCRIPT), "run"]
+                    if next_resource:
+                        args += ["--resource", next_resource]
+                    proc = subprocess.Popen(args + ["--", sys.executable, "-c", "pass"], env=env,
+                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    try:
+                        time.sleep(.2)
+                        self.assertIsNone(proc.poll(), "migration/GPU barrier must block")
+                    except BaseException:
+                        proc.terminate(); proc.wait(timeout=5)
+                        raise
+                self.assertEqual(proc.wait(timeout=10), 0)
+                output = proc.stdout.read()
+                self.assertIn("first", output, "waiting on the gate must name the actual holder")
+                proc.stdout.close()
+
+    def test_legacy_parent_covers_resource_children(self):
+        with heavy.held("legacy"):
+            self.assertIsNotNone(heavy.skipped(resource="blender"))
+
+    def test_nested_resources_remember_both_and_reject_gpu_upgrade(self):
+        with heavy.held("unity", resource="unity"):
+            with heavy.held("blender", resource="blender"):
+                self.assertIsNotNone(heavy.skipped(resource="unity"))
+            with self.assertRaisesRegex(ValueError, "gpu lock before"):
+                heavy.HeavyLock("upgrade", resource="gpu").acquire()
 
     def test_child_on_another_resource_queues_for_it(self):
         with heavy.held("regression", "/a", resource="unity"):
             self.assertEqual(os.environ["CE_HEAVY_HELD"], "unity")
             self.assertIsNone(heavy.skipped(resource="blender"))  # queues for blender
             self.assertIsNotNone(heavy.skipped(resource="unity"))  # same resource: inside the parent
-            self.assertIsNotNone(heavy.skipped())  # shared-file step inside a holder: old behaviour
+            with self.assertRaisesRegex(ValueError, "legacy shared lock"):
+                heavy.skipped()  # a global step cannot upgrade a resource lock

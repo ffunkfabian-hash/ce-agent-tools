@@ -9,8 +9,8 @@ one lock for everything made every session wait behind every other; 20 min to 2 
     blender  Blender standard/full tiers, surface bakes, check_output.sh, golden renders
     gpu      Metal renders and anything else that needs the GPU for itself
 
-Two resources may run at once (a Unity regression next to a Blender bake); two steps on the same resource queue.
-Recordings, screenshots, contact sheets, targeted tests and quick tiers are not heavy and take no lock.
+Unity and Blender may run at once after memory/load validation; GPU is exclusive against both.
+Contact sheets and docs are light; render/bake load still needs coordination regardless of the tier name.
 
     python3 heavy_lock.py run --resource unity|blender|gpu [--what LABEL] [--checkout PATH] -- <command ...>
     python3 heavy_lock.py status                            who holds which resource right now
@@ -18,7 +18,7 @@ Recordings, screenshots, contact sheets, targeted tests and quick tiers are not 
 Contract (this file is the one copy; the repositories call it through CE_TOOLS and keep only thin wrappers):
 - an exclusive flock(2) on ~/Library/Caches/CubeEscape/heavy-<resource>.lock, held by the waiting process for the
   whole heavy step; the file is never deleted. Without a resource (old callers, CE_HEAVY_RESOURCE unset) the old
-  shared file heavy-run.lock is used: such steps still queue behind each other, but not behind resource-aware ones;
+  shared file heavy-run.lock is used: such steps still queue behind each other, and behind resource-aware ones through a shared/exclusive migration barrier;
 - the holder writes one JSON line {"pid", "what", "checkout", "since"} into it; a waiting run prints it (and again every
   five minutes); pause_sessions.py spares that pid and its children;
 - the lock's file descriptor is never inherited (O_CLOEXEC, close_fds): a background child (caffeinate, a Blender
@@ -84,14 +84,16 @@ def lock_path(resource: str | None = None) -> str:
 
 def skipped(env=None, resource: str | None = None) -> str | None:
     """Why this process does not queue (None: it does). CE_HEAVY_HELD names what the parent holds ("1" = the shared
-    file, else a resource): a step on that same resource inside it does not wait; a shared-file step inside any holder
-    does not wait either (old behaviour); a step on another resource queues for that resource."""
+    file or the exclusive GPU gate, else a resource list): the same resource does not wait. A legacy global
+    step cannot upgrade named resources; acquire the global/GPU barrier first."""
     env = os.environ if env is None else env
     if env.get("CE_HEAVY_LOCK", "1").strip() == "0":
         return "CE_HEAVY_LOCK=0"
     held = env.get("CE_HEAVY_HELD", "")
     name = resource_name(resource)
-    if held and (name is None or held == name):
+    if held and name is None and not ({"1", "gpu"} & set(held.split(","))):
+        raise ValueError("legacy shared lock must be acquired before named resources")
+    if held and (name is None or name in held.split(",") or "1" in held.split(",") or "gpu" in held.split(",")):
         return "the parent holds the lock (CE_HEAVY_HELD=%s)" % held
     return None
 
@@ -163,6 +165,7 @@ class HeavyLock:
         self.resource = resource_name(resource)
         self.out = out or (lambda line: print(line, flush=True))
         self.poll, self.report = poll, report
+        self._gate_fd: int | None = None
         self.fd: int | None = None
         self.skipped: str | None = None
         self.waited = 0.0
@@ -184,22 +187,32 @@ class HeavyLock:
             self.skipped = self.skipped or "no flock on this system"
         if self.skipped:
             return self
+        if self.resource == "gpu" and os.environ.get("CE_HEAVY_HELD"):
+            raise ValueError("acquire exclusive gpu lock before other resources")
         path = lock_path(self.resource)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)  # never inherited (O_CLOEXEC, PEP 446)
         start = last = time.monotonic()
         announced = False
+        gate = None
         try:
-            while True:
+            if self.resource:
+                gate = os.open(os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
+            locks = ([(gate, fcntl.LOCK_EX if self.resource == "gpu" else fcntl.LOCK_SH)] if gate is not None else []) + [(fd, fcntl.LOCK_EX)]
+            for descriptor, mode in locks:
+              while True:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    who = describe(os.pread(fd, 4096, 0).decode("utf-8", "replace"))
+                    who = describe(os.pread(descriptor, 4096, 0).decode("utf-8", "replace"))
+                    if who == "unknown":
+                        who = "; ".join(filter(None, (holder(r) for r in RESOURCES))) or "shared/resource barrier"
+                    waiting_path = (os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT) if descriptor == gate else path
                     now = time.monotonic()
                     if not announced:
                         self.out("heavy lock (%s): waiting for %s - held by %s (CE_HEAVY_LOCK=0 skips the queue)"
-                                 % (self.resource or "shared", path, who))
+                                 % (self.resource or "shared", waiting_path, who))
                         announced = True
                     elif now - last >= self.report:
                         self.out("heavy lock: still waiting after %.0f min for %s" % ((now - start) / 60, who))
@@ -207,7 +220,10 @@ class HeavyLock:
                     time.sleep(self.poll)
         except BaseException:
             os.close(fd)
+            if gate is not None:
+                os.close(gate)
             raise
+        self._gate_fd = gate
         self.waited = time.monotonic() - start
         if announced:
             self.out("heavy lock: free after %.0f s" % self.waited)
@@ -219,7 +235,7 @@ class HeavyLock:
         os.pwrite(fd, (json.dumps(self.info) + "\n").encode(), 0)
         self.fd = fd
         self._previous_held = os.environ.get("CE_HEAVY_HELD")
-        os.environ["CE_HEAVY_HELD"] = self.resource or "1"
+        os.environ["CE_HEAVY_HELD"] = ",".join(filter(None, [self._previous_held, ("1" if self.resource == "gpu" else self.resource or "1")]))
         return self
 
     def release(self) -> None:
@@ -234,6 +250,9 @@ class HeavyLock:
         finally:
             os.close(self.fd)
             self.fd = None
+            if self._gate_fd is not None:
+                os.close(self._gate_fd)
+                self._gate_fd = None
 
     def state(self) -> str:
         if self.skipped:

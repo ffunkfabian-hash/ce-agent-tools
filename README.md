@@ -68,7 +68,7 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_docs.py [--json R]` | Markdown-Links/-Anker, SKILL-Front-Matter, JSON, Shell-Syntax nach `.ce-repo.json › docs` – der eine Doku-Prüfer |
 | `ce_nightly.py [--all\|--repo P] [install\|status]` | ein Nachtlauf für alle Repos (`check.nightly` je Repo), Bericht, LaunchAgent |
 | `ce_session_name.py [--name N] [--reserve] [--topics]` | Sitzungsname und Branch; `--reserve` pusht den Branch (= Reservierung) |
-| `ce_await_mail.py --name N [--issue …]` | wartet auf eine Nachricht an diese Sitzung im Postfach-Issue (cubeescape-rules#16) |
+| `ce_await_mail.py --name N [--issue …]` | wartet auf eine Nachricht an diese Sitzung im Postfach-Issue (cubeescape-nexogen#16) |
 | `ce_codex_quota.py`, `ce_codex_cloud.py` | Codex-Kontingent lesen, Codex-Cloud-Aufträge |
 | `heavy_lock.py run --resource unity\|blender\|gpu [--what X] [--checkout P] -- <Befehl>` / `status` | eine Sperre **je Ressource** für schwere Läufe (`~/Library/Caches/CubeEscape/heavy-<resource>.lock`; ohne `--resource` die alte gemeinsame Datei `heavy-run.lock`), hält bis zum letzten Enkelprozess; Unity-Regression und Blender-Bake laufen nebeneinander, zwei Läufe derselben Ressource nacheinander. Aufnahmen, Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen sind nicht schwer und nehmen keine Sperre. Als Modul: `held(..., resource=)`, `HeavyLock`, `holder_pids()`, `Groups`, `run_group`/`run_forwarding` |
 | `ce_check.py quick\|full\|nightly [--verbose] [--no-targeted]` | Befehle aus `.ce-repo.json › check`; Ergebnis zuerst; `full` wiederholt nach Fehlern einmal `check.rerun_failed`; `nightly` = gebündelte Bildstufen einmal täglich auf `main` (0.5.0) |
@@ -110,3 +110,21 @@ Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. V
 die Übersichts-Sitzung des Nutzers oder eine Sitzung mit ausdrücklichem Auftrag dafür; Repo-Sitzungen melden
 Änderungswünsche, statt selbst zu ändern. Nach jeder Änderung im Plugin: `python3 plugins/ce-shared/tools/ce_sync.py --all`
 und `--check`, damit die eingebetteten Kopien der Repos nachziehen.
+
+## Fortsetzung „Crosscurrent“ (21.10.2026)
+
+Der gemeinsame CLI-Einstieg zeigt acht Gruppen: `check`, `session`, `codex`, `evidence`, `search`, `lock`, `docs`, `report`. Alte direkte Unterbefehle funktionieren weiter. Beispiel: `./ce search query "rig"`, `./ce evidence diff A.png B.png`, `./ce report --since 7d`. Der Bericht unterstützt Claude-Transcripts; er beweist aus gleichen Befehlen keine identischen Eingaben.
+
+`ce_nightly --report-issues` meldet rote Läufe als `eingang`-Issue (keine Duplikate bei offenem Issue). Der Lauf braucht saubere main-Checkouts. Der Trockenlauf führt keine Tests aus, ändert keinen Index und sendet keine Meldungen. Installieren erst aus dauerhaftem Stand und einen vorhandenen Scheduler vorher abgleichen. `numpy`, `Pillow`, ImageMagick und FFmpeg werden nur für Bild-/Medienprüfungen gebraucht, nicht vom Lock.
+
+Sperrvertrag im gemischten Rollout: alte Gesamtsperre exklusiv gegen alle benannten Sperren; Unity/Blender untereinander teilbar, `gpu` exklusiv gegen beide. Ein alter Gesamtschritt darf nicht innerhalb einer benannten Sperre hochstufen: außen die Gesamtsperre oder `gpu` nehmen. Das bewahrt gemischte Robogen-/Cubegen-Abnahmen. Parallelleistung ist damit möglich, aber kein gemessener Geschwindigkeitsnachweis.
+
+`docs.agent_sections` benennt bei Bedarf die bestehende Repo-Gliederung statt der Standardüberschriften; Formgens getrennte Agentenregeln behalten ihre Bullet-Struktur (begründetes leeres Array). Boolesche Richtlinien wie `limits.no_media` sind keine Zeilengrenzen.
+
+Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash/cubeescape-nexogen). Die gemeinsamen Werkzeuge lesen dessen `repos.json`, soweit lokal vorhanden; ältere Installationen behalten ihre Ausweichpfade. `ce-agent-tools` bleibt die Quelle für ausführbare Werkzeuge, Nexogen für Regeln und Verweise.
+
+## Erfahrungen
+
+- Alte Gesamtsperren und neue Ressourcen-Sperren teilen eine Barriere; die Umstellung darf laufende ältere Clients nicht überholen.
+- Eine geschriebene launchd-Datei ist noch keine Aktivierung: `bootstrap` und anschließendes `print` prüfen.
+- GitHub-Umbenennungen erzeugen Weiterleitungen, keine zweiten Repos; IDs und lokale Arbeitsstände getrennt prüfen.

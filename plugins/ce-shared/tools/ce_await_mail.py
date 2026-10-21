@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-REPO = "ffunkfabian-hash/cubeescape-rules"
+REPO = "ffunkfabian-hash/cubeescape-nexogen"
 MAILBOX = 16  # 1.15: the one Postfach issue (before: Briefkasten PR 1 = Sightline, one PR per recipient)
 QUOTED = re.compile(r"(\d+\.\d+(?:\.\d+)?)\s*[„“\"']([^“”\"']+)[“”\"']")
 RECIPIENT = re.compile(r"[\s*]*(?:[A-Za-zÄÖÜäöü-]+\s+)?" + QUOTED.pattern)
