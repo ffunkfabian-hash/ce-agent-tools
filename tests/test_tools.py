@@ -629,6 +629,8 @@ class DocsAndNightlyTests(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        index_env = mock.patch.dict(os.environ, {"CE_SEARCH_INDEX": str(Path(self.tmp.name) / "index.sqlite"), "CE_SEARCH_EMBED": "0"})
+        index_env.start(); self.addCleanup(index_env.stop)
         self.root = Path(self.tmp.name) / "repo"
         (self.root / "docs").mkdir(parents=True)
         (self.root / ".ce-repo.json").write_text(json.dumps({
