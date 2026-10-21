@@ -94,7 +94,7 @@ def session_title(file: Path) -> str | None:
 
 
 def process_cwds() -> dict[str, list[str]]:
-    """{working directory: [command names]} of running claude/codex processes (empty when lsof is unavailable)."""
+    """{working directory: [command names]} of running claude/codex/antigravity processes (empty when lsof is unavailable)."""
     try:
         done = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fcn"], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
@@ -104,7 +104,7 @@ def process_cwds() -> dict[str, list[str]]:
     for line in done.stdout.splitlines():
         if line.startswith("c"):
             command = line[1:]
-        elif line.startswith("n") and re.search(r"claude|codex", command, re.I):
+        elif line.startswith("n") and re.search(r"claude|codex|antigrav|gemini|language_server", command, re.I):
             found.setdefault(line[1:], []).append(command)
     return found
 

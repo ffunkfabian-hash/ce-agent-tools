@@ -24,10 +24,31 @@ from pathlib import Path
 BIG_DOC = 60_000
 
 
+def transcript_files(root: Path | None = None) -> list[Path]:
+    if root is not None:
+        if not root.is_dir():
+            return []
+        return sorted([*root.glob("*/*.jsonl"), *root.glob("*/.system_generated/logs/transcript.jsonl")], key=lambda p: p.stat().st_mtime)
+    claude = Path.home() / ".claude" / "projects"
+    agy = Path.home() / ".gemini" / "antigravity" / "brain"
+    files = [*(claude.glob("*/*.jsonl") if claude.is_dir() else []),
+             *(agy.glob("*/.system_generated/logs/transcript.jsonl") if agy.is_dir() else [])]
+    return sorted(files, key=lambda p: p.stat().st_mtime)
+
+
 def newest_transcript() -> Path | None:
-    root = Path.home() / ".claude" / "projects"
-    files = sorted(root.glob("*/*.jsonl"), key=lambda p: p.stat().st_mtime) if root.is_dir() else []
+    files = transcript_files()
     return files[-1] if files else None
+
+
+def _unquote(val) -> str:
+    text = str(val or "")
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        try:
+            return str(json.loads(text))
+        except ValueError:
+            return text[1:-1]
+    return text
 
 
 def events(path: Path, since=None):
@@ -36,7 +57,7 @@ def events(path: Path, since=None):
             try:
                 record = json.loads(line)
                 if since is not None:
-                    stamp = record.get("timestamp")
+                    stamp = record.get("timestamp") or record.get("created_at")
                     if not isinstance(stamp, str):
                         continue
                     try:
@@ -53,14 +74,32 @@ def events(path: Path, since=None):
 def tool_uses(record: dict):
     message = record.get("message") or {}
     content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, list):
-        return
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            yield block.get("name") or "", block.get("input") or {}
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                yield block.get("name") or "", block.get("input") or {}
+    for call in record.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        raw_name = call.get("name") or ""
+        args = {k: _unquote(v) for k, v in (call.get("args") or {}).items()} if isinstance(call.get("args"), dict) else {}
+        if raw_name == "run_command":
+            yield "Bash", {"command": args.get("CommandLine", "")}
+        elif raw_name == "read_file":
+            yield "Read", {"file_path": args.get("Path", "")}
+        elif raw_name in ("edit_file", "write_file"):
+            yield ("Edit" if raw_name == "edit_file" else "Write"), {"file_path": args.get("Path", "")}
+        elif raw_name == "invoke_subagent":
+            yield "Agent", {"model": args.get("Model", "inherit")}
+        elif raw_name == "call_mcp_tool" and "search" in args.get("ToolName", ""):
+            yield "mcp__ce_search", args
+        else:
+            yield raw_name, args
 
 
 def tool_results(record: dict):
+    if record.get("type") == "GENERIC" and isinstance(record.get("content"), str):
+        yield record["content"]
     message = record.get("message") or {}
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
@@ -81,7 +120,7 @@ def analyse(path: Path, since=None) -> dict:
     waited = 0.0
     last_command = ""
     for record in events(path, since):
-        if record.get("type") in ("user", "assistant"):
+        if record.get("type") in ("user", "assistant", "USER_INPUT", "PLANNER_RESPONSE"):
             messages += 1
         for name, data in tool_uses(record):
             tools[name] += 1
@@ -154,8 +193,7 @@ def main(argv: list[str]) -> int:
         if not match:
             parser.error("--since expects e.g. 7d or 24h")
         cutoff = time.time() - int(match[1]) * (86400 if match[2] == "d" else 3600)
-        root = args.root or Path.home() / ".claude" / "projects"
-        rows = [analyse(path, cutoff) for path in sorted(root.glob("*/*.jsonl"))]
+        rows = [analyse(path, cutoff) for path in transcript_files(args.root)]
         rows = [row for row in rows if row["messages"] or row["tools"]]
         if args.json:
             print(json.dumps(rows, ensure_ascii=False))

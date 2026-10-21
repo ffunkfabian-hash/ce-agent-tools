@@ -21,6 +21,8 @@ class Names(unittest.TestCase):
         self.assertEqual(sn.detect_place("Linux", {"CLAUDE_CODE_CONTAINER_ID": "x"}, "auto"), "Cloud")
         self.assertEqual(sn.detect_place("Darwin", {"CODEX_HOME": "x"}, "auto"), "Codex-Mac")
         self.assertEqual(sn.detect_place("Linux", {}, "codex"), "Codex-Cloud")
+        self.assertEqual(sn.detect_place("Darwin", {"ANTIGRAVITY_AGENT": "1"}, "auto"), "Gemini-Mac")
+        self.assertEqual(sn.branch_name("gemini", "NX", "1.20", "Crosslink"), "gemini/nx-1.20-crosslink")
 
     def test_next_version_takes_the_highest_branch(self):
         branches = ["main", "claude/ce-0.96-pinpoint", "release/0.94.0", "codex/ce-0.95-tracefall", "claude/cube-escape-0-87-gunsmith"]
