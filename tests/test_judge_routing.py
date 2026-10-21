@@ -49,6 +49,8 @@ class JudgeRoutingTests(unittest.TestCase):
             "plugins/ce-shared/tools/heavy_lock.py",
             "plugins/ce-shared/tools/ce_judge.py",
             "plugins/ce-shared/tools/ce_check.py",
+            "plugins/ce-shared/tools/ce_api.py",
+            "plugins/ce-shared/tools/ce_api_budget.py",
             "plugins/ce-shared/tools/ce_sync.py",
             "plugins/ce-shared/hooks/guard.py",
             "Tools/testplan.py",

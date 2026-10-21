@@ -60,6 +60,7 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 |---|---|
 | `ce` | ein Einstieg für alles unten (`./ce check`, `./ce reserve <Name>`, `./ce search <q>`, `./ce judge`, `./ce diff A B`, `./ce clip <frames> --out x.mp4`, `./ce lock unity -- <cmd>`) |
 | `ce_report.py [transcript]` | misst eine Sitzung aus dem Transcript (Modelle, Prüfläufe, Suchen, Ausgaben, Wartezeit); Claude-Usage zusätzlich dedupliziert als frischen Input, Cache-Schreiben/-Lesen, Output und absolute Inputmenge mit Messabdeckung; der Stop-Hook hängt die Zeile an `report.md` |
+| `ce_api.py login\|status\|budget\|ask` / `./ce api …` | explizite Claude-Textanfrage mit isoliertem Browser-Login, lokalem Monats-/Anfragelimit, Vorabzählung und 5-Minuten-Präfixcache; Richtlinie in Nexogens `.ce-api.json`, keine Zugangsdaten im Repo ([Ablauf](https://github.com/ffunkfabian-hash/cubeescape-nexogen#lokale-claude-api)) |
 | `ce_imagediff.py A B [--out D] [--kind ui\|world\|bake]` | SSIM/PSNR/Pixelanteil/Bereich und Diffbild – Zahlen für den Richter statt zwei Bilder |
 | `ce_media.py sheet\|clip\|still` | Kontaktbogen, MP4 (480p, ≤ 8 s), Standbild (≤ 1280 px) – die Belege der Regel › Belege |
 | `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße und Kern-/Vertrags-/Infrastrukturrisiko, Grund im CLI; `--opus` erzeugt den Prompt für einen Opus-Unteragenten |

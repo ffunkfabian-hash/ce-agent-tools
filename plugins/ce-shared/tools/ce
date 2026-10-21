@@ -1,7 +1,7 @@
 #!/bin/sh
 # ce - one entry for the shared tools of a repo (0.5.0): ./ce <command> [args]
 #   check [--full|--nightly]   session reserve|topics|mail   codex quota|cloud|judge
-#   evidence clip|sheet|still|diff   search query|index|status   lock <resource>|status   docs   report
+#   evidence clip|sheet|still|diff   search query|index|status   lock <resource>|status   docs   report   api login|status|budget|ask
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
@@ -49,6 +49,7 @@ case "$cmd" in
       *) exec python3 "$tools/ce_contract.py" validate "$@";;
     esac;;
   report)   exec python3 "$tools/ce_report.py" "$@";;
+  api)      exec python3 "$tools/ce_api.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
   mail)     exec python3 "$tools/ce_await_mail.py" --name "$@";;
   help|--help|-h) sed -n 2,4p "$0";;

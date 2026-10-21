@@ -29,7 +29,7 @@ import ce_common  # noqa: E402
 SYNC_FILES = ["heavy_lock.py", "ce_common.py", "ce_check.py", "ce_lint.py", "ce_release.py", "ce_worktrees.py",
               "ce_sync.py", "ce_docs.py", "ce_nightly.py", "ce_session_name.py", "ce_await_mail.py",
               "ce_codex_quota.py", "ce_codex_cloud.py", "ce_contract.py", "ce_interfaces.py", "ce_search.py", "ce_report.py", "ce_imagediff.py", "ce_media.py",
-              "ce_judge.py", "ce"]
+              "ce_judge.py", "ce_api.py", "ce_api_budget.py", "ce"]
 DATA_DIRS = ["contracts", "agents"]  # copied verbatim next to the tools (plugins/ce-shared/contracts -> <tools_dir>/contracts)
 DEFAULT_TOOLS_DIR = "scripts/ce_tools"
 DEFAULT_PLUGIN_TOOLS = Path.home() / ".claude" / "plugins" / "marketplaces" / "ce-agent-tools" / "plugins" / "ce-shared" / "tools"
