@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 „Clearpath“ – 2026-10-21
+
+- Richter wählt nach Risiko und Diffgröße: Spielstand/Einstellungen, Kernpfade aus der CE-Testkarte und Prüf-/Paket-/Sperrinfrastruktur gehen auch bei kleinen Diffs an Sol; Routine bleibt Luna. CLI nennt den Grund und macht manuelle Abweichungen sichtbar.
+- Sitzungsbericht trennt frischen Input, Cache-Schreiben/-Lesen und Output; Streaming-Zähler werden pro Nachrichten-ID dedupliziert. Absolute Inputmenge, Mittel/Maximum und Messabdeckung verhindern eine irreführende Bewertung allein nach Trefferquote. Fehlende Usage bleibt unbekannt.
+- [Version](docs/versions/0.7.md); keine bezahlten API-Aufrufe und keine Änderungen an Lockstep.
+
 ## 0.6.0 „Pactguard“ – 2026-10-21
 
 - Gemini Antigravity in gemeinsamen Werkzeugen sichtbar gemacht: `ce_session_name.py` erkennt `ANTIGRAVITY_*` (`Gemini-Mac`, Branch-Präfix `gemini/`), `ce_worktrees.py` schützt aktive Antigravity-Arbeitsbäume (`language_server`/`antigravity`), und `ce_report.py` wertet neben Claude-Transcripts auch Antigravity-Transcripts (`~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl`) aus.

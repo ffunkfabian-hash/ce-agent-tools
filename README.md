@@ -59,10 +59,10 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | Aufruf | Wirkung |
 |---|---|
 | `ce` | ein Einstieg für alles unten (`./ce check`, `./ce reserve <Name>`, `./ce search <q>`, `./ce judge`, `./ce diff A B`, `./ce clip <frames> --out x.mp4`, `./ce lock unity -- <cmd>`) |
-| `ce_report.py [transcript]` | misst eine Sitzung aus dem Transcript (Modelle, Prüfläufe, Suchen, Ausgaben, Wartezeit); der Stop-Hook hängt die Zeile an `report.md` |
+| `ce_report.py [transcript]` | misst eine Sitzung aus dem Transcript (Modelle, Prüfläufe, Suchen, Ausgaben, Wartezeit); Claude-Usage zusätzlich dedupliziert als frischen Input, Cache-Schreiben/-Lesen, Output und absolute Inputmenge mit Messabdeckung; der Stop-Hook hängt die Zeile an `report.md` |
 | `ce_imagediff.py A B [--out D] [--kind ui\|world\|bake]` | SSIM/PSNR/Pixelanteil/Bereich und Diffbild – Zahlen für den Richter statt zwei Bilder |
 | `ce_media.py sheet\|clip\|still` | Kontaktbogen, MP4 (480p, ≤ 8 s), Standbild (≤ 1280 px) – die Belege der Regel › Belege |
-| `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße; `--opus` erzeugt den Prompt für einen Opus-Unteragenten |
+| `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße und Kern-/Vertrags-/Infrastrukturrisiko, Grund im CLI; `--opus` erzeugt den Prompt für einen Opus-Unteragenten |
 | `ce_search.py index\|query\|serve\|status` | lokale Suche (FTS5, optional Embeddings) über Docs/Lehren/Skills/Berichte/Code-Kommentare aller Repos; MCP-Server `ce-search` |
 | `ce_contract.py validate <json…> \| list` | Verträge zwischen Repos gegen `contracts/<name>.v<format>.json` prüfen (Generator beim Export, Abnehmer beim Import) |
 | `ce_interfaces.py` / `./ce contract audit` | Lesender Abgleich über native Formgen-/Cubegen-/Motiongen-Prüfungen, optional Toolgen-Provenance und Robogen-Abnehmerprofil; explizite Repo-Pfade und Cubegen-Vertragsversion |
