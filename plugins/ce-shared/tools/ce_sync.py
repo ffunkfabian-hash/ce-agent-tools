@@ -28,7 +28,8 @@ import ce_common  # noqa: E402
 
 SYNC_FILES = ["heavy_lock.py", "ce_common.py", "ce_check.py", "ce_lint.py", "ce_release.py", "ce_worktrees.py",
               "ce_sync.py", "ce_docs.py", "ce_nightly.py", "ce_session_name.py", "ce_await_mail.py",
-              "ce_codex_quota.py", "ce_codex_cloud.py"]
+              "ce_codex_quota.py", "ce_codex_cloud.py", "ce_contract.py"]
+DATA_DIRS = ["contracts"]  # copied verbatim next to the tools (plugins/ce-shared/contracts -> <tools_dir>/contracts)
 DEFAULT_TOOLS_DIR = "scripts/ce_tools"
 DEFAULT_PLUGIN_TOOLS = Path.home() / ".claude" / "plugins" / "marketplaces" / "ce-agent-tools" / "plugins" / "ce-shared" / "tools"
 HEADER = "# GENERATED from ce-agent-tools {version} - do not edit"
@@ -98,6 +99,17 @@ def sync(root: Path, config: dict, source: Path) -> list[str]:
             path.write_text(new, encoding="utf-8")
             path.chmod(0o755)
             changed.append(name)
+    for folder in DATA_DIRS:
+        origin = source.parent / folder
+        if not origin.is_dir():
+            continue
+        for item in sorted(origin.glob("*.json")):
+            path = target / folder / item.name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            text = item.read_text(encoding="utf-8")
+            if not path.is_file() or path.read_text(encoding="utf-8") != text:
+                path.write_text(text, encoding="utf-8")
+                changed.append(f"{folder}/{item.name}")
     return changed
 
 

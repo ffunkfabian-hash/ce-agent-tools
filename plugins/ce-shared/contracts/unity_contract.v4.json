@@ -1,0 +1,551 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ce://contracts/unity_contract.v4",
+  "title": "Toolgen -> Cube Escape unity_contract (format 4 and 5)",
+  "description": "What Cube Escape's importer (ToolgenAssets.cs, ToolgenMaskImport.cs, Uv1TangentImport.cs) reads and what every Toolgen export writes. Format 5 (Toolgen 0.19, shared Ego arm rig) keeps this shape; the Ego package adds 'viewmodel' and 'ego_clips'. Additive only: a new format may add keys, never remove or retype one listed here.",
+  "type": "object",
+  "required": [
+    "format",
+    "generator",
+    "version",
+    "tool",
+    "variant",
+    "asset",
+    "model",
+    "units",
+    "scale",
+    "axes",
+    "root",
+    "nodes",
+    "renderers",
+    "materials",
+    "colliders",
+    "files"
+  ],
+  "properties": {
+    "format": {
+      "type": "integer",
+      "enum": [
+        4,
+        5
+      ]
+    },
+    "generator": {
+      "type": "string",
+      "const": "toolgen"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+( .*)?$"
+    },
+    "tool": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "variant": {
+      "type": "string",
+      "enum": [
+        "world",
+        "viewmodel",
+        "robot"
+      ]
+    },
+    "asset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "units": {
+      "type": "string",
+      "enum": [
+        "meter",
+        "meters"
+      ]
+    },
+    "scale": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "axes": {
+      "type": "object",
+      "required": [
+        "blender",
+        "unity",
+        "fbx"
+      ],
+      "properties": {
+        "fbx": {
+          "type": "object",
+          "required": [
+            "export_yaw_degrees"
+          ],
+          "properties": {
+            "export_yaw_degrees": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "root": {
+      "type": "object",
+      "required": [
+        "name",
+        "properties"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "anchors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "renderers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "materials",
+          "triangles",
+          "lod"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "lod": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "materials": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(MT_|M_)"
+            }
+          },
+          "triangles": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "materials": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "color_srgb",
+          "metallic",
+          "roughness",
+          "emission"
+        ],
+        "properties": {
+          "color_srgb": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 4,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "metallic": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "roughness": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "emission": {
+            "type": "number",
+            "minimum": 0
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "Primary",
+              "Secondary",
+              "Accent",
+              "Metal",
+              "Energy",
+              "Emission",
+              "Detail"
+            ]
+          }
+        },
+        "description": "MT_<Channel> slots carry 'channel'; palette materials (M_*) carry ce_base/ce_status instead."
+      }
+    },
+    "colliders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "center",
+          "size"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "box"
+            ]
+          },
+          "part": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "center": {
+            "$ref": "#/$defs/vec3"
+          },
+          "size": {
+            "$ref": "#/$defs/vec3"
+          },
+          "rotation": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 4,
+            "items": {
+              "type": "number"
+            },
+            "description": "euler (3) or quaternion (4)"
+          }
+        }
+      }
+    },
+    "hold": {
+      "type": "object",
+      "properties": {
+        "hand_socket": {
+          "type": "string"
+        },
+        "support_socket": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "muzzle_socket": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "two_handed": {
+          "type": "boolean"
+        },
+        "grip_tilt_degrees": {
+          "type": "number"
+        }
+      }
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/clip"
+      }
+    },
+    "ego_clips": {
+      "type": "object",
+      "required": [
+        "format",
+        "file",
+        "take"
+      ],
+      "properties": {
+        "format": {
+          "type": "integer"
+        },
+        "file": {
+          "type": "string"
+        },
+        "glb": {
+          "type": "string"
+        },
+        "take": {
+          "type": "string"
+        }
+      },
+      "description": "the clip package of the Ego model (unity_contract_fps_clips.json carries the clips themselves)"
+    },
+    "equipment": {
+      "type": "object",
+      "required": [
+        "channels",
+        "minimum_consumer"
+      ],
+      "properties": {
+        "minimum_consumer": {
+          "type": "string",
+          "pattern": "\\d+\\.\\d+",
+          "description": "names the consumer version in free text, must contain a version number"
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "required": [
+        "version",
+        "maps",
+        "uv1",
+        "channel_map",
+        "minimum_consumer"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_consumer": {
+          "type": "string",
+          "pattern": "\\d+\\.\\d+"
+        },
+        "maps": {
+          "type": "object",
+          "required": [
+            "resolution",
+            "w0",
+            "w1",
+            "fields",
+            "normal"
+          ],
+          "properties": {
+            "resolution": {
+              "type": "integer",
+              "enum": [
+                512,
+                1024,
+                2048
+              ]
+            },
+            "preview": {
+              "type": "boolean"
+            },
+            "w0": {
+              "type": "string"
+            },
+            "w1": {
+              "type": "string"
+            },
+            "fields": {
+              "type": "string"
+            },
+            "normal": {
+              "type": "string"
+            }
+          }
+        },
+        "uv1": {
+          "type": "object",
+          "required": [
+            "attribute",
+            "uv_map"
+          ],
+          "properties": {
+            "attribute": {
+              "const": "TEXCOORD_1"
+            }
+          }
+        },
+        "channel_map": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "description": "every delivered file with its hash - the consumer checks what it imports"
+    },
+    "renamed_from": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "tool",
+        "asset",
+        "since",
+        "map"
+      ],
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "string"
+        },
+        "since": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+"
+        },
+        "map": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "an id rename (Toolgen 0.17): the consumer moves GUIDs by 'map' instead of importing twice"
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "name",
+        "parent"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "animated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "clip": {
+      "type": "object",
+      "required": [
+        "name",
+        "frame_start",
+        "frame_end",
+        "fps",
+        "duration_seconds",
+        "loop"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_name": {
+          "type": "string"
+        },
+        "frame_start": {
+          "type": "integer"
+        },
+        "frame_end": {
+          "type": "integer"
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "loop": {
+          "type": "boolean"
+        },
+        "autoplay": {
+          "type": "boolean",
+          "const": false
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "type": "string"
+        },
+        "take": {
+          "type": "string"
+        },
+        "take_frame_start": {
+          "type": "integer"
+        },
+        "take_frame_end": {
+          "type": "integer"
+        },
+        "events": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "frame",
+              "seconds"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

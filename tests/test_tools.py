@@ -660,3 +660,40 @@ class DocsAndNightlyTests(unittest.TestCase):
         self.assertIn("übersprungen", out)
         self.assertIn("nacht", out)
         self.assertRegex(out, r"other\s+green")
+
+
+class ContractTests(unittest.TestCase):
+    """0.5.0: ce_contract.py validates a contract against plugins/ce-shared/contracts/<name>.v<format>.json."""
+
+    def minimal(self):
+        return {"format": 4, "generator": "toolgen", "version": "0.20.0 Nightshift", "tool": "pistol", "variant": "world",
+                "asset": "CubeEscape_Pistol", "model": "CubeEscape_Pistol_Game", "units": "meter", "scale": 1.0,
+                "axes": {"blender": {}, "unity": {}, "fbx": {"export_yaw_degrees": 180}},
+                "root": {"name": "CubeEscape_Pistol", "properties": {"ce_category": "weapon"}},
+                "nodes": [{"name": "Body", "parent": None}],
+                "renderers": [{"name": "Body", "lod": 0, "materials": ["MT_Primary"], "triangles": 100}],
+                "materials": {"MT_Primary": {"color_srgb": [0.5, 0.5, 0.5], "metallic": 0, "roughness": 0.8, "emission": 0, "channel": "Primary"}},
+                "colliders": [{"type": "box", "part": None, "center": [0, 0, 0], "size": [1, 1, 1]}],
+                "files": {"glb": {"path": "x.glb", "sha256": "0" * 64}}}
+
+    def test_valid_and_invalid_contracts(self):
+        import tempfile, ce_contract
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "unity_contract.json"
+            good.write_text(json.dumps(self.minimal()))
+            name, findings = ce_contract.check_file(good, None)
+            self.assertEqual((name, findings), ("unity_contract.v4", []))
+            bad = self.minimal()
+            bad["units"] = "inches"; bad["materials"]["MT_Primary"]["metallic"] = 2; del bad["files"]
+            bad["colliders"][0]["rotation"] = [1, 2]
+            path = Path(tmp) / "unity_contract_fps.json"
+            path.write_text(json.dumps(bad))
+            name, findings = ce_contract.check_file(path, None)
+            self.assertEqual(name, "unity_contract.v4")
+            self.assertEqual(sorted(f.split(":")[0] for f in findings),
+                             ["$", "$.colliders[0].rotation", "$.materials.MT_Primary.metallic", "$.units"], findings)
+            code, out = run_main(ce_contract, "validate", str(good), str(path))
+            self.assertEqual(code, 1)
+            self.assertIn("gültig", out)
+            self.assertIn("4 Befunde", out)
+        self.assertEqual(run_main(ce_contract, "list")[0], 0)
