@@ -101,7 +101,7 @@ class SyncTests(RepoCase):
         copy = (self.tools() / "ce_lint.py").read_text()
         lines = copy.splitlines()
         self.assertTrue(lines[0].startswith("#!"))
-        self.assertRegex(lines[1], r"^# GENERATED from ce-agent-tools 0\.5\.0 - do not edit$")
+        self.assertEqual(lines[1], f"# GENERATED from ce-agent-tools {ce_sync.plugin_version(ce_sync.source_dir())} - do not edit")
         self.assertRegex(lines[2], r"^# ce-sha256: [0-9a-f]{64}$")
         self.assertEqual(ce_sync.check(self.root, self.config, ce_sync.source_dir()), [])
         code, out = run_main(ce_sync, "--repo", str(self.root), "--check")
@@ -676,7 +676,7 @@ class ContractTests(unittest.TestCase):
     def minimal(self):
         return {"format": 4, "generator": "toolgen", "version": "0.20.0 Nightshift", "tool": "pistol", "variant": "world",
                 "asset": "CubeEscape_Pistol", "model": "CubeEscape_Pistol_Game", "units": "meter", "scale": 1.0,
-                "axes": {"blender": {}, "unity": {}, "fbx": {"export_yaw_degrees": 180}},
+                "axes": {"blender": {"up": "+Z", "forward": "-Y"}, "unity": {"up": "+Y", "forward": "+Z"}, "fbx": {"export_yaw_degrees": 180}},
                 "root": {"name": "CubeEscape_Pistol", "properties": {"ce_category": "weapon"}},
                 "nodes": [{"name": "Body", "parent": None}],
                 "renderers": [{"name": "Body", "lod": 0, "materials": ["MT_Primary"], "triangles": 100}],

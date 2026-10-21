@@ -65,6 +65,7 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße; `--opus` erzeugt den Prompt für einen Opus-Unteragenten |
 | `ce_search.py index\|query\|serve\|status` | lokale Suche (FTS5, optional Embeddings) über Docs/Lehren/Skills/Berichte/Code-Kommentare aller Repos; MCP-Server `ce-search` |
 | `ce_contract.py validate <json…> \| list` | Verträge zwischen Repos gegen `contracts/<name>.v<format>.json` prüfen (Generator beim Export, Abnehmer beim Import) |
+| `ce_interfaces.py` / `./ce contract audit` | Lesender Abgleich über native Formgen-/Cubegen-/Motiongen-Prüfungen, optional Toolgen-Provenance und Robogen-Abnehmerprofil; explizite Repo-Pfade und Cubegen-Vertragsversion |
 | `ce_docs.py [--json R]` | Markdown-Links/-Anker, SKILL-Front-Matter, JSON, Shell-Syntax nach `.ce-repo.json › docs` – der eine Doku-Prüfer |
 | `ce_nightly.py [--all\|--repo P] [install\|status]` | ein Nachtlauf für alle Repos (`check.nightly` je Repo), Bericht, LaunchAgent |
 | `ce_session_name.py [--name N] [--reserve] [--topics]` | Sitzungsname und Branch; `--reserve` pusht den Branch (= Reservierung) |
@@ -126,6 +127,8 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- Schemaerfolg belegt keine Bild-/Rig-Abnahme; Originalverträge wiederverwenden und die tatsächlich geprüfte Tiefe nennen ([Pactguard](docs/versions/0.6.md)).
+- Nichtendliche JSON-Zahlen und doppelte Schlüssel vor dem Schema ablehnen; die Freigabe eines Richters kommt ausschließlich aus seiner Modellantwort auf stdout ([Pactguard](docs/versions/0.6.md)).
 - Alte Gesamtsperren und neue Ressourcen-Sperren teilen eine Barriere; die Umstellung darf laufende ältere Clients nicht überholen.
 - Eine geschriebene launchd-Datei ist noch keine Aktivierung: `bootstrap` und anschließendes `print` prüfen.
 - GitHub-Umbenennungen erzeugen Weiterleitungen, keine zweiten Repos; IDs und lokale Arbeitsstände getrennt prüfen.
