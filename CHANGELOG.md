@@ -29,6 +29,15 @@
   nach Inhaltshash; optionale Embeddings (`sentence-transformers`, hybrides Ranking) ohne Pflicht. Lehren und Skills vor Docs, Code zuletzt.
   CLI `index|query|status` und MCP-Server (`serve`, stdio; Plugin `.mcp.json` „ce-search“ mit `ce_search`, `ce_search_status`).
   `ce_nightly` baut den Index nach den Läufen neu. Tests `SearchTests`.
+* **Durchsetzung statt Prosa** (Prüfung Teil 2): neue gemeinsame Hooks `heavy-resource` (block: `heavy_lock run` ohne `--resource`),
+  `commit-on-main` (block), `heavy-unlocked`, `output-cap`, `judge-template` (warn); **SessionStart-Hook** gibt Werkzeugzeile, Sitzungsnamen-
+  Vorschlag und `docs/LESSONS.md` aus; **Stop-Hook** misst die Sitzung mit `ce_report.py` (Modell je Unteragent, wiederholte Prüfläufe,
+  Suchen vs. lange Docs, größte Ausgabe, Wartezeit an der Sperre, Nachrichten) in `report.md` und warnt bei Code ohne `./check`.
+* **`ce_imagediff.py`** (SSIM/PSNR/Pixelanteil/Bereich + Diffbild, Schwellen je Bildart), **`ce_media.py`** (`sheet|clip|still`, feste Größen
+  480p/≤ 8 s/≤ 1280 px), **`ce_judge.py`** (Codex-Richter mit `pruefung.md`, Modell nach Diffgröße/Vertragsdateien, `--opus` für einen
+  Opus-Unteragenten), **`ce`** (ein Einstieg: `./ce check|reserve|search|judge|diff|sheet|clip|lock|status|docs|contract|report|sync`).
+* **Agent-Vorlagen** `agents/ce-judge.md` (Opus, read-only), `ce-recorder.md` (Sonnet, Belege), `ce-searcher.md` (Haiku, ≤ 10 Zeilen) – `ce_sync`
+  kopiert sie nach `<tools_dir>/agents/`; Repos verlinken sie aus `.claude/agents/`.
 * **Nicht mehr schwer:** Aufnahmen (MP4), Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen nehmen keine Sperre
   (Regel; die Repos passen ihre Aufrufe an).
 

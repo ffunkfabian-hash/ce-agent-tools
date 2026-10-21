@@ -1,0 +1,25 @@
+#!/bin/sh
+# ce - one entry for the shared tools of a repo (0.5.0): ./ce <command> [args]
+#   check [--full|--nightly]   reserve <Name>   topics   search <query>   judge [--opus]   diff A B   sheet|clip|still …
+#   lock <unity|blender|gpu> -- <cmd>   status   docs   contract <json…>   report   sync [--check]
+here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
+[ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  check)    mode=quick; case "${1:-}" in --full) mode=full; shift;; --nightly) mode=nightly; shift;; esac; exec python3 "$tools/ce_check.py" "$mode" "$@";;
+  reserve)  exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
+  topics)   exec python3 "$tools/ce_session_name.py" --task Blick --topics;;
+  search)   exec python3 "$tools/ce_search.py" query "$@";;
+  index)    exec python3 "$tools/ce_search.py" index "$@";;
+  judge)    exec python3 "$tools/ce_judge.py" "$@";;
+  diff)     exec python3 "$tools/ce_imagediff.py" "$@";;
+  sheet|clip|still) exec python3 "$tools/ce_media.py" "$cmd" "$@";;
+  lock)     res="$1"; shift; exec python3 "$tools/heavy_lock.py" run --resource "$res" "$@";;
+  status)   python3 "$tools/heavy_lock.py" status; exec python3 "$tools/ce_search.py" status;;
+  docs)     exec python3 "$tools/ce_docs.py" "$@";;
+  contract) exec python3 "$tools/ce_contract.py" validate "$@";;
+  report)   exec python3 "$tools/ce_report.py" "$@";;
+  sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
+  mail)     exec python3 "$tools/ce_await_mail.py" --name "$@";;
+  *)        sed -n 2,4p "$0"; exit 2;;
+esac

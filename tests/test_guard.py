@@ -60,15 +60,41 @@ class SharedRuleTests(unittest.TestCase):
              "cd /x && unity command quit"],
             ["unity command eval 'return 1;' --project-path /tmp/copy-mcp", "unity editors --installed",
              "unity pipeline list", "unity status", "unity_mcp.sh start", "unity --version"]),
+        "heavy-resource": (
+            ["python3 Tools/heavy_lock.py run --what x -- ./verify.sh run", "python3 scripts/heavy_lock.py run -- bash check_output.sh"],
+            ["python3 Tools/heavy_lock.py run --resource unity -- ./verify.sh run", "python3 Tools/heavy_lock.py status"]),
+        "commit-on-main": (
+            ["git checkout main && git commit -m x", "git switch main && git add . && git commit -am y"],
+            ["git checkout claude/ce-0.106-fastlane && git commit -m x", "git commit -m 'auf branch'", "git checkout main"]),
+    }
+    WARN_CASES = {
+        "heavy-unlocked": (
+            ["bash .agents/skills/ce-testing/scripts/verify.sh run --full", "python3 toolgen/generate_tools.py --tier full",
+             "bash scripts/check_output.sh output"],
+            ["python3 Tools/heavy_lock.py run --resource unity -- bash verify.sh run --full",
+             "CE_HEAVY_LOCK=0 python3 toolgen/generate_tools.py --tier standard", "python3 toolgen/generate_tools.py --tier quick"]),
+        "output-cap": (
+            ["cat logs/toolgen_report.json", "cat output/x/qa_surface.json; echo", "python3 -m json.tool data/tools.json"],
+            ["cat logs/toolgen_report.json | head -20", "jq '.tools[0]' logs/toolgen_report.json", "cat README.md",
+             "tail -40 logs/run.log", "cat x.json | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))'"]),
+        "judge-template": (
+            ["codex exec -m gpt-6-luna 'Prüfe den Diff' < diff.txt"],
+            ["codex exec \"$(cat ~/.claude/templates/pruefung.md)\" < diff.txt", "codex exec 'Checkliste: …'", "codex --version"]),
     }
 
     def test_every_rule_blocks_what_it_should_and_nothing_else(self):
         self.assertEqual({rule["name"] for rule in RULES},
-                         set(self.CASES) | {"actions-sparsam"}, "a new rule needs cases here")
+                         set(self.CASES) | set(self.WARN_CASES) | {"actions-sparsam"}, "a new rule needs cases here")
         for name, (hits, misses) in self.CASES.items():
             for command in hits:
                 self.assertIn(name, names(bash(command)), command)
                 self.assertTrue(denied(guard.decide(bash(command), RULES)), command)
+            for command in misses:
+                self.assertNotIn(name, names(bash(command)), command)
+        for name, (hits, misses) in self.WARN_CASES.items():
+            for command in hits:
+                self.assertIn(name, names(bash(command)), command)
+                self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
             for command in misses:
                 self.assertNotIn(name, names(bash(command)), command)
 

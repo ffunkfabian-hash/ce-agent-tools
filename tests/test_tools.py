@@ -748,3 +748,124 @@ class SearchTests(unittest.TestCase):
         self.assertEqual({t["name"] for t in replies[1]["result"]["tools"]}, {"ce_search", "ce_search_status"})
         self.assertIn("LESSONS.md", replies[2]["result"]["content"][0]["text"])
         self.assertTrue(replies[3]["result"].get("isError"))
+
+
+class ReportAndSessionHookTests(unittest.TestCase):
+    """0.5.0: ce_report.py measures a session from its transcript; hooks/session.py feeds SessionStart and Stop."""
+
+    def transcript(self, folder: Path) -> Path:
+        def use(name, data):
+            return {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": name, "input": data}]}}
+        def result(text):
+            return {"type": "user", "message": {"content": [{"type": "tool_result", "content": text}]}}
+        big = folder / "big.md"; big.write_text("x" * 70_000)
+        records = [use("Bash", {"command": "./check"}), result("ok"), use("Bash", {"command": "./check"}), result("heavy lock: free after 120 s"),
+                   use("Agent", {"model": "sonnet", "prompt": "x"}), use("Agent", {"prompt": "no model"}),
+                   use("Read", {"file_path": str(big)}), use("Bash", {"command": "cat logs/a.json"}), result("y" * 50_000)]
+        path = folder / "t.jsonl"
+        path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        return path
+
+    def test_report_counts_the_rules(self):
+        import tempfile, ce_report
+        with tempfile.TemporaryDirectory() as tmp:
+            info = ce_report.analyse(self.transcript(Path(tmp)))
+        self.assertEqual((info["checks"], info["checks_repeated_same_command"], info["searches"], info["big_doc_reads"]), (2, 1, 0, 1))
+        self.assertEqual(info["agents"], {"sonnet": 1, "inherit": 1})
+        self.assertEqual(info["heavy_lock_waited_s"], 120)
+        self.assertGreater(info["largest_output_bytes"], 40_000)
+        line = ce_report.one_line(info)
+        self.assertIn("Prüfläufe 2 (1 wiederholt", line)
+        texts = " ".join(ce_report.hints(info))
+        for expected in ("ohne model", "identischem Befehl", "nie gesucht", "über 40 KB"):
+            self.assertIn(expected, texts)
+
+    def test_session_hook_start_and_stop(self):
+        import tempfile, subprocess
+        hook = Path(__file__).resolve().parent.parent / "plugins" / "ce-shared" / "hooks" / "session.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / ".ce-repo.json").write_text('{"name": "cubeescape-toolgen", "version": "0.1"}')
+            (root / "docs").mkdir(); (root / "docs" / "LESSONS.md").write_text("# Lehren\n- **x** → y\n")
+            (root / "a.py").write_text("print(1)\n")
+            env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(hook.parent.parent))
+            start = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "SessionStart", "cwd": str(root)}),
+                                   capture_output=True, text=True, env=env).stdout
+            context = json.loads(start)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("ce_search", context); self.assertIn("TG Auftrag", context); self.assertIn("**x** → y", context)
+            transcript = self.transcript(root)
+            stop = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript)}),
+                                  capture_output=True, text=True, env=env).stdout
+            message = json.loads(stop).get("systemMessage", "")
+            self.assertIn("ohne model", message)
+            self.assertIn("Sitzung:", (root / "report.md").read_text())
+            # code changed but checks ran: no check-before-stop warning; remove the checks -> warning
+            self.assertNotIn("check-before-stop", message)
+            lines = [json.loads(l) for l in transcript.read_text().splitlines()]
+            lines = [l for l in lines if not (l["type"] == "assistant" and l["message"]["content"][0]["input"].get("command") == "./check")]
+            transcript.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+            stop = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript)}),
+                                  capture_output=True, text=True, env=env).stdout
+            self.assertIn("check-before-stop", json.loads(stop)["systemMessage"])
+
+
+class MediaAndJudgeTests(unittest.TestCase):
+    """0.5.0: ce_imagediff (numbers instead of two pictures), ce_media (one way to make evidence), ce_judge (checklist reviewer)."""
+
+    def test_imagediff_same_changed_and_size_mismatch(self):
+        import tempfile, ce_imagediff
+        from PIL import Image, ImageDraw
+        with tempfile.TemporaryDirectory() as tmp:
+            a = Path(tmp) / "a.png"; b = Path(tmp) / "b.png"; c = Path(tmp) / "c.png"; small = Path(tmp) / "s.png"
+            base = Image.new("RGB", (200, 120), (90, 90, 90)); ImageDraw.Draw(base).rectangle([20, 20, 80, 60], fill=(200, 60, 60))
+            base.save(a); base.save(b)
+            changed = base.copy(); ImageDraw.Draw(changed).rectangle([120, 40, 180, 100], fill=(60, 200, 60)); changed.save(c)
+            base.resize((100, 60)).save(small)
+            same = ce_imagediff.compare(a, b, kind="ui")
+            self.assertTrue(same["same"]); self.assertEqual(same["ssim"], 1.0); self.assertEqual(same["changed_percent"], 0)
+            diff = ce_imagediff.compare(a, c, out=Path(tmp) / "d.png", kind="ui")
+            self.assertFalse(diff["same"]); self.assertLess(diff["ssim"], 0.98); self.assertEqual(diff["changed_box"], [120, 40, 180, 100])
+            self.assertTrue((Path(tmp) / "d.png").is_file())
+            self.assertIn("error", ce_imagediff.compare(a, small))
+            self.assertTrue(ce_imagediff.compare(a, small, resize=True)["same"] in (True, False))
+            code, out = run_main(ce_imagediff, str(a), str(c), "--kind", "world")
+            self.assertEqual(code, 1); self.assertIn("VERSCHIEDEN", out)
+            self.assertEqual(run_main(ce_imagediff, "--pairs", f"{a}:{b}")[0], 0)
+
+    def test_media_sheet_still_and_clip(self):
+        import tempfile, shutil, ce_media
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            frames = Path(tmp) / "frames"; frames.mkdir()
+            for i in range(12):
+                Image.new("RGB", (320, 180), (i * 20, 80, 120)).save(frames / f"f{i:03d}.png")
+            code, out = run_main(ce_media, "sheet", str(frames), "--out", str(Path(tmp) / "sheet.png"), "--columns", "4", "--label")
+            self.assertEqual(code, 0, out); self.assertIn("12 Bilder", out)
+            code, out = run_main(ce_media, "still", str(frames / "f000.png"), "--out", str(Path(tmp) / "still.png"), "--width", "160")
+            self.assertEqual(code, 0); self.assertIn("160x", out)
+            if shutil.which("ffmpeg"):
+                code, out = run_main(ce_media, "clip", str(frames), "--out", str(Path(tmp) / "c.mp4"), "--fps", "6", "--height", "90", "--seconds", "1")
+                self.assertEqual(code, 0, out); self.assertIn("90p", out)
+                self.assertFalse((Path(tmp) / "c.frames.txt").exists())
+
+    def test_judge_picks_the_model_from_the_diff_and_dry_runs(self):
+        import tempfile, subprocess, ce_judge
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+            def sh(*a): subprocess.run(["git", "-C", str(root), *a], check=True, env=env, capture_output=True)
+            sh("init", "-q", "-b", "main"); (root / "a.py").write_text("x = 1\n"); sh("add", "."); sh("commit", "-q", "-m", "init")
+            sh("checkout", "-q", "-b", "claude/x-0.1-y"); (root / "a.py").write_text("x = 2\n"); (root / "out.png").write_bytes(b"\x89PNG")
+            (root / "output").mkdir(); (root / "output" / "gen.json").write_text("{}"); sh("add", "."); sh("commit", "-q", "-m", "change")
+            diff, names = ce_judge.diff_of("main", None, root)
+            self.assertEqual(names, ["a.py"], "generated and binary files are left out")
+            self.assertEqual(ce_judge.choose_model(diff, names, None), "luna")
+            self.assertEqual(ce_judge.choose_model(diff, ["unity_contract.json"], None), "sol")
+            self.assertEqual(ce_judge.choose_model("+x\n" * 400, ["a.py"], None), "sol")
+            code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--dry-run")
+            self.assertEqual(code, 0, out); self.assertIn("Richter luna", out); self.assertIn("Checkliste", out)
+            code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--opus")
+            self.assertEqual(code, 0); self.assertTrue((root / "report.judge.diff").is_file())
+            sh("checkout", "-q", "main")
+            self.assertEqual(run_main(ce_judge, "--repo", str(root), "--base", "main")[0], 2, "no diff")
