@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1 – unveröffentlicht
+
+- Live-Probe 22.10.2026: Beide Postfach-Hooks blieben still, weil sie den reservierten Branch als ausgecheckt verlangten – `--reserve` legt ihn aber nur an, und eine Cloud-Sitzung arbeitet auf ihrem vorgegebenen Branch. Die Reservierung gilt jetzt für den Worktree (Datei im eigenen Git-Ordner), Ablauf nach 3 Tagen (`reserved_at`, sonst Dateizeit); `say` nimmt den Absender ebenfalls aus der Reservierung. 425 Tests, drei neue Gegenbeweise. [Version](docs/versions/0.15.md#patch-0151).
+
 ## 0.15.0 „Wakeline“ – unveröffentlicht
 
 - Der Postfach-Wächter startet von selbst: Ein Stop-Hook (`async`, `asyncRewake`, `timeout` 12 h) wartet für eine reservierte Sitzung im Hintergrund auf Nachrichten im Postfach #16 und weckt sie mit Exit 2 und dem Kommentar. Gelesen wird ab der letzten behandelten Nachricht bzw. der Reservierung; behandelt ist eine Nachricht erst mit Nachweis im Transcript, sonst kommt sie genau einmal erneut (gekennzeichnet).

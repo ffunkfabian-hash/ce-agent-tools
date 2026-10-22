@@ -158,15 +158,10 @@ def own_name(repo_dir: Path, agent: str = "auto") -> str:
     config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
     abbrev = sn.abbreviation(config.get("name", repo_dir.resolve().name))
     place = sn.detect_place(platform.system(), dict(os.environ), agent)
-    branch = sn_git(repo_dir, "branch", "--show-current")
-    git_dir = sn_git(repo_dir, "rev-parse", "--absolute-git-dir")
-    try:  # the name written at the reservation wins (exact spelling); the branch is only the fallback
-        saved = json.loads((Path(git_dir) / sn.SESSION_FILE).read_text(encoding="utf-8")) if git_dir else {}
-    except (OSError, ValueError):
-        saved = {}
-    if saved.get("branch") == branch and saved.get("name"):
+    _folder, saved = am.reservation(str(repo_dir), switch=False)
+    if saved.get("name"):  # the worktree's reservation wins (exact spelling, also on a designated cloud branch); the branch is only the fallback
         return saved["name"]
-    return sender_from_branch(branch, abbrev, place)
+    return sender_from_branch(sn_git(repo_dir, "branch", "--show-current"), abbrev, place)
 
 
 def main(argv=None) -> int:

@@ -2,7 +2,7 @@
 """Stop hooks of ce-shared (0.15): the Postfach watcher starts by itself, so a reserved session hears its messages.
 
 `watch` (Stop, async + asyncRewake, timeout = MAX_HOURS): when the worktree is reserved (`<git-dir>/ce-session.json`, written by
-ce_session_name.py --reserve, at most RESERVATION_DAYS old) and no watcher runs, it waits in the background for a comment in
+ce_session_name.py --reserve; the worktree counts, not the checked-out branch; at most RESERVATION_DAYS old) and no watcher runs, it waits in the background for a comment in
 cubeescape-nexogen#16 addressed to the session (ce_await_mail rules), reading from the last handled message or the reservation time.
 A message ends it with exit 2 and the comment on stderr – Claude Code wakes the session with it. The message is only `pending` until
 the next Stop finds "Kommentar <id>" in the transcript (proof of delivery); without proof it comes once more, then counts as handled.

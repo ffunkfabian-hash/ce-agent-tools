@@ -76,12 +76,22 @@ class Remind(Worktree):
         am.save_state(self.git, last_failure=0)
         self.assertEqual(remind(which=lambda _: "/usr/bin/gh")["decision"], "block")
 
-    def test_silent_with_watcher_without_reservation_on_other_branch_or_switched_off(self):
+    def test_reservation_belongs_to_the_worktree_not_the_branch(self):
+        """0.15.1, live probe 22.10.: --reserve does not check the branch out, a cloud session stays on its designated branch."""
+        self.reserve(branch="claude/cube-escape-patch-probe-wakeline")
+        self.assertEqual(hook.remind(self.payload(), sleep=lambda _: None, which=lambda _: "/usr/bin/gh")["decision"], "block")
+        folder, session = am.reservation(str(self.repo))
+        self.assertEqual((folder, session["name"]), (self.git, NAME))
+
+    def test_old_reservation_without_timestamp_expires_by_file_time(self):
+        old = __import__("time").time() - (am.RESERVATION_DAYS + 1) * 86400
+        os.utime(self.git / am.SESSION_FILE, (old, old))
+        self.assertEqual(am.reservation(str(self.repo)), (None, {}))
+
+    def test_silent_with_watcher_without_reservation_or_switched_off(self):
         (self.git / am.PID_FILE).write_text(str(self.fake_watcher()))
         self.assertEqual(hook.remind(self.payload(), sleep=lambda _: None, which=lambda _: "/usr/bin/gh"), {})
         (self.git / am.PID_FILE).unlink()
-        self.reserve(branch="claude/other")
-        self.assertEqual(hook.remind(self.payload(), sleep=lambda _: None, which=lambda _: "/usr/bin/gh"), {})
         (self.git / am.SESSION_FILE).unlink()
         self.assertEqual(hook.remind(self.payload(), sleep=lambda _: None, which=lambda _: "/usr/bin/gh"), {})
         self.reserve()

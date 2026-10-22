@@ -78,7 +78,7 @@ def addressed(body: str, key: str) -> bool:
 PID_FILE = "ce-watch.pid"
 STATE_FILE = "ce-watch.json"
 SESSION_FILE = "ce-session.json"
-RESERVATION_DAYS = 7      # an older reservation no longer makes a worktree listen (a later, unrelated session on the same branch)
+RESERVATION_DAYS = 3      # an older reservation no longer makes a worktree listen (a later, unrelated session in the same worktree)
 LOOKBACK_MIN = 30         # default look-back when neither a handled message nor a reservation time is known
 REDELIVER = 1             # a message without proof of delivery comes once more, then counts as handled
 REDELIVERY = "Erneute Zustellung von Kommentar {id} – nur handeln, falls noch nicht behandelt."
@@ -104,21 +104,28 @@ def read_json(path: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def reservation(cwd: str):
-    """(git dir, session dict) when the worktree's current branch is the reserved one and the reservation is recent, else (None, {}).
-    CE_WATCH=0 switches the watcher off."""
-    if os.environ.get("CE_WATCH", "1") == "0":
+def reservation(cwd: str, switch: bool = True):
+    """(git dir, session dict) when this worktree holds a recent reservation, else (None, {}). The reservation belongs to the worktree
+    (the file lives in its own git dir), not to the checked-out branch: `--reserve` only creates and pushes the branch, and a cloud
+    session keeps working on its designated branch (0.15.1). Age from `reserved_at`, else the file time (0.14 files).
+    CE_WATCH=0 switches the watcher off (`switch=False` ignores it, e.g. for the sender name of `say`)."""
+    if switch and os.environ.get("CE_WATCH", "1") == "0":
         return None, {}
-    folder, branch = git_dir(cwd)
+    folder, _branch = git_dir(cwd)
     if folder is None:
         return None, {}
     session = read_json(folder / SESSION_FILE)
-    if not session.get("name") or session.get("branch") != branch:
+    if not session.get("name"):
         return None, {}
     reserved_at = session.get("reserved_at")
-    if isinstance(reserved_at, (int, float)) and time.time() - reserved_at > RESERVATION_DAYS * 86400:
+    if not isinstance(reserved_at, (int, float)):
+        try:
+            reserved_at = (folder / SESSION_FILE).stat().st_mtime
+        except OSError:
+            return None, {}
+    if time.time() - reserved_at > RESERVATION_DAYS * 86400:
         return None, {}
-    return folder, session
+    return folder, dict(session, reserved_at=reserved_at)
 
 
 def reserved(cwd: str):

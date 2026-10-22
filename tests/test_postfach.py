@@ -254,6 +254,15 @@ class ReserveAnnounces(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertTrue(out.stdout.startswith("FG 0.16 „Cross-Talk“ · "), out.stdout)
 
+    def test_say_uses_the_reservation_on_a_designated_branch(self):
+        """0.15.1: a cloud session works on claude/<designated>, not on the reserved branch – the sender name still comes from it."""
+        self.run_cli("--reserve", "--patch", "probe-wakeline", "--no-announce")
+        subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", "-b", "claude/beautiful-davinci-6v3i1z"], check=True)
+        out = subprocess.run([sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--repo", str(self.repo), "--dry-run", "Thema"],
+                             capture_output=True, text=True, env=self.env)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue(out.stdout.startswith("FG Patch probe-wakeline · "), out.stdout)
+
     def test_patch_word(self):
         sn = load("session_name", "ce_session_name.py")
         self.assertEqual([sn.patch_word(n) for n in ("cube-escape", "cubeescape", "cubeescape-nexogen", "toolgen", "ce-agent-tools")],
