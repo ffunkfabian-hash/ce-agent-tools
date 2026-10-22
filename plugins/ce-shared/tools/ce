@@ -24,6 +24,8 @@ case "$cmd" in
   evidence)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
     case "$sub" in
+      preflight) exec python3 "$tools/ce_blender_preflight.py" "$@";;
+      turnaround) exec python3 "$tools/ce_turnaround.py" "$@";;
       diff) exec python3 "$tools/ce_imagediff.py" "$@";;
       clip|sheet|still) exec python3 "$tools/ce_media.py" "$sub" "$@";;
       *) echo "evidence clip | sheet | still | diff"; exit 2;;
