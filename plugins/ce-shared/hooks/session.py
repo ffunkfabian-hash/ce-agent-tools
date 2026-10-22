@@ -18,7 +18,7 @@ PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolv
 TOOLS = PLUGIN_ROOT / "tools"
 TIMEOUT = 15
 TOOL_LINE = ("Werkzeuge dieser Sitzung (Pflicht, globale Regeln): `ce_search` (MCP, vor dem Lesen langer Docs) · "
-             "`session_name.py --name <Name> --reserve` vor der ersten Änderung (Patch: Branch claude/<repo>-patch-<kurzname>) · "
+             "`./ce session reserve <Name> --about … --model …` vor der ersten Änderung (Patch: `./ce session patch <kurzname>`; meldet im Postfach an, den Wächter startet ab ce-shared 0.15 der Stop-Hook) · "
              "`heavy_lock --resource unity|blender|gpu` für schwere Läufe · `./check` vor Commit · Richter mit `templates/pruefung.md` · "
              "Bericht = PR-Beschreibung, Ist-Zeit als Warten/Rechnen/Lesen/Umsetzen.")
 
