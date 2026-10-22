@@ -138,6 +138,7 @@ class ReportUsageTests(unittest.TestCase):
         ])
         thrash_hints = ce_report.hints(thrashing)
         self.assertTrue(any("Cache-Schreiben (255,000 Tokens) > 2× Spitzen-Input (90,100)" in h for h in thrash_hints))
+        self.assertTrue(any("möglichen wiederholten Cache-Neuaufbau" in h for h in thrash_hints))
 
 
 if __name__ == "__main__":

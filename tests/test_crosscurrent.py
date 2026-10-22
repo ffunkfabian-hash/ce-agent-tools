@@ -229,3 +229,157 @@ class CrosscurrentTests(unittest.TestCase):
             path.write_text('\n'.join(json.dumps(r) for r in records))
             info = ce_report.analyse(path)
             self.assertEqual((info['messages'], info['checks'], info['searches'], info['tools']['Edit']), (2, 1, 1, 1))
+
+    def test_sync_blocks_held_repos_and_does_not_expand_targets_from_worktrees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            held_repo = home / "Claude" / "cubeescape-toolgen"
+            clean_repo = home / "Claude" / "cubeescape-robogen"
+            nexogen = home / "Claude" / "cubeescape-nexogen"
+            for repo, name in ((held_repo, "toolgen"), (clean_repo, "robogen"), (nexogen, "cubeescape-nexogen")):
+                (repo / ".git").mkdir(parents=True)
+                (repo / ".ce-repo.json").write_text(json.dumps({"name": name, "version": "0.1"}))
+            registry = nexogen / "repos.json"
+            registry.write_text(json.dumps({
+                "schema_version": 1,
+                "repos": [
+                    {"id": "nexogen", "github": "o/cubeescape-nexogen", "paths": ["~/Claude/cubeescape-nexogen"]},
+                    {"id": "robogen", "github": "o/cubeescape-robogen", "paths": ["~/Claude/cubeescape-robogen"]},
+                    {"id": "toolgen", "github": "o/cubeescape-toolgen", "paths": ["~/Claude/cubeescape-toolgen"],
+                     "hold": "Lockstep bis 22.10.2026 unangetastet lassen"},
+                ]
+            }))
+            with mock.patch.dict(os.environ, {"CE_HOME": str(home / "Claude"), "CE_REPO_REGISTRY": str(registry)}, clear=False), \
+                 mock.patch.object(ce_common.Path, "home", return_value=home):
+                self.assertIsNotNone(ce_common.repo_hold(held_repo, home))
+                self.assertIsNone(ce_common.repo_hold(clean_repo, home))
+                # Explicit --repo on held repo must fail with exit 1 and never write scripts/ce_tools
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = ce_sync.main(["--repo", str(held_repo)])
+                self.assertEqual(code, 1)
+                self.assertIn("BLOCKED (hold in repos.json", out.getvalue())
+                self.assertFalse((held_repo / "scripts" / "ce_tools").exists())
+                # Linked worktree with arbitrary folder name and arbitrary .ce-repo.json name (linked via .git file) is also blocked
+                linked_wt = home / "Claude" / "arbitrary-worktree-name"
+                wt_gitdir = held_repo / ".git" / "worktrees" / "wt1"
+                wt_gitdir.mkdir(parents=True)
+                (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+                linked_wt.mkdir(parents=True)
+                (linked_wt / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+                (linked_wt / ".ce-repo.json").write_text(json.dumps({"name": "arbitrary-wt", "version": "0.1"}))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = ce_sync.main(["--repo", str(linked_wt)])
+                self.assertEqual(code, 1)
+                self.assertIn("BLOCKED (hold in repos.json", out.getvalue())
+                self.assertFalse((linked_wt / "scripts" / "ce_tools").exists())
+                # --all skips held repo without failing the batch, syncs clean_repo, and never touches nexogen
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = ce_sync.main(["--all"])
+                self.assertEqual(code, 0, out.getvalue())
+                self.assertIn("toolgen: BLOCKED", out.getvalue())
+                self.assertTrue((clean_repo / "scripts" / "ce_tools" / "ce_sync.py").is_file())
+                self.assertFalse((nexogen / "scripts" / "ce_tools").exists())
+                # Corrupted repos.json or non-string hold value (e.g. boolean true) fails closed and blocks writing
+                registry.write_text(json.dumps({
+                    "schema_version": 1,
+                    "repos": [{"id": "robogen", "github": "o/cubeescape-robogen", "paths": ["~/Claude/cubeescape-robogen"], "hold": True}],
+                }), encoding="utf-8")
+                self.assertIn("ungültiger hold-Wert", ce_common.repo_hold(clean_repo, home) or "")
+                registry.write_text("{corrupt json", encoding="utf-8")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = ce_sync.main(["--repo", str(clean_repo)])
+                self.assertEqual(code, 1)
+                self.assertIn("BLOCKED (hold in repos.json", out.getvalue())
+
+    def test_worktrees_protects_recent_codex_rollout_beyond_64_files_and_discovers_all_eight_repos(self):
+        import time
+        import ce_worktrees
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            codex_sessions = home / ".codex" / "sessions" / "2026" / "10" / "21"
+            codex_sessions.mkdir(parents=True)
+            claude_dir = home / "Claude"
+            custom_root = home / "non_conventional_checkouts"
+            repos_data = []
+            expected_roots = []
+            for idx, name in enumerate(ce_worktrees.DEFAULT_REPO_NAMES):
+                r = custom_root / f"slot-{idx}-{name}"
+                subprocess.run(["git", "init", "-q", "-b", "main", str(r)], check=True)
+                (r / "README.md").write_text("ok\n")
+                subprocess.run(["git", "-C", str(r), "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], check=True)
+                subprocess.run(["git", "-C", str(r), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], check=True)
+                repos_data.append({"id": name, "github": f"ffunkfabian-hash/{name}", "paths": [f"~/non_conventional_checkouts/slot-{idx}-{name}"]})
+                expected_roots.append(r.resolve())
+            registry = claude_dir / "cubeescape-nexogen" / "repos.json"
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(json.dumps({"schema_version": 1, "repos": repos_data}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"CE_HOME": str(claude_dir), "CE_REPO_REGISTRY": str(registry)}):
+                discovered = [p.resolve() for p in ce_worktrees.default_repos(home)]
+            self.assertEqual(discovered, expected_roots)
+            self.assertEqual(len(discovered), 8)
+
+            repo = expected_roots[4]
+            subdir = repo / "src" / "sub"
+            subdir.mkdir(parents=True)
+            now = time.time()
+            for i in range(64):
+                other = codex_sessions / f"rollout-other-{i:03d}.jsonl"
+                other.write_text(json.dumps({"type": "session_meta", "payload": {"session_id": f"other-{i}", "cwd": str(claude_dir / f"other-{i}")}}) + "\n")
+                os.utime(other, (now - i, now - i))
+            rollout_65 = codex_sessions / "rollout-target-065.jsonl"
+            rollout_65.write_text(json.dumps({"type": "session_meta", "payload": {"session_id": "deadbeef-065", "cwd": str(subdir)}}) + "\n")
+            os.utime(rollout_65, (now - 64, now - 64))
+            collected = ce_worktrees.collect([repo], home / "projects", "main", 60, cwds={}, codex_dir=home / ".codex" / "sessions")
+            state = collected[0][1][0]
+            self.assertTrue(state["protected"])
+            self.assertTrue(any("Sitzung aktiv" in r for r in state["reasons"]))
+
+    def test_check_resolves_venv_python_priority_and_preserves_explicit_paths(self):
+        import ce_check
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            shared = Path(tmp) / "shared_venv" / "bin"
+            shared.mkdir(parents=True)
+            shared_py = shared / "python"
+            shared_py.write_text("#!/bin/sh\n")
+            with mock.patch.object(ce_check, "TOOLS_VENV_PYTHON", shared_py):
+                self.assertEqual(ce_check._resolve_argv(["python3", "-m", "unittest"], root)[0], str(shared_py))
+                self.assertEqual(ce_check._resolve_argv(["/usr/bin/python3", "-m", "unittest"], root)[0], "/usr/bin/python3")
+                local_py = root / ".venv" / "bin" / "python"
+                local_py.parent.mkdir(parents=True)
+                local_py.write_text("#!/bin/sh\n")
+                self.assertEqual(ce_check._resolve_argv(["python3", "-m", "unittest"], root)[0], str(local_py))
+
+    def test_nightly_all_indexes_full_search_repo_set_including_nexogen_and_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"; root.mkdir()
+            (root / ".ce-repo.json").write_text('{"name": "r", "version": "0.1", "check": {"nightly": ["true"]}}')
+            subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], check=True)
+            all_eight = [root, Path(tmp) / "nexogen", Path(tmp) / "tools"]
+            with mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), \
+                 mock.patch.object(ce_nightly, "notify"), \
+                 mock.patch.object(ce_nightly, "repos", return_value=[root]), \
+                 mock.patch.object(ce_search, "repos", return_value=all_eight) as search_repos, \
+                 mock.patch.object(ce_search, "build", return_value={"total_chunks": 10, "seconds": 0.1, "embeddings": False}) as build, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ce_nightly.main(["--all"]), 0)
+                search_repos.assert_called_once_with(None)
+                self.assertEqual(build.call_args.args[0], all_eight)
+
+    def test_judge_warns_on_large_diff_without_truncating_json_content(self):
+        large_diff = "\n".join([f'+  "key_{i}": {i},' for i in range(1600)])
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(ce_judge, "git", return_value="abc"), \
+             mock.patch.object(ce_judge, "diff_of", return_value=(large_diff, ["data/catalog.json"])), \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ce_judge.main(["--repo", tmp, "--base", "main", "--dry-run"]), 0)
+            self.assertIn("WARNUNG: großer Diff", out.getvalue())
+            self.assertIn("--files", out.getvalue())
+            self.assertEqual(ce_judge.main(["--repo", tmp, "--base", "main", "--opus"]), 0)
+            self.assertEqual((Path(tmp) / "report.judge.diff").read_text(encoding="utf-8"), large_diff)

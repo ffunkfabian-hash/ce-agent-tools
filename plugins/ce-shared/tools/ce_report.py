@@ -264,7 +264,8 @@ def hints(info: dict) -> list[str]:
     creation = usage.get("cache_creation_input_tokens")
     if isinstance(creation, int) and isinstance(max_input, int) and max_input > 0 and creation > max(100_000, 2 * max_input):
         out.append(f"Cache-Schreiben ({creation:,} Tokens) > 2× Spitzen-Input ({max_input:,}): "
-                   "mehrfacher Cache-Neuaufbau nach >5-min-Pausen; schwere Läufe ans Ende bündeln (› Schwere Läufe und Sperren)")
+                   "Hinweis auf möglichen wiederholten Cache-Neuaufbau (z.B. Pausen > TTL oder geänderter Präfix); "
+                   "schwere Läufe möglichst ans Ende bündeln (› Schwere Läufe und Sperren)")
     if info["agents"].get("inherit"):
         out.append(f"{info['agents']['inherit']} Unteragent(en) ohne model – erben das Hauptmodell (› Unteragenten und Modelle)")
     if info["checks_repeated_same_command"]:

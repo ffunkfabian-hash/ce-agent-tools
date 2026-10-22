@@ -102,3 +102,77 @@ def standard_repos(names, home=None):
                     roots.append(root)
                 break
     return roots
+
+
+def _repo_identities(root: Path) -> tuple[set[Path], set[str]]:
+    """Resolved checkout roots (including main worktree root for linked worktrees) and repo names."""
+    target = root.resolve()
+    roots = {target}
+    names = {target.name}
+    dot_git = target / ".git"
+    try:
+        if dot_git.is_file():
+            head = dot_git.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+            if head.startswith("gitdir:"):
+                raw = head.partition(":")[2].strip()
+                gitdir = (target / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+                commondir_file = gitdir / "commondir"
+                if commondir_file.is_file():
+                    common = (gitdir / commondir_file.read_text(encoding="utf-8").strip()).resolve()
+                    if common.name == ".git":
+                        roots.add(common.parent.resolve())
+                        names.add(common.parent.resolve().name)
+                elif gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
+                    main_root = gitdir.parent.parent.parent.resolve()
+                    roots.add(main_root)
+                    names.add(main_root.name)
+    except OSError:
+        pass
+    cfg = target / ".ce-repo.json"
+    if cfg.is_file():
+        try:
+            name = json.loads(cfg.read_text(encoding="utf-8")).get("name")
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip())
+        except (OSError, ValueError, TypeError):
+            pass
+    return roots, names
+
+
+def repo_hold(root: Path, home=None) -> str | None:
+    """Active hold reason for `root` (or a linked worktree of it) from Nexogen's repos.json, or None.
+
+    Fails closed when a registry file exists on disk (or CE_REPO_REGISTRY is explicitly set)
+    but cannot be read or validated, so a corrupted repos.json never silently lifts a hold.
+    """
+    import os
+    home = Path(home or Path.home())
+    base = Path(os.environ.get("CE_HOME", home / "Claude"))
+    env_reg = os.environ.get("CE_REPO_REGISTRY")
+    registry = Path(env_reg) if env_reg else (base / "cubeescape-nexogen" / "repos.json")
+    if not env_reg and not registry.exists():
+        legacy = base / "cubeescape-rules" / "repos.json"
+        if legacy.exists():
+            registry = legacy
+    if not registry.exists():
+        return f"repos.json fehlt ({registry}) – Schreibschutz aktiv" if env_reg else None
+    try:
+        data = json.loads(registry.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema_version") != 1 or not isinstance(data.get("repos"), list):
+            return f"repos.json ungültiges Schema ({registry}) – Schreibschutz aktiv"
+        target_roots, target_names = _repo_identities(root)
+        for item in data.get("repos") or []:
+            if not isinstance(item, dict):
+                return f"repos.json ungültiger Eintrag ({registry}) – Schreibschutz aktiv"
+            if "hold" not in item or item["hold"] is None or item["hold"] == "":
+                continue
+            hold = item["hold"]
+            if not isinstance(hold, str) or not hold.strip():
+                return f"repos.json ungültiger hold-Wert ({registry}) – Schreibschutz aktiv"
+            candidates = [Path(str(p).replace("~/", str(home) + "/", 1)) for p in item.get("paths") or []]
+            names = {item.get("id", ""), item.get("github", "").split("/")[-1], *item.get("aliases", [])} - {""}
+            if any(c.exists() and c.resolve() in target_roots for c in candidates) or bool(target_names & names):
+                return hold.strip()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return f"repos.json unlesbar ({registry}: {exc}) – Schreibschutz aktiv"
+    return None

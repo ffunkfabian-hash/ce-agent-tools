@@ -63,21 +63,21 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_api.py login\|status\|budget\|ask` / `./ce api …` | explizite Claude-Textanfrage mit isoliertem Browser-Login, lokalem Monats-/Anfragelimit, Vorabzählung und 5-Minuten-Präfixcache; Richtlinie in Nexogens `.ce-api.json`, keine Zugangsdaten im Repo ([Ablauf](https://github.com/ffunkfabian-hash/cubeescape-nexogen#lokale-claude-api)) |
 | `ce_imagediff.py A B [--out D] [--kind ui\|world\|bake]` | SSIM/PSNR/Pixelanteil/Bereich und Diffbild – Zahlen für den Richter statt zwei Bilder |
 | `ce_media.py sheet\|clip\|still` | Kontaktbogen, MP4 (480p, ≤ 8 s), Standbild (≤ 1280 px) – die Belege der Regel › Belege |
-| `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße und Kern-/Vertrags-/Infrastrukturrisiko, Grund im CLI; `--opus` erzeugt den Prompt für einen Opus-Unteragenten |
+| `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße und Kern-/Vertrags-/Infrastrukturrisiko, Grund im CLI; warnt ab 1.500 Diff-Zeilen / 100 KB zur aufgeteilten Prüfung mit `--files` (ohne pauschales Kürzen von JSON); `--opus` erzeugt den Prompt für einen Opus-Unteragenten |
 | `ce_search.py index\|query\|serve\|status` | lokale Suche (FTS5, optional Embeddings) über Docs/Lehren/Skills/Berichte/Code-Kommentare aller Repos; MCP-Server `ce-search` |
 | `ce_contract.py validate <json…> \| list` | Verträge zwischen Repos gegen `contracts/<name>.v<format>.json` prüfen (Generator beim Export, Abnehmer beim Import) |
 | `ce_interfaces.py` / `./ce contract audit` | Lesender Abgleich über native Formgen-/Cubegen-/Motiongen-Prüfungen, optional Toolgen-Provenance und Robogen-Abnehmerprofil; explizite Repo-Pfade und Cubegen-Vertragsversion |
 | `ce_docs.py [--json R]` | Markdown-Links/-Anker, SKILL-Front-Matter, JSON, Shell-Syntax nach `.ce-repo.json › docs` – der eine Doku-Prüfer |
-| `ce_nightly.py [--all\|--repo P] [install\|status]` | ein Nachtlauf für alle Repos (`check.nightly` je Repo), Bericht, LaunchAgent |
+| `ce_nightly.py [--all\|--repo P] [install\|status]` | ein Nachtlauf für alle Repos (`check.nightly` je Repo) inkl. Suchindex über alle acht Standard-Repos, Bericht, LaunchAgent |
 | `ce_session_name.py [--name N] [--reserve] [--topics]` | Sitzungsname und Branch; `--reserve` pusht den Branch (= Reservierung) |
 | `ce_await_mail.py --name N [--issue …]` | wartet auf eine Nachricht an diese Sitzung im Postfach-Issue (cubeescape-nexogen#16) |
 | `ce_codex_quota.py`, `ce_codex_cloud.py` | Codex-Kontingent lesen, Codex-Cloud-Aufträge |
 | `heavy_lock.py run --resource unity\|blender\|gpu [--what X] [--checkout P] -- <Befehl>` / `status` | eine Sperre **je Ressource** für schwere Läufe (`~/Library/Caches/CubeEscape/heavy-<resource>.lock`; ohne `--resource` die alte gemeinsame Datei `heavy-run.lock`), hält bis zum letzten Enkelprozess; Unity-Regression und Blender-Bake laufen nebeneinander, zwei Läufe derselben Ressource nacheinander. Aufnahmen, Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen sind nicht schwer und nehmen keine Sperre. Als Modul: `held(..., resource=)`, `HeavyLock`, `holder_pids()`, `Groups`, `run_group`/`run_forwarding` |
-| `ce_check.py quick\|full\|nightly [--verbose] [--no-targeted]` | Befehle aus `.ce-repo.json › check`; Ergebnis zuerst; `full` wiederholt nach Fehlern einmal `check.rerun_failed`; `nightly` = gebündelte Bildstufen einmal täglich auf `main` (0.5.0) |
+| `ce_check.py quick\|full\|nightly [--verbose] [--no-targeted]` | Befehle aus `.ce-repo.json › check` (löst nacktes `python3`/`python` bevorzugt auf `.venv/bin/python` bzw. `~/.local/share/ce-agent-tools/venv/bin/python` auf); Ergebnis zuerst; `full` wiederholt nach Fehlern einmal `check.rerun_failed`; `nightly` = gebündelte Bildstufen einmal täglich auf `main` (0.5.0) |
 | `ce_lint.py [--strict]` | Längen (`limits`), AGENTS.md-Abschnitte, keine Notiz-Dateien im Hauptordner, Versionsbericht/CHANGELOG |
 | `ce_release.py [--execute] [--no-push] [--remote R]` | Trockenlauf Standard: prüft Version, CHANGELOG, sauberen Baum, Tag `<tag_prefix><Version>`, Branch `<branch_prefix><Version>`, Remote; mit `--execute` Tag, Branch, Push (nie `--force`) |
-| `ce_sync.py [--repo P\|--all] [--check]` | schreibt die Werkzeuge als eingebettete Kopie nach `<repo>/<tools_dir>` (Standard `scripts/ce_tools`, Kopfzeile + Prüfsumme); `--check` meldet abweichende/editierte Kopien (auch in `ce_lint.py`). Die Repos rufen nur diese Kopien, nie das Plugin |
-| `ce_worktrees.py [--repos P…] [--active-minutes N] [--list\|--json]` | Tabelle (Standard) der Worktrees der vier Repos (`CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, laufende Prozesse), „NICHT LÖSCHEN“ |
+| `ce_sync.py [--repo P\|--all] [--check]` | schreibt die Werkzeuge als eingebettete Kopie nach `<repo>/<tools_dir>` (Standard `scripts/ce_tools`, Kopfzeile + Prüfsumme); respektiert `hold` in `repos.json` (Schreibsperre ohne `--check`); `--check` meldet abweichende/editierte Kopien (auch in `ce_lint.py`). Die Repos rufen nur diese Kopien, nie das Plugin |
+| `ce_worktrees.py [--repos P…] [--active-minutes N] [--list\|--json]` | Tabelle (Standard) der Worktrees aller acht Repos (`repos.json`, `CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, `~/.codex/sessions`, laufende Prozesse), „NICHT LÖSCHEN“ |
 
 ## Einbinden
 
@@ -100,10 +100,11 @@ andere Agenten befolgen sie aus dem Text der `AGENTS.md`.
 ## Entwickeln
 
 ```bash
+python3 plugins/ce-shared/tools/ce_check.py quick   # nutzt automatisch .venv oder ~/.local/share/ce-agent-tools/venv
 python3 -m unittest discover -s tests
 ```
 
-Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. Version in `plugin.json` und
+Optionale Test- und Bildabhängigkeiten (`Pillow`, `numpy`) stehen in `requirements-dev.txt` (`python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`). Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. Version in `plugin.json` und
 `marketplace.json` gemeinsam anheben (der Test prüft es), Eintrag in `CHANGELOG.md`.
 
 ## Zuständigkeit

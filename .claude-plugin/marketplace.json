@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Gemeinsame Agenten-Werkzeuge für Cube Escape, Cubegen und den Roboter-Generator",
-    "version": "0.8.0"
+    "version": "0.9.0"
   },
   "plugins": [
     {
       "name": "ce-shared",
       "source": "./plugins/ce-shared",
       "description": "Gemeinsame Schutzregeln (Git, Unity, GitHub Actions) und der Wächter für Subagent-Profile",
-      "version": "0.8.0"
+      "version": "0.9.0"
     }
   ]
 }

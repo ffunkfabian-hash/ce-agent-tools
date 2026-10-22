@@ -120,7 +120,8 @@ def run(args) -> int:
         if args.dry_run:
             raise RuntimeError("dry-run: kein Index-Schreibzugriff")
         import ce_search
-        summary = ce_search.build([r for r in targets if r.is_dir()], None, log=log)
+        index_roots = ce_search.repos(None) if not args.repo else [r for r in targets if r.is_dir()]
+        summary = ce_search.build(index_roots, None, log=log)
         log(f"=== Suchindex: {summary['total_chunks']} Abschnitte, {summary['seconds']} s, Embeddings {'ja' if summary['embeddings'] else 'nein'}")
     except Exception as error:  # noqa: BLE001
         log(f"=== Suchindex: übersprungen ({error})")

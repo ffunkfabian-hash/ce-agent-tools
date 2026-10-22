@@ -35,6 +35,17 @@ import ce_common  # noqa: E402
 TAIL_LINES = 25
 REPEAT_MINUTES = 30
 REPEAT_HINT = "hint: voller Lauf nur einmal vor Abschluss - second full run within 30 minutes without a code change"
+TOOLS_VENV_PYTHON = Path.home() / ".local" / "share" / "ce-agent-tools" / "venv" / "bin" / "python"
+
+
+def _resolve_argv(argv: list[str], root: Path) -> list[str]:
+    """Use the project/tools virtualenv for bare python3 calls when the default python3 lacks PIL/numpy."""
+    if not argv or argv[0] not in ("python3", "python"):
+        return argv
+    for candidate in (root / ".venv" / "bin" / "python", TOOLS_VENV_PYTHON):
+        if candidate.is_file():
+            return [str(candidate), *argv[1:]]
+    return argv
 
 
 def cache_dir() -> Path:
@@ -93,8 +104,9 @@ def commands_of(value) -> list[list[str]]:
 
 def run_one(argv: list[str], root: Path) -> dict:
     start = time.monotonic()
+    resolved = _resolve_argv(argv, root)
     try:
-        done = subprocess.run(argv, cwd=root, capture_output=True, text=True)
+        done = subprocess.run(resolved, cwd=root, capture_output=True, text=True)
         code, output = done.returncode, done.stdout + done.stderr
     except OSError as error:
         code, output = 127, f"cannot start {argv[0]}: {error}\n"

@@ -37,6 +37,8 @@ INFRASTRUCTURE = re.compile(
     r"(^|/)(ce_(?:check|contract|interfaces|judge|codex_cloud|report|sync|nightly|lint|docs|api(?:_budget)?)|"
     r"heavy_lock|testplan|quick_check|check_docs|check_skills|guard|precommit|verify)(\.py|\.sh)?$|schema|contract", re.I)
 CORE_CANDIDATE = re.compile(r"^(?:Assets/Scripts/|Assets/Tests/Runner/|Packages/|ProjectSettings/)|\.asmdef$", re.I)
+LARGE_DIFF_LINES = 1500
+LARGE_DIFF_BYTES = 100_000
 
 
 def git(*args, cwd=None) -> str:
@@ -145,7 +147,11 @@ def main(argv: list[str]) -> int:
     prompt = template().replace("<Repo> <Version> „<Name>“ (Basis <Commit>)", f"{cwd.name} @ {head} (Basis {base})")
     prompt = prompt.replace("<Pfade, falls nötig>", ", ".join(names[:20])).replace("<…>", args.known or "keine")
     lines = sum(1 for line in diff.splitlines() if line.startswith(("+", "-")))
+    diff_bytes = len(diff.encode("utf-8"))
     print(f"ce_judge: {len(names)} Dateien, {lines} Diff-Zeilen, Richter {model} ({MODELS[model][0]} {MODELS[model][1]}), Grund: {routing_reason}, Basis {base}")
+    if (lines > LARGE_DIFF_LINES or diff_bytes > LARGE_DIFF_BYTES) and not args.files:
+        print(f"ce_judge: WARNUNG: großer Diff ({lines} Zeilen, {diff_bytes // 1024} KB) – "
+              "für vollständige Prüftiefe ggf. zusätzlich geteilte Teilprüfungen mit --files <Pfad...> ausführen")
     if args.dry_run or args.opus:
         print("--- Prompt ---\n" + prompt)
         if args.opus:

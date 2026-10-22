@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 „Watchtower“ – 2026-10-21
+
+- **Hold-Schutz & Entkopplung (`ce_sync.py`, `ce_common.py`):** `ce_sync.py` löst seine Standardziele über `DEFAULT_SYNC_NAMES` unabhängig von `ce_worktrees.DEFAULT_REPOS` auf und verweigert das Schreiben in Repos mit aktivem `"hold"` in `repos.json` (`BLOCKED`).
+- **8-Repo-Abdeckung & Codex-Sitzungsschutz (`ce_worktrees.py`, `ce_nightly.py`):** `ce_worktrees.py` prüft alle acht Repos aus `repos.json` und schützt neben Claude-Transcripts auch kürzlich aktive Codex-Rollout-Sitzungen (`~/.codex/sessions`); `ce_nightly.py --all` indiziert für `ce_search` alle acht Repos einschließlich `nexogen` und `ce-agent-tools`.
+- **Reproduzierbare Testumgebung, Review-Größenwarnung & Cache-Hinweis (`ce_check.py`, `ce_judge.py`, `ce_report.py`):** `ce_check.py` nutzt für nackte `python3`-Aufrufe automatisch `.venv` bzw. `~/.local/share/ce-agent-tools/venv` (`requirements-dev.txt`); `ce_judge.py` gibt ab 1.500 Zeilen / 100 KB eine Größenwarnung mit `--files`-Aufteilungshinweis aus, ohne JSON-/Fixture-Diffs abzuschneiden; `ce_report.hints()` formuliert den Cache-Write-Hinweis nicht-spekulativ. [Version 0.9](docs/versions/0.9.md).
+
 ## 0.8.0 „Tokenharbor“ – 2026-10-21
 
 - `./ce api login|status|budget|ask`: lokaler Console-Browser-Login im isolierten Nexogen-Profil; explizite Textanfragen ohne Werkzeuge, automatische Wiederholungen oder Zugangsdaten im Repo.

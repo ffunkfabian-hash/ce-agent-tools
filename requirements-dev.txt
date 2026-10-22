@@ -1,0 +1,4 @@
+# Optional image/media dependencies for ce_imagediff.py, ce_media.py and their unit tests.
+# Local environment: ~/.local/share/ce-agent-tools/venv (automatically resolved by ce_check.py).
+Pillow>=10.0
+numpy>=1.26

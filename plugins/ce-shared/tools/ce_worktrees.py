@@ -6,7 +6,7 @@ as it can be found: Claude Code keeps sessions of a folder in ~/.claude/projects
 (newest file = latest session, "active" when it changed within --active-minutes, default 60), and running claude/codex
 processes whose working directory is the worktree (lsof, when available). A worktree is marked "NICHT LÖSCHEN" when
 a session uses it (active or running process), when it has open changes, or when its branch has commits main lacks.
-Output: table by default (--list: long form, --json: data). Default repos: the four of the standard (CE_REPOS = path list separated by ':' overrides). Read-only.
+Output: table by default (--list: long form, --json: data). Default repos: all eight standard repos from repos.json (CE_REPOS = path list separated by ':' overrides). Read-only.
 """
 from __future__ import annotations
 
@@ -23,9 +23,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
 
 HOME = Path.home()
+DEFAULT_REPO_NAMES = ["cubeescape", "cubeescape-cubegen", "cubeescape-robogen", "cubeescape-toolgen",
+                      "cubeescape-formgen", "cubeescape-motiongen", "cubeescape-nexogen", "ce-agent-tools"]
 DEFAULT_REPOS = [HOME / "Claude" / "Cube Escape", HOME / "cubegen", HOME / "Claude" / "cubeescape-robogen",
                  HOME / "Claude" / "cubeescape-toolgen"]
 DO_NOT_DELETE = "NICHT LÖSCHEN"
+
+
+def default_repos(home: Path | None = None) -> list[Path]:
+    return ce_common.standard_repos(DEFAULT_REPO_NAMES, home or HOME) or DEFAULT_REPOS
 
 
 def parse_worktrees(porcelain: str) -> list[dict]:
@@ -57,18 +63,85 @@ def project_dir_name(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
-def latest_session(path: str, projects: Path) -> dict | None:
-    """{"id", "age_minutes"} of the newest session file of this folder, None if there is none."""
+def codex_sessions_by_cwd(codex_dir: Path | None = None) -> dict[str, dict]:
+    """Newest Codex rollout session per working directory from ~/.codex/sessions/*/*/*/rollout-*.jsonl."""
+    root = Path(os.environ.get("CE_CODEX_SESSIONS") or codex_dir or (HOME / ".codex" / "sessions"))
+    if not root.is_dir():
+        return {}
+    found: dict[str, dict] = {}
+    try:
+        files = sorted(root.glob("*/*/*/rollout-*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return {}
+    now = time.time()
+    for file in files:
+        try:
+            age_minutes = (now - file.stat().st_mtime) / 60
+            with file.open("r", encoding="utf-8", errors="replace") as handle:
+                first = handle.readline()
+            if not first:
+                continue
+            record = json.loads(first)
+            payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+            cwd = payload.get("cwd")
+            if not isinstance(cwd, str) or not cwd:
+                continue
+            session_id = str(payload.get("session_id") or payload.get("id") or file.stem)
+            for key in {cwd, str(Path(cwd).resolve()) if Path(cwd).exists() else cwd}:
+                prev = found.get(key)
+                if prev is None or age_minutes < prev["age_minutes"]:
+                    found[key] = {"id": session_id, "age_minutes": age_minutes, "title": f"codex:{session_id[:8]}"}
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def _norm_Variants(path: str) -> set[str]:
+    p = Path(path)
+    out = {path.rstrip("/") or "/"}
+    if p.exists():
+        try:
+            out.add(str(p.resolve()).rstrip("/") or "/")
+        except OSError:
+            pass
+    return out
+
+
+def latest_session(path: str, projects: Path, codex_sessions: dict[str, dict] | None = None,
+                   all_worktrees: list[str] | None = None) -> dict | None:
+    """{"id", "age_minutes"} of the newest Claude or Codex session file of this folder, None if there is none."""
     folder = projects / project_dir_name(path)
+    candidates: list[dict] = []
     try:
         files = [f for f in folder.glob("*.jsonl") if f.is_file()]
     except OSError:
+        files = []
+    if files:
+        newest = max(files, key=lambda f: f.stat().st_mtime)
+        candidates.append({"id": newest.stem, "age_minutes": (time.time() - newest.stat().st_mtime) / 60,
+                           "title": session_title(newest)})
+    if codex_sessions:
+        target_variants = _norm_Variants(path)
+        other_variants: set[str] = set()
+        for wt in all_worktrees or []:
+            wt_vars = _norm_Variants(wt)
+            if not (wt_vars & target_variants):
+                other_variants |= wt_vars
+        for cwd_key, info in codex_sessions.items():
+            norm_cwd = cwd_key.rstrip("/") or "/"
+            matched_targets = [t for t in target_variants if norm_cwd == t or norm_cwd.startswith(t + "/")]
+            if not matched_targets:
+                continue
+            best_target_len = max(len(t) for t in matched_targets)
+            deeper_other = any(
+                (norm_cwd == o or norm_cwd.startswith(o + "/")) and len(o) > best_target_len
+                for o in other_variants
+            )
+            if not deeper_other:
+                candidates.append(info)
+    if not candidates:
         return None
-    if not files:
-        return None
-    newest = max(files, key=lambda f: f.stat().st_mtime)
-    return {"id": newest.stem, "age_minutes": (time.time() - newest.stat().st_mtime) / 60,
-            "title": session_title(newest)}
+    return min(candidates, key=lambda item: item["age_minutes"])
 
 
 def session_title(file: Path) -> str | None:
@@ -109,7 +182,9 @@ def process_cwds() -> dict[str, list[str]]:
     return found
 
 
-def worktree_state(item: dict, base: str, projects: Path, cwds: dict[str, list[str]], active_minutes: float) -> dict:
+def worktree_state(item: dict, base: str, projects: Path, cwds: dict[str, list[str]], active_minutes: float,
+                   codex_sessions: dict[str, dict] | None = None,
+                   all_worktrees: list[str] | None = None) -> dict:
     path = Path(item["path"])
     state = dict(item, exists=path.is_dir(), dirty=None, ahead=None, behind=None, session=None, processes=[])
     if state["exists"]:
@@ -119,7 +194,7 @@ def worktree_state(item: dict, base: str, projects: Path, cwds: dict[str, list[s
         if counts:
             behind, ahead = counts.split()
             state["behind"], state["ahead"] = int(behind), int(ahead)
-    state["session"] = latest_session(item["path"], projects)
+    state["session"] = latest_session(item["path"], projects, codex_sessions, all_worktrees)
     state["processes"] = cwds.get(item["path"], [])
     reasons = []
     if state["processes"]:
@@ -136,16 +211,25 @@ def worktree_state(item: dict, base: str, projects: Path, cwds: dict[str, list[s
 
 
 def collect(repos: list[Path], projects: Path, base: str = "main", active_minutes: float = 60,
-            cwds: dict[str, list[str]] | None = None) -> list[tuple[Path, list[dict]]]:
+            cwds: dict[str, list[str]] | None = None, codex_dir: Path | None = None) -> list[tuple[Path, list[dict]]]:
     cwds = process_cwds() if cwds is None else cwds
-    result = []
+    codex_sessions = codex_sessions_by_cwd(codex_dir)
+    repo_items: list[tuple[Path, list[dict] | None]] = []
+    all_worktrees: list[str] = []
     for repo in repos:
         listing = ce_common.git_out(repo, "worktree", "list", "--porcelain") if repo.is_dir() else None
         if listing is None:
-            result.append((repo, []))
+            repo_items.append((repo, None))
             continue
         items = [w for w in parse_worktrees(listing) if not w["bare"]]
-        result.append((repo, [worktree_state(w, base, projects, cwds, active_minutes) for w in items]))
+        repo_items.append((repo, items))
+        all_worktrees.extend(w["path"] for w in items)
+    result = []
+    for repo, items in repo_items:
+        if items is None:
+            result.append((repo, []))
+        else:
+            result.append((repo, [worktree_state(w, base, projects, cwds, active_minutes, codex_sessions, all_worktrees) for w in items]))
     return result
 
 
@@ -204,7 +288,7 @@ def format_table(rows: list[list[str]]) -> str:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--repos", nargs="+", help="repositories (default: the four standard repos or CE_REPOS)")
+    parser.add_argument("--repos", nargs="+", help="repositories (default: the eight standard repos from repos.json or CE_REPOS)")
     parser.add_argument("--base", default="main", help="base branch for ahead/behind")
     parser.add_argument("--active-minutes", type=float, default=60)
     parser.add_argument("--projects", default=str(HOME / ".claude" / "projects"), help="Claude Code session folder")
@@ -217,7 +301,7 @@ def main(argv: list[str]) -> int:
     elif os.environ.get("CE_REPOS"):
         repos = [Path(r) for r in os.environ["CE_REPOS"].split(":") if r]
     else:
-        repos = DEFAULT_REPOS
+        repos = default_repos(HOME)
     collected = collect(repos, Path(args.projects), args.base, args.active_minutes)
     if args.json:
         print(json.dumps([{"repo": str(repo), "worktrees": states} for repo, states in collected], indent=1))

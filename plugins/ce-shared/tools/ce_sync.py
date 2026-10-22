@@ -31,6 +31,7 @@ SYNC_FILES = ["heavy_lock.py", "ce_common.py", "ce_check.py", "ce_lint.py", "ce_
               "ce_codex_quota.py", "ce_codex_cloud.py", "ce_contract.py", "ce_interfaces.py", "ce_search.py", "ce_report.py", "ce_imagediff.py", "ce_media.py",
               "ce_judge.py", "ce_api.py", "ce_api_budget.py", "ce"]
 DATA_DIRS = ["contracts", "agents"]  # copied verbatim next to the tools (plugins/ce-shared/contracts -> <tools_dir>/contracts)
+DEFAULT_SYNC_NAMES = ["cubeescape", "cubeescape-cubegen", "cubeescape-robogen", "cubeescape-toolgen"]
 DEFAULT_TOOLS_DIR = "scripts/ce_tools"
 DEFAULT_PLUGIN_TOOLS = Path.home() / ".claude" / "plugins" / "marketplaces" / "ce-agent-tools" / "plugins" / "ce-shared" / "tools"
 HEADER = "# GENERATED from ce-agent-tools {version} - do not edit"
@@ -155,8 +156,12 @@ def repos_of(args) -> list[Path]:
         return [Path(args.repo)]
     if os.environ.get("CE_REPOS"):
         return [Path(r) for r in os.environ["CE_REPOS"].split(":") if r]
-    import ce_worktrees
-    return list(ce_worktrees.DEFAULT_REPOS)
+    found = ce_common.standard_repos(DEFAULT_SYNC_NAMES)
+    if found:
+        return found
+    home = Path.home()
+    return [home / "Claude" / "Cube Escape", home / "cubegen", home / "Claude" / "cubeescape-robogen",
+            home / "Claude" / "cubeescape-toolgen"]
 
 
 def main(argv: list[str]) -> int:
@@ -179,15 +184,23 @@ def main(argv: list[str]) -> int:
             print(f"{repo.name}: {error}")
             bad += 1
             continue
+        name = config.get("name", root.name)
+        if not args.check:
+            hold = ce_common.repo_hold(root)
+            if hold:
+                print(f"{name}: BLOCKED (hold in repos.json: {hold})")
+                if not args.all:
+                    bad += 1
+                continue
         if args.check:
             findings = check(root, config, source)
             bad += bool(findings)
-            print(f"{config.get('name', root.name)}: " + ("embedded tools ok" if not findings else "DEVIATES"))
+            print(f"{name}: " + ("embedded tools ok" if not findings else "DEVIATES"))
             for level, text in findings:
                 print(f"  {level}: {text}")
         else:
             changed = sync(root, config, source)
-            print(f"{config.get('name', root.name)}: " + (f"updated {', '.join(changed)}" if changed else "up to date"))
+            print(f"{name}: " + (f"updated {', '.join(changed)}" if changed else "up to date"))
     return 1 if bad else 0
 
 
