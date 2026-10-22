@@ -195,6 +195,30 @@ class InterfaceAuditTests(unittest.TestCase):
         self.assertIn("consumer snapshots", str(report["connections"][0]["notes"]))
         self.assertFalse((self.roots["formgen"] / "claude/output/sheets/KG02.geo.json").exists())
 
+    def test_missing_toolgen_concept_validators_report_unavailable_and_never_pass(self):
+        root = self.roots["toolgen"]
+        importer = root / "scripts/import_concepts.py"
+        loader = root / "scripts/tool_assets/concept_spec.py"
+        native = interfaces._native
+        for available_importer, available_loader in ((False, False), (True, False), (False, True)):
+            for path, available in ((importer, available_importer), (loader, available_loader)):
+                path.unlink(missing_ok=True)
+                if available:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("raise AssertionError('must not run incomplete validators')\n")
+            with self.subTest(importer=available_importer, loader=available_loader), mock.patch.object(
+                    interfaces, "_native", side_effect=lambda kind, path, options:
+                    native(kind, path, options) if kind == "toolgen" else dict(checked=1, findings=[])):
+                status, report = self.report(["--toolgen", str(root)])
+                self.assertEqual(status, 1)
+                result = next(r for r in report["connections"] if r["connection"].endswith("provenance"))
+                self.assertEqual(result["checked"], 0)
+                self.assertEqual(result["status"], "failed")
+                self.assertIn("concept validation unavailable", str(result["findings"]))
+                missing = loader if available_importer else importer
+                self.assertIn(str(missing.relative_to(root)), str(result["findings"]))
+                self.assertNotIn("FileNotFoundError", str(result["findings"]))
+
     def test_native_toolgen_consumer_checks_stay_read_only(self):
         root = self.roots["toolgen"]
         folder = root / "data/concepts"; folder.mkdir(parents=True)

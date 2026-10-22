@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1 – 2026-10-22
+
+- Vertragsaudit benennt fehlende Toolgen-Konzeptprüfer vor deren Ausführung; ein älterer oder unvollständiger Checkout bleibt mit null geprüften Eingaben fehlgeschlagen. Regression prüft fehlenden Importer und fehlenden Loader.
+
 ## 0.11.0 „Wayfinder“ – 2026-10-22
 
 - Suche akzeptiert `formgen`/`motiongen` und deren GitHub-Namen auch bei historischen Indexnamen. Exakte vorhandene Indexnamen haben Vorrang; sonst bleiben Teilfilter erhalten. CLI und MCP verwenden denselben Suchpfad; Rot/Grün-Regression mit getrennten Repos ([Version](docs/versions/0.11.md)).
