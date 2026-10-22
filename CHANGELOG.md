@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0 „Indexwake“ – 2026-10-22
+
+- Inkrementelle Suchupdates entfernen FTS5-Begriffe mit den tatsächlichen alten Inhalten, Überschriften und Pfaden. Leere Löschwerte ließen veraltete Postings zurück und beschädigten die Suchkonsistenz nach Änderungen/Löschungen.
+- Zwei Rot/Grün-Regressionen decken Ersetzen, Löschen, Wiederanlegen, unveränderte Nachbardateien und externe FTS-Inhaltsintegrität ab. Acht-Repo-Index frisch wiederhergestellt; kein Lockstep- oder Fachrepo-Eingriff. [Version 0.10](docs/versions/0.10.md).
+
 ## 0.9.0 „Watchtower“ – 2026-10-21
 
 - **Hold-Schutz & Entkopplung (`ce_sync.py`, `ce_common.py`):** `ce_sync.py` löst seine Standardziele über `DEFAULT_SYNC_NAMES` unabhängig von `ce_worktrees.DEFAULT_REPOS` auf und verweigert das Schreiben in Repos mit aktivem `"hold"` in `repos.json` (`BLOCKED`).

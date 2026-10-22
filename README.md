@@ -129,6 +129,8 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **FTS5-External-Content löscht mit alten Werten:** Bei inkrementellem Ersetzen/Löschen die bisherigen Spaltenwerte an das FTS-`delete` übergeben; leere Strings hinterlassen alte Postings. Konsistenz zusätzlich gegen die Inhaltstabelle prüfen ([0.10](docs/versions/0.10.md)).
+
 - Schemaerfolg belegt keine Bild-/Rig-Abnahme; Originalverträge wiederverwenden und die tatsächlich geprüfte Tiefe nennen ([Pactguard](docs/versions/0.6.md)).
 - Nichtendliche JSON-Zahlen und doppelte Schlüssel vor dem Schema ablehnen; die Freigabe eines Richters kommt ausschließlich aus seiner Modellantwort auf stdout ([Pactguard](docs/versions/0.6.md)).
 - Alte Gesamtsperren und neue Ressourcen-Sperren teilen eine Barriere; die Umstellung darf laufende ältere Clients nicht überholen.
