@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0 „Wayfinder“ – 2026-10-22
+
+- Suche akzeptiert `formgen`/`motiongen` und deren GitHub-Namen auch bei historischen Indexnamen. Exakte vorhandene Indexnamen haben Vorrang; sonst bleiben Teilfilter erhalten. CLI und MCP verwenden denselben Suchpfad; Rot/Grün-Regression mit getrennten Repos ([Version](docs/versions/0.11.md)).
+
 ## 0.10.0 „Indexwake“ – 2026-10-22
 
 - Inkrementelle Suchupdates entfernen FTS5-Begriffe mit den tatsächlichen alten Inhalten, Überschriften und Pfaden. Leere Löschwerte ließen veraltete Postings zurück und beschädigten die Suchkonsistenz nach Änderungen/Löschungen.

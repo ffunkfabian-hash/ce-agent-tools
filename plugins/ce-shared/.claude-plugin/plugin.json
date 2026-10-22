@@ -1,6 +1,6 @@
 {
   "name": "ce-shared",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Gemeinsame Schutzregeln für Cube Escape, Cubegen und den Roboter-Generator (Force-Push, nacktes git stash, Teleport aus Sitzungen, Unity auf Checkouts oder ohne Ziel, GitHub Actions sparsam) und Werkzeuge der Subagents nach .claude/agent-guard.json eng fassen.",
   "author": {
     "name": "Fabian F"

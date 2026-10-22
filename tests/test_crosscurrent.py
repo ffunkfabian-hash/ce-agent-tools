@@ -129,6 +129,26 @@ class CrosscurrentTests(unittest.TestCase):
             self.assertTrue(hits)
             self.assertEqual(hits[0]["repo"], "stable-repo")
 
+    def test_search_resolves_public_names_but_preserves_exact_index_names_and_filters(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CE_SEARCH_EMBED": "0"}):
+            index = Path(tmp) / "index.sqlite"
+            roots = []
+            for name in ("cubeescape-reference", "cubeescape-design", "other-formgen"):
+                root = Path(tmp) / name; root.mkdir(); roots.append(root)
+                (root / ".ce-repo.json").write_text(json.dumps({"name": name}))
+                (root / "README.md").write_text("# Aliasfixture\nSearchableunique")
+            ce_search.build(roots, index, log=lambda line: None)
+            for alias, expected in (("motiongen", "cubeescape-reference"), ("cubeescape-motiongen", "cubeescape-reference"),
+                                    ("Formgen", "cubeescape-design"), ("cubeescape-formgen", "cubeescape-design")):
+                self.assertEqual({h["repo"] for h in ce_search.search("Searchableunique", repo=alias, index=index)}, {expected})
+            self.assertEqual(ce_search.search("Searchableunique", repo="reference", index=index)[0]["repo"], "cubeescape-reference")
+            self.assertEqual(ce_search.search("Searchableunique", repo="unknown", index=index), [])
+            root = Path(tmp) / "formgen"; root.mkdir()
+            (root / ".ce-repo.json").write_text('{"name":"formgen"}')
+            (root / "README.md").write_text("# Exact\nSearchableunique")
+            ce_search.build([root], index, log=lambda line: None)
+            self.assertEqual({h["repo"] for h in ce_search.search("Searchableunique", repo="formgen", index=index)}, {"formgen"})
+
     def test_search_incremental_update_removes_old_terms_and_preserves_other_files(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CE_SEARCH_EMBED": "0"}):
             root = Path(tmp) / "source"; root.mkdir()
