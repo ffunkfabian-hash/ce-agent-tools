@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 „Wakeline“ – unveröffentlicht
+
+- Der Postfach-Wächter startet von selbst: Ein Stop-Hook (`async`, `asyncRewake`, `timeout` 12 h) wartet für eine reservierte Sitzung im Hintergrund auf Nachrichten im Postfach #16 und weckt sie mit Exit 2 und dem Kommentar. Gelesen wird ab der letzten behandelten Nachricht bzw. der Reservierung; behandelt ist eine Nachricht erst mit Nachweis im Transcript, sonst kommt sie genau einmal erneut (gekennzeichnet).
+- Rückfall: Läuft kein Wächter, hält ein zweiter Stop-Hook das Anhalten einmal an und nennt den Startbefehl – höchstens alle 2 h, nie ohne `gh`, nicht nach einem GitHub-Fehler. `./ce session mail` braucht keinen Namen mehr, teilt Pid und Stand (atomar) mit dem Hook, Exit 4 = Wächter läuft schon, Exit 5 = kein Name und keine Reservierung.
+- Anlass: Formgen-Patch „holo-familie“ startete den Wächter trotz Prompt nicht, zwei Nachrichten kamen nicht an. Live-Probe am Mac offen (`asyncRewake` am Stop-Hook, Laufdauer, Nachweis im Transcript). [Version](docs/versions/0.15.md).
+
 ## 0.14.0 „Crosstalk“ – unveröffentlicht
 
 - Sitzungen melden sich selbst an: `--reserve` (und neu `--patch <kurzname>`) schreibt nach dem Branch-Push `<Name> → Sightline: angemeldet` mit Repo, Branch, Basis, Auftrag und Wächterbefehl ins Postfach #16. Eine fehlgeschlagene Anmeldung hebt die Reservierung nicht auf und gibt den Text zum Einfügen aus.

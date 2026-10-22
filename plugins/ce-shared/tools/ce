@@ -14,7 +14,7 @@ case "$cmd" in
       patch) exec python3 "$tools/ce_session_name.py" --reserve --patch "$@";;
       mail) exec python3 "$tools/ce_await_mail.py" "$@";;
       say|who) exec python3 "$tools/ce_postfach.py" "$sub" "$@";;
-      *) echo "session reserve <Name> | patch <kurzname> | topics | mail --name <Name> | say [--to <Empfänger>] <Thema> [Zeilen] | who"; exit 2;;
+      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] | say [--to <Empfänger>] <Thema> [Zeilen] | who"; exit 2;;
     esac;;
   codex)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
@@ -55,7 +55,7 @@ case "$cmd" in
   report)   exec python3 "$tools/ce_report.py" "$@";;
   api)      exec python3 "$tools/ce_api.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
-  mail)     exec python3 "$tools/ce_await_mail.py" --name "$@";;
+  mail)     case "${1:-}" in ""|-*) exec python3 "$tools/ce_await_mail.py" "$@";; esac; exec python3 "$tools/ce_await_mail.py" --name "$@";;
   say|who)  exec python3 "$tools/ce_postfach.py" "$cmd" "$@";;
   help|--help|-h) sed -n 2,4p "$0";;
   *)        sed -n 2,4p "$0"; exit 2;;
