@@ -3,7 +3,8 @@
 
 SessionStart (additionalContext): the repo's docs/LESSONS.md (or Docs/), the session-name proposal of ce_session_name.py, and
 one line naming the tools every session is expected to use (ce_search, heavy_lock --resource, session_name --reserve,
-./check, pruefung.md). Nothing is installed.
+./check, pruefung.md). Nothing is installed. Since 0.16 it also compares the loaded ce-shared version with the newest this machine
+knows (marketplace clone, any install in installed_plugins.json) and warns visibly when the session runs an older one.
 Stop: runs ce_report.py on the transcript, appends its line to report.md in the worktree (untracked) and warns (systemMessage)
 when the diff touches code/assets but no ./check or test ran in this session (check-before-stop), or when a long doc was read
 without any search first. It never blocks; any error lets the session end.
@@ -38,16 +39,44 @@ def lessons(root: Path) -> str:
     return ""
 
 
+def loaded_version(plugin_root: Path = PLUGIN_ROOT) -> str:
+    try:
+        return json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")).get("version") or ""
+    except (OSError, ValueError):
+        return ""
+
+
+def version_hint(plugin_root: Path = PLUGIN_ROOT, folder=None) -> str:
+    """a warning when this session loaded an older ce-shared than the machine has (0.16), else empty"""
+    sys.path.insert(0, str(plugin_root / "tools"))
+    import ce_plugins  # type: ignore
+    loaded = loaded_version(plugin_root)
+    newest = ce_plugins.newest_known(folder or ce_plugins.plugins_dir())
+    if not loaded or not newest or ce_plugins.version_key(loaded) >= ce_plugins.version_key(newest):
+        return ""
+    return (f"ce-shared {loaded} geladen, auf diesem Rechner gibt es {newest}: Hooks und Werkzeuge dieser Sitzung sind veraltet. "
+            f"Am Mac `./ce plugins check` – es nennt den Schritt (Update holen oder `./ce plugins fix --apply`); danach Sitzung neu starten.")
+
+
 def session_start(payload: dict) -> dict:
     root = Path(payload.get("cwd") or os.getcwd())
     parts = [TOOL_LINE]
+    try:
+        hint = version_hint()
+    except Exception:  # noqa: BLE001 - a broken check must not cost the session its context
+        hint = ""
+    if hint:
+        parts.insert(0, "WARNUNG: " + hint)
     proposal = run([sys.executable, str(TOOLS / "ce_session_name.py"), "--task", "Auftrag", "--offline"], cwd=root)
     if proposal:
         parts.append("Sitzungsname (Vorschlag ohne Version; mit --name <Name> --reserve für eine Version):\n" + proposal)
     text = lessons(root)
     if text:
         parts.append(text)
-    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n\n".join(parts)}}
+    result = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n\n".join(parts)}}
+    if hint:
+        result["systemMessage"] = hint
+    return result
 
 
 def changed_code(root: Path) -> bool:

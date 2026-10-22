@@ -2,6 +2,7 @@
 # ce - one entry for the shared tools of a repo (0.5.0): ./ce <command> [args]
 #   check [--full|--nightly]   session reserve|patch|topics|mail|say|who   codex quota|cloud|judge
 #   evidence clip|sheet|still|diff   search query|index|status   lock <resource>|status   docs   report   api login|status|budget|ask
+#   plugins check|fix [--apply] [--user-only]   (0.16: Claude-Code-Installationen von ce-shared auf einer Version)
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
@@ -55,8 +56,9 @@ case "$cmd" in
   report)   exec python3 "$tools/ce_report.py" "$@";;
   api)      exec python3 "$tools/ce_api.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
+  plugins)  exec python3 "$tools/ce_plugins.py" "$@";;
   mail)     case "${1:-}" in ""|-*) exec python3 "$tools/ce_await_mail.py" "$@";; esac; exec python3 "$tools/ce_await_mail.py" --name "$@";;
   say|who)  exec python3 "$tools/ce_postfach.py" "$cmd" "$@";;
-  help|--help|-h) sed -n 2,4p "$0";;
-  *)        sed -n 2,4p "$0"; exit 2;;
+  help|--help|-h) sed -n 2,5p "$0";;
+  *)        sed -n 2,5p "$0"; exit 2;;
 esac

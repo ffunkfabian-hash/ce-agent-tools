@@ -98,6 +98,7 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_nightly.py [--all\|--repo P] [install\|status]` | ein Nachtlauf für alle Repos (`check.nightly` je Repo) inkl. Suchindex über alle acht Standard-Repos, Bericht, LaunchAgent |
 | `ce_session_name.py [--name N] [--reserve] [--patch K] [--about A] [--model M] [--no-announce] [--topics]` | Sitzungsname und Branch; `--reserve` pusht den Branch (= Reservierung) und meldet die Sitzung im Postfach an (`<Name> → Sightline: angemeldet`, 0.14); `--patch K` reserviert `…/<repo>-patch-K` ebenso. Eine fehlgeschlagene Anmeldung lässt die Reservierung stehen und gibt den Text zum Einfügen aus |
 | `ce_postfach.py say [--to E] [--model M] <Thema> [Zeilen…]` / `who [--days N]` (`./ce session say\|who`) | Nachricht ins Postfach (cubeescape-nexogen#16) im Regelformat, Absender aus dem Branch, Empfänger eine Sitzung, Rolle oder `alle` (höchstens zehn Zeilen, `--dry-run`); `who` zeigt die Anmeldungen der letzten Tage mit der jüngsten Meldung je Sitzung. Sendet nur aus Repos, deren `origin` eine GitHub-URL ist (`CE_MAILBOX=0` schaltet ab); Absender = beim Reservieren gemerkter Name (`<git-dir>/ce-session.json`), sonst aus dem Branch |
+| `ce_plugins.py check\|fix [--apply] [--user-only]` (`./ce plugins …`) | Claude-Code-Installationen der ce-agent-tools-Plugins auf einer Version halten (0.16): listet die Einträge in `~/.claude/plugins/installed_plugins.json`, `fix` setzt veraltete Einträge (jeder Bereich) auf die neueste Installation mit vorhandenen Dateien und entfernt Einträge verschwundener Worktrees (Probelauf, mit `--apply` Sicherung und Schreiben; `--user-only` lässt nur die Nutzer-Installation). Lädt nichts herunter; liegt der Marketplace weiter, nennt es die Update-Befehle. Der SessionStart-Hook warnt sichtbar, wenn eine Sitzung ein älteres ce-shared geladen hat |
 | `ce_await_mail.py [--name N] [--issue …]` | wartet auf eine Nachricht an diese Sitzung im Postfach-Issue (cubeescape-nexogen#16); `→ alle:` weckt jede Sitzung außer der absendenden (0.14). Ohne `--name` gilt die Reservierung des Worktrees; Pid und behandelte Nachricht liegen in `<git-dir>/ce-watch.*`, geteilt mit dem Stop-Hook `hooks/postfach_watch.py`, der den Wächter ab 0.15 von selbst startet (Rückfall: einmalige Erinnerung); Exit 4 = Wächter läuft schon, Exit 5 = kein Name und keine Reservierung |
 | `ce_codex_quota.py`, `ce_codex_cloud.py` | Codex-Kontingent lesen, Codex-Cloud-Aufträge |
 | `heavy_lock.py run --resource unity\|blender\|gpu [--what X] [--checkout P] -- <Befehl>` / `status` | eine Sperre **je Ressource** für schwere Läufe (`~/Library/Caches/CubeEscape/heavy-<resource>.lock`; ohne `--resource` die alte gemeinsame Datei `heavy-run.lock`), hält bis zum letzten Enkelprozess; Unity-Regression und Blender-Bake laufen nebeneinander, zwei Läufe derselben Ressource nacheinander. Aufnahmen, Screenshots, Kontaktbögen, gezielte Tests und `quick`-Stufen sind nicht schwer und nehmen keine Sperre. Als Modul: `held(..., resource=)`, `HeavyLock`, `holder_pids()`, `Groups`, `run_group`/`run_forwarding` |
@@ -172,7 +173,7 @@ In `.claude/settings.json` jedes Repos:
 ```json
 {
   "extraKnownMarketplaces": {
-    "ce-agent-tools": {"source": {"source": "github", "repo": "ffunkfabian-hash/ce-agent-tools"}}
+    "ce-agent-tools": {"source": {"source": "github", "repo": "ffunkfabian-hash/ce-agent-tools"}, "autoUpdate": true}
   },
   "enabledPlugins": {"ce-shared@ce-agent-tools": true}
 }
@@ -180,7 +181,10 @@ In `.claude/settings.json` jedes Repos:
 
 Claude Code bietet beim Vertrauen des Ordners an, den Marketplace hinzuzufügen und das Plugin zu installieren; von Hand:
 `claude plugin marketplace add ffunkfabian-hash/ce-agent-tools` und `claude plugin install ce-shared@ce-agent-tools`.
-Aktualisieren: `claude plugin marketplace update ce-agent-tools`. Ohne Plugin fehlen die gemeinsamen Regeln – Codex und
+Aktualisieren: `autoUpdate` holt neue Versionen beim Start (0.16; Drittanbieter-Marketplaces sind sonst aus), von Hand
+`claude plugin marketplace update ce-agent-tools` und `claude plugin update ce-shared@ce-agent-tools`. Claude Code führt je Ordner
+(Checkout, jeder Worktree) einen eigenen Projekt-Eintrag, den diese Befehle nicht sicher erreichen: danach `./ce plugins check`
+und bei Abweichung `./ce plugins fix --apply` ([0.16](docs/versions/0.16.md)). Ohne Plugin fehlen die gemeinsamen Regeln – Codex und
 Antigravity bekommen denselben Wächter als User-Hook (unten), sonst befolgen sie die Regeln aus dem Text der `AGENTS.md`.
 
 ### Andere Clients (Codex, Antigravity)
@@ -261,6 +265,8 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **Ein Plugin-Update erreicht nicht jede Installation:** Claude Code hält je Ordner (Checkout, jeder Worktree, auch Codex-Worktrees) einen Projekt-Eintrag auf der Version seiner Anlage; `claude plugin update` bewegt den Nutzer-Eintrag, `--scope project` traf die Worktree-Einträge nicht (6 von 9 blieben auf 0.11/0.13). Versionen nach jedem Rollout mit `./ce plugins check` prüfen, die Sitzung warnt beim Start selbst ([0.16](docs/versions/0.16.md)).
+- **Tests mit fester Uhrzeit laufen ab:** Die Wächter-Tests der 0.15 nutzten `2026-10-22T18:10Z` als Kommentarzeit und wurden 30 min danach rot, weil der Wächter ab der Reservierung bzw. dem Rückblick liest. Zeiten in Tests relativ zu jetzt setzen ([0.16](docs/versions/0.16.md)).
 - **Einen Vorab-Wächter nicht zur Shell ausbauen:** Ein statischer Shell-Leser für `commit-on-main` wuchs auf ~860 Zeilen, und jede unabhängige Prüfung fand neue Gegenbeispiele (Variablen, Funktionsumgebung, parallele Pipelines, gescheiterte Wechsel). Vorabprüfung auf statisch eindeutige Formen begrenzen, den Rest mit Hinweis an eine Laufzeitschranke (Git-Hook) geben und diese mit echten Shellläufen testen ([0.12](docs/versions/0.12.md)).
 - **Ein Wächter darf nichts aus der geprüften Zeile ausführen:** Der Branchleser startete `git` mit der Umgebung des Befehls; `PATH=/fremd git commit` hätte schon bei der Prüfung ein fremdes `git` gestartet. Leseabfragen nur mit festem Git-Pfad und eigener kleiner Umgebung ([0.12](docs/versions/0.12.md)).
 - **Ein fehlendes Hook-Skript sperrt Codex komplett:** `python3 fehlt.py` endet mit Exit 2, und Exit 2 heißt in Codex „Werkzeugaufruf sperren“. Ein Syntax-/Importfehler endet mit Exit 1 ohne Antwort. Client-Hooks deshalb so eintragen, dass nur eine Antwort mit Exit 0 durchkommt, sonst eine Meldung ohne Block ([0.12](docs/versions/0.12.md)).

@@ -32,6 +32,7 @@ SYNC_FILES = ["heavy_lock.py", "ce_common.py", "ce_check.py", "ce_lint.py", "ce_
               "ce_judge.py", "ce_api.py", "ce_api_budget.py", "ce"]
 SYNC_FILES += ["ce_console.py", "ce_lock_status.py", "ce_blender_preflight.py", "ce_turnaround.py"]
 SYNC_FILES += ["ce_postfach.py"]  # 0.14: ./ce session say|who, announcement of ce_session_name.py --reserve
+SYNC_FILES += ["ce_plugins.py"]  # 0.16: ./ce plugins check|fix
 DATA_DIRS = ["contracts", "agents"]  # copied verbatim next to the tools (plugins/ce-shared/contracts -> <tools_dir>/contracts)
 DEFAULT_SYNC_NAMES = ["cubeescape", "cubeescape-cubegen", "cubeescape-robogen", "cubeescape-toolgen"]
 DEFAULT_TOOLS_DIR = "scripts/ce_tools"
