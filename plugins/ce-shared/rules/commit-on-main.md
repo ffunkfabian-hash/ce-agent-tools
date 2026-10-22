@@ -4,9 +4,9 @@ enabled: true
 event: bash
 action: block
 conditions:
-  - field: command
+  - field: git_commit
     operator: regex_match
-    pattern: \bgit\s+(-C\s+("[^"]*"|'[^']*'|\S+)\s+)?(checkout|switch)\s+(-b\s+)?(main|master)\b.*&&.*\bgit\s+commit\b|\bgit\s+commit\b.*--allow-empty-message
+    pattern: (?m)^(?-i:main|master)\s|--allow-empty-message
 ---
 
 **Kein Commit direkt auf `main`:** jede Arbeit läuft auf einem Branch `claude/<repo>-<version>-<name>` (Reservierung per

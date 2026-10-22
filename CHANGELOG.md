@@ -5,7 +5,13 @@
 - Bestehende Prüfwege erweitert: portable Vorher/Nachher-Ansicht, explizite RGB-Referenzgrenzen, lesende Ressourcen-/Sitzungs-/Quotenübersicht, semantische Referenz-/Zyklusprüfung, strenge Cloud-Auftragsdeklaration, native Prüfprofile sowie Blender-Preflight/Turnaround über bestehende Medienexporte.
 - Inkompatible Cloud-CLI ab 0.13: jeder Submit benötigt `--eligibility-file`; ältere Aufrufe müssen Manifest und Prompt-Hash ergänzen.
 - Kein zweiter Richter, Logikrunner, Runtime-Sentinel oder Unity-MCP-Server. Quoten ohne frische Quelle bleiben unbekannt, API-Budgets stammen ausschließlich aus dem lokalen Ledger; keine bezahlten Abfragen.
-- Basis 0.11.1; parallel entwickelte Hook-Version 0.12 ist vor gemeinsamer Auslieferung separat zusammenzuführen und zu prüfen. [Version](docs/versions/0.13.md).
+- Gemeinsam mit Agent Tools 0.12 Gatehouse: Client-Hooks und Git-Netz aus dessen freigegebenem main-Stand übernommen; Prüfung und globaler Rollout dieses gemeinsamen Stands. [Version](docs/versions/0.13.md).
+
+## 0.12.0 „Gatehouse“ – 2026-10-22
+
+- Gemeinsamer Wächter für Claude, Codex und Antigravity: dünne Client-Adapter, bestehende Regeln und durchlassende Fehlerbehandlung einschließlich fehlender/nicht ladender Module. Native Proben in Codex CLI 0.162.1, Antigravity CLI 1.4.5/IDE 2.5.5 sowie Claude Code 2.1.301; Antigravity zeigt Warn-/Fehlertexte in `allow.reason` nicht sichtbar an.
+- `commit-on-main` liest bei einzelnen einfachen Commit-Aufrufen den tatsächlichen Branch mit festem System-Git und sicherer Umgebung. main/master werden exakt unterschieden und bleiben auch mit gleichnamigen Tags geschützt. Komplexe Shell-Abläufe und Präfix-Zuweisungen gehen mit Hinweis an das Git-Netz; 311 Tests, Quick und unabhängiger Richter grün.
+- Reversibles Git-Netz (`pre-commit`/`pre-push`) sperrt main/master und echte Nicht-Fast-Forwards, erhält bestehende Hooks und kennt die Nutzerausnahme `CE_ALLOW_MAIN=1`. `--no-verify`, Merge-Commits und erzwungene Fast-Forwards bleiben dokumentierte Grenzen. [Verhalten, Einbau und Prüfbelege](docs/versions/0.12.md).
 
 ## 0.11.1 – 2026-10-22
 

@@ -10,6 +10,8 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 |---|---|
 | `plugins/ce-shared/rules/*.md` | gemeinsame Regeln im hookify-Format (siehe unten), ausgewertet bei jedem Bash-/Datei-Werkzeug |
 | `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents |
+| `plugins/ce-shared/hooks/codex_guard.py`, `antigravity_guard.py` | derselbe Wächter als Codex-/Antigravity-User-Hook (dünne Adapter über `client_adapter.py`, siehe „Andere Clients“) |
+| `plugins/ce-shared/githooks/ce_githooks.py` | Git-Netz pre-commit/pre-push je Repo, umkehrbar (siehe „Git-Netz“) |
 | `plugins/ce-shared/hooks/precommit.py` | PreToolUse vor `git commit`: bei geänderten Docs/Skills `ce_lint.py` + repo-eigenes `check_docs.py`, nur Warnung |
 | `plugins/ce-shared/tools/` | gemeinsame Werkzeuge (siehe „Werkzeuge“), lesen `.ce-repo.json` des Repos |
 | `tests/test_guard.py` | jede Regel mit treffenden und nicht treffenden Befehlen, Gleichstand mit den ersetzten hookify-Regeln, Profile |
@@ -23,10 +25,34 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | `teleport-nur-frisch` | blockiert | Teleport einer Cloud-Sitzung aus einer laufenden Sitzung heraus (verwarf zweimal offene Arbeit) |
 | `unity-nie-auf-checkout` | blockiert | Unity oder die Unity-CLI mit einem Cube-Escape-Checkout als Projekt (`-projectPath`, `--project-path`, `unity open/run/build`) |
 | `unity-cli-ziel-nennen` | blockiert | `unity mcp/command/list/job/eval/pipeline install` ohne `--project-path` (die CLI nähme sonst irgendeinen Editor) |
+| `commit-on-main` | blockiert | ein einfacher `git commit`, dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
+| `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` |
+| `heavy-unlocked`, `output-cap`, `judge-template` | warnt | schwerer Lauf ohne sichtbare Sperre; ganze JSON-/Log-Datei ausgeben; `codex exec` ohne Checkliste |
 | `actions-sparsam` | warnt | Bearbeiten eines GitHub-Workflows: globale Regel „GitHub Actions sparsam“ |
 
 Format wie hookify (`event: bash|file`, `conditions` mit `field` command/file_path/content/new_text/old_text, Operatoren
 `regex_match` (ohne Groß/klein), `contains`, `not_contains`, `equals`, `starts_with`, `ends_with`; `action: warn|block`).
+Zusätzlich `git_commit` (nur Bash), die **begrenzte Vorabprüfung** von `commit-on-main`: Beurteilt wird nur eine Zeile,
+die als Ganzes ein einziger einfacher Befehl `git [Optionen] commit …` aus festen Wörtern ist. Quotes, Backslashes,
+Zeilenfortsetzung und Kommentare werden wie in der Shell gelesen, auch innerhalb eines Worts (`'gi't commit`,
+`git 'c'ommit`, `g\it commit` zählen wie `git commit`); kein `$`, kein Backtick, keine Muster-/Klammererweiterung und
+keine Präfix-Zuweisung `NAME=wert` (auch nicht `GIT_DIR=…`, `PATH=…`, `CE_ALLOW_MAIN=1`). Der Branch kommt aus dem Ordner
+des Hook-Eingangs (`cwd`), `git -C`, `--git-dir`/`--work-tree`/`--bare` und den vom Client geerbten
+`GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`; gelesen vom System-Git (fester Pfad, `/usr/bin/git` zuerst) mit kleiner
+fester Umgebung – nie ein `git`, `PATH` oder Loader aus der geprüften Zeile oder der geerbten Umgebung. Auf
+`main`/`master` sperrt die Regel (ohne Ausnahme, `CE_ALLOW_MAIN` gilt nur im Git-Netz). Losgelöster HEAD, kein Repository oder fehlender Ordner sperren
+nicht. Ist der Branch nicht lesbar (kein System-Git, Zeitlimit, unerwarteter Git-Fehler) oder scheitert die Prüfung
+intern, läuft der Befehl mit Hinweis weiter; die übrigen Regeln werden trotzdem geprüft.
+
+**Nicht nachgebildet** wird die Shell: Präfix-Zuweisungen, Operatoren (`&&`, `;`, `|`, `&`, Zeilenumbruch), Subshells, Gruppen, Variablen,
+Befehlsersetzungen (auch Claudes übliches `git commit -m "$(cat <<'EOF' …)"`), Heredocs, Umleitungen, Funktionen,
+Wrapper (`env`, `command`, `timeout` …), eingebettete Shells (`bash -c`) und nicht ausgewertete Git-Optionen. Erwähnt
+eine solche Zeile `git … commit`, geht sie mit dem Hinweis „Vorabprüfung: möglicher `git commit` … das Git-Netz
+(pre-commit) prüft den tatsächlichen Branch beim Ausführen“ durch; der Hinweis kann auch bei harmlosen Zeilen erscheinen,
+die `git … commit` nur erwähnen; Zeilen ohne erkennbaren Commit bleiben still. Diese Fälle schützt nur das
+[Git-Netz](#git-netz) – in Repos ohne installiertes Netz gibt es für sie keine Sperre. Git-Aliase (`git ci`) erkennt die
+Vorabprüfung nicht; für den Hinweis bei zusammengesetzten Zeilen dient nur eine Texterkennung von `git … commit`. `--allow-empty-message` (auch als eindeutige Abkürzung) wird in jedem festen `git … commit`-Abschnitt der Zeile
+gesperrt, auch in zusammengesetzten Zeilen; als Wert von `-m`/`-F` oder nach `--` nicht.
 Eine neue Regel braucht Fälle in `SharedRuleTests.CASES`.
 
 ### Subagent-Profile
@@ -153,7 +179,53 @@ In `.claude/settings.json` jedes Repos:
 Claude Code bietet beim Vertrauen des Ordners an, den Marketplace hinzuzufügen und das Plugin zu installieren; von Hand:
 `claude plugin marketplace add ffunkfabian-hash/ce-agent-tools` und `claude plugin install ce-shared@ce-agent-tools`.
 Aktualisieren: `claude plugin marketplace update ce-agent-tools`. Ohne Plugin fehlen die gemeinsamen Regeln – Codex und
-andere Agenten befolgen sie aus dem Text der `AGENTS.md`.
+Antigravity bekommen denselben Wächter als User-Hook (unten), sonst befolgen sie die Regeln aus dem Text der `AGENTS.md`.
+
+### Andere Clients (Codex, Antigravity)
+
+Die Adapter übersetzen nur Ein- und Ausgabe; entschieden wird in `guard.decide` mit denselben `rules/*.md` (Gleichstand
+prüft `tests/test_client_hooks.py`). Eingetragen werden sie von Nexogens `./install.sh --client-hooks` (`--dry-run`,
+Sicherungen, `--remove-hooks`). Der eingetragene Befehl reicht nur eine Adapterantwort mit Exit 0 durch (auch eine Sperre);
+fehlt das Skript später oder startet es nicht (Syntax-/Importfehler), antwortet er mit Meldung ohne Block.
+
+| Client | Eintrag | Eingang | Ausgabe |
+|---|---|---|---|
+| Codex (CLI 0.162.1 gemessen; App ungemessen) | `~/.codex/hooks.json`, `PreToolUse`, Matcher `^(Bash\|apply_patch)$`; läuft erst nach Vertrauen unter `/hooks` | `tool_input.command` (Shellzeile bzw. Patchtext; je Datei des Patches ein Datei-Ereignis); MCP-/Funktionswerkzeuge nicht | Block `hookSpecificOutput.permissionDecision: "deny"`, Warnung `additionalContext` + `systemMessage`, sonst keine Ausgabe |
+| Antigravity (IDE 2.5.5/CLI 1.4.5 gemessen; App ungemessen) | `~/.gemini/config/hooks.json`, Name `ce-shared-guard`, Matcher `run_command\|write_to_file\|replace_file_content\|multi_replace_file_content` | `toolCall.args.CommandLine` bzw. `TargetFile` (+ Inhalt), Ordner aus `Cwd`/`workspacePaths` | `{"decision": "deny", "reason"}`; sonst `allow` (laut Doku: an Folgehook/normale Freigabe weiterreichen), Warnung als `reason` |
+
+Claude-Subagent-Profile (`.claude/agent-guard.json`) gelten nur in Claude Code. `CE_HOOK_LOG=<Datei>` in der Umgebung des
+Clients schreibt jede Ein-/Ausgabe als JSON-Zeile – das ist die Messung eines echten Clientlaufs; Adaptertests mit
+nachgebauter Eingabe sind keine. Was in welchem Client tatsächlich feuert, steht im [Versionsbericht 0.12](docs/versions/0.12.md). Antigravity hat in den
+gemessenen CLI-/IDE-Proben `allow.reason` bei Warnungen und Fehlern nicht sichtbar an den Agenten weitergegeben;
+Sperren über `deny` greifen. Eine sichtbare Warnung ist dort derzeit nicht belegt.
+
+Mehrere Workspace-Ordner: Antigravity CLI 1.4.5 liefert kein `Cwd`; der erste `workspacePaths`-Eintrag ist dann nur ein Kontext-Fallback. Gemessen sind Einordner-Workspaces. Bei mehreren Roots kann die Commit-Vorabprüfung falsch zuordnen; einen einzelnen Workspace oder absolutes `git -C` verwenden. Das Git-Netz arbeitet am tatsächlichen Aufruf ([Gatehouse](docs/versions/0.12.md)).
+
+### Git-Netz
+
+`python3 plugins/ce-shared/githooks/ce_githooks.py install|status|uninstall [--repo P …] [--dry-run]` (Nexogen:
+`./install.sh --git-hooks` für alle lokalen Repos aus `repos.json` außer `hold`). Ein Ordner `<git-common-dir>/ce-hooks`
+wird lokaler `core.hooksPath` (gilt für alle Worktrees); der vorherige Hook-Ordner bleibt unberührt und seine Hooks laufen
+weiter (pre-commit/pre-push nach der Prüfung mit denselben Argumenten und Eingaben, alle anderen beim Installieren
+vorhandenen unverändert). `uninstall` stellt den vorherigen lokalen Wert wieder her.
+
+| Hook | sperrt | Ausnahme |
+|---|---|---|
+| pre-commit | Commit, wenn HEAD auf `main`/`master` steht (losgelöster HEAD ist kein Branch) | `CE_ALLOW_MAIN=1` |
+| pre-push | Push nach `main`/`master` (auch Neuanlage, auch aus losgelöstem HEAD) | `CE_ALLOW_MAIN=1` |
+| pre-push | Löschen von `main`/`master`; Überschreiben eines vorhandenen Tags; jedes Update, dessen Remote-Commit nicht im gepushten Stand enthalten ist (fehlt er lokal, ist er es nicht: erst `git fetch`) | keine |
+
+Grenzen des Git-Protokolls: pre-push sieht Refs und Commits, keine Optionen – ein erzwungener Push, der faktisch ein
+Fast-Forward ist, sieht aus wie ein normaler und geht durch (die Client-Wächter prüfen die Optionen weiter);
+`--no-verify` überspringt beide Hooks; Merge-Commits laufen über pre-merge-commit (nicht abgedeckt). Fehler in der
+Prüfung lassen Git weiterlaufen; fehlt das Skript oder startet es nicht (z. B. Syntax-/Importfehler), melden die Wrapper
+dies und reichen an die vorherigen Hooks weiter. Deren Exitcode bleibt erhalten. Nur der Exitcode `REJECT` (86) von
+`ce_githooks.py check` ist eine bewusste Ablehnung; dann laufen die vorherigen Hooks nicht.
+
+Das Netz ist die Laufzeitschranke für alles, was die Vorabprüfung von `commit-on-main` nicht beurteilt (Variablen,
+Funktionen, Pipelines, gescheiterte Branchwechsel, Kindshells …): pre-commit sieht den HEAD, auf dem der Commit
+tatsächlich entsteht. `tests/test_githooks.py` › `PrecheckBoundaryTests` führt solche Zeilen mit echter Bash in
+Wegwerf-Repos aus – gegen main abgelehnt, auf Arbeitsbranches normal.
 
 ## Entwickeln
 
@@ -187,6 +259,10 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **Einen Vorab-Wächter nicht zur Shell ausbauen:** Ein statischer Shell-Leser für `commit-on-main` wuchs auf ~860 Zeilen, und jede unabhängige Prüfung fand neue Gegenbeispiele (Variablen, Funktionsumgebung, parallele Pipelines, gescheiterte Wechsel). Vorabprüfung auf statisch eindeutige Formen begrenzen, den Rest mit Hinweis an eine Laufzeitschranke (Git-Hook) geben und diese mit echten Shellläufen testen ([0.12](docs/versions/0.12.md)).
+- **Ein Wächter darf nichts aus der geprüften Zeile ausführen:** Der Branchleser startete `git` mit der Umgebung des Befehls; `PATH=/fremd git commit` hätte schon bei der Prüfung ein fremdes `git` gestartet. Leseabfragen nur mit festem Git-Pfad und eigener kleiner Umgebung ([0.12](docs/versions/0.12.md)).
+- **Ein fehlendes Hook-Skript sperrt Codex komplett:** `python3 fehlt.py` endet mit Exit 2, und Exit 2 heißt in Codex „Werkzeugaufruf sperren“. Ein Syntax-/Importfehler endet mit Exit 1 ohne Antwort. Client-Hooks deshalb so eintragen, dass nur eine Antwort mit Exit 0 durchkommt, sonst eine Meldung ohne Block ([0.12](docs/versions/0.12.md)).
+- **Antigravitys Web-Doku und installierter Stand können abweichen:** Die im `language_server` eingebettete Hook-Doku nennt eine andere `allow`-Bedeutung und Werkzeugnamen aus Step-Typen; Adapter nach Argumentform statt Namen, Verhalten am echten Client messen. Gemessen: der Hook läuft im Ordner der `hooks.json`, und das CLI sendet kein `Cwd` – den Repo-Ordner aus `workspacePaths` nehmen ([0.12](docs/versions/0.12.md)).
 - **FTS5-External-Content löscht mit alten Werten:** Bei inkrementellem Ersetzen/Löschen die bisherigen Spaltenwerte an das FTS-`delete` übergeben; leere Strings hinterlassen alte Postings. Konsistenz zusätzlich gegen die Inhaltstabelle prüfen ([0.10](docs/versions/0.10.md)).
 
 - Schemaerfolg belegt keine Bild-/Rig-Abnahme; Originalverträge wiederverwenden und die tatsächlich geprüfte Tiefe nennen ([Pactguard](docs/versions/0.6.md)).

@@ -18,6 +18,22 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
 - Committen, taggen und pushen nur auf Wunsch des Nutzers; nie `--force`. Kein GitHub-Workflow ohne Wunsch (globale
   Regel „GitHub Actions sparsam“).
 
+## Plugins und Hooks
+
+- **Eine Entscheidung, drei Clients:** `hooks/guard.py` (`decide`) mit `rules/*.md` ist die einzige Regel-Logik. Claude Code
+  ruft sie über das Plugin auf, Codex über `hooks/codex_guard.py`, Antigravity über `hooks/antigravity_guard.py`; Adapter
+  übersetzen nur Ein-/Ausgabe, nie eigene Regeln. Korrekturen gehören in `guard.py` und gelten damit überall.
+- **Git-Netz:** `githooks/ce_githooks.py` (pre-commit/pre-push) unabhängig vom Client; Grenzen (Optionen, `--no-verify`)
+  stehen im README › Git-Netz.
+- **Vorabprüfung begrenzt:** `commit-on-main` beurteilt vor dem Lauf nur einen einzelnen einfachen `git … commit` aus
+  festen Wörtern (README › Regeln, Feld `git_commit`); alles Zusammengesetzte geht mit Hinweis an das Git-Netz. Keine
+  Shell-Nachbildung in `guard.py` – neue Gegenbeispiele werden Laufzeittests des Netzes (`PrecheckBoundaryTests`).
+- **Fail-open:** Adapter antworten immer mit Exit 0 und gültigem Clientformat, auch wenn `guard.py` oder `client_adapter.py` nicht lädt; eingetragene
+  Befehle reichen nur eine Antwort mit Exit 0 durch, sonst eine Meldung ohne Block (fehlendes Skript, Syntax-/Importfehler;
+  Exit 2 hieße in Codex: alles sperren). Git-Wrapper: nur Exitcode `REJECT` ist eine Ablehnung, alles andere ein Startfehler.
+- **Belege:** Adaptertests mit nachgebauter Eingabe sind keine Client-Probe; gemessene Eingaben (`CE_HOOK_LOG`) kommen als
+  Fixture nach `tests/fixtures/`, Stand je Client im Versionsbericht.
+
 ## Erfahrungen
 
 Werkzeug-Fallen und Gründe stehen im [README](README.md), Abschnitt „Erfahrungen“. Schwesterprojekte lesen diese Stelle vor Integrationsänderungen.
