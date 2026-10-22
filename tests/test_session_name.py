@@ -69,7 +69,7 @@ class ReserveTests(unittest.TestCase):
         (self.repo / ".ce-repo.json").write_text('{"name": "cubeescape-toolgen", "version": "0.19"}')
         env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
         import os
-        self.env = dict(os.environ, **env)
+        self.env = dict(os.environ, **env, CE_MAILBOX="0")  # 0.14: never announce from a test
         subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-m", "init"], check=True, env=self.env)
         subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", str(self.bare)], check=True)
