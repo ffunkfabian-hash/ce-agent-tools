@@ -4,6 +4,7 @@ import datetime as dt
 import io
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -127,6 +128,42 @@ class CrosscurrentTests(unittest.TestCase):
             hits = ce_search.search("identity", 8, "stable-repo", None, index)
             self.assertTrue(hits)
             self.assertEqual(hits[0]["repo"], "stable-repo")
+
+    def test_search_incremental_update_removes_old_terms_and_preserves_other_files(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CE_SEARCH_EMBED": "0"}):
+            root = Path(tmp) / "source"; root.mkdir()
+            (root / ".ce-repo.json").write_text('{"name":"stable-repo"}')
+            changed = root / "changed.md"
+            changed.write_text("# Oldheadingunique\nObsoleteunique")
+            (root / "stable.md").write_text("# Stable\nPersistentunique")
+            index = Path(tmp) / "index.sqlite"
+            ce_search.build([root], index, log=lambda line: None)
+            changed.write_text("# Newheadingunique\nReplacementunique")
+            ce_search.build([root], index, log=lambda line: None)
+            with sqlite3.connect(index) as db:
+                db.execute("INSERT INTO chunks_fts(chunks_fts, rank) VALUES('integrity-check', 1)")
+            self.assertEqual(ce_search.search("Obsoleteunique", repo="stable-repo", index=index), [])
+            self.assertEqual(ce_search.search("Oldheadingunique", repo="stable-repo", index=index), [])
+            self.assertEqual(ce_search.search("Replacementunique", repo="stable-repo", index=index)[0]["path"], "changed.md")
+            self.assertEqual(ce_search.search("Persistentunique", repo="stable-repo", index=index)[0]["path"], "stable.md")
+            self.assertEqual(ce_search.build([root], index, log=lambda line: None)["files"], 0)
+
+    def test_search_incremental_delete_and_recreate_keeps_fts_consistent(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CE_SEARCH_EMBED": "0"}):
+            root = Path(tmp) / "source"; root.mkdir()
+            (root / ".ce-repo.json").write_text('{"name":"stable-repo"}')
+            removed = root / "removed.md"; removed.write_text("# Removedheadingunique\nDeletedunique")
+            index = Path(tmp) / "index.sqlite"
+            ce_search.build([root], index, log=lambda line: None)
+            removed.unlink()
+            ce_search.build([root], index, log=lambda line: None)
+            with sqlite3.connect(index) as db:
+                db.execute("INSERT INTO chunks_fts(chunks_fts, rank) VALUES('integrity-check', 1)")
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM files WHERE repo='stable-repo'").fetchone()[0], 1)
+            removed.write_text("# Recreated\nRecreatedunique")
+            ce_search.build([root], index, log=lambda line: None)
+            self.assertEqual(ce_search.search("Deletedunique", repo="stable-repo", index=index), [])
+            self.assertEqual(ce_search.search("Recreatedunique", repo="stable-repo", index=index)[0]["path"], "removed.md")
 
     def test_contract_validator_checks_extra_properties_and_numeric_schema_order(self):
         import ce_contract

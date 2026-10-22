@@ -168,6 +168,13 @@ def source_files(root: Path):
                 yield path
 
 
+def delete_file_chunks(db: sqlite3.Connection, name: str, rel: str):
+    # External-content FTS5 needs the original indexed values to remove postings.
+    old = db.execute("SELECT id, body, heading, path, repo FROM chunks WHERE repo=? AND path=?", (name, rel)).fetchall()
+    db.executemany("INSERT INTO chunks_fts(chunks_fts, rowid, body, heading, path, repo) VALUES('delete', ?, ?, ?, ?, ?)", old)
+    db.execute("DELETE FROM chunks WHERE repo=? AND path=?", (name, rel))
+
+
 def index_repo(db: sqlite3.Connection, root: Path, model, log) -> tuple[int, int]:
     """(files indexed, chunks written); unchanged files (same sha256) are skipped."""
     try:
@@ -189,9 +196,7 @@ def index_repo(db: sqlite3.Connection, root: Path, model, log) -> tuple[int, int
         if known.get(rel) == sha:
             continue
         files += 1
-        for cid, in db.execute("SELECT id FROM chunks WHERE repo=? AND path=?", (name, rel)):
-            db.execute("INSERT INTO chunks_fts(chunks_fts, rowid, body, heading, path, repo) VALUES('delete', ?, '', '', '', '')", (cid,))
-        db.execute("DELETE FROM chunks WHERE repo=? AND path=?", (name, rel))
+        delete_file_chunks(db, name, rel)
         kind = kind_of(rel)
         rows = [(name, rel, kind, heading, start, end, body) for heading, start, end, body in chunks_of(path, text)]
         vectors = [None] * len(rows)
@@ -208,9 +213,7 @@ def index_repo(db: sqlite3.Connection, root: Path, model, log) -> tuple[int, int
             written += 1
         db.execute("INSERT OR REPLACE INTO files(repo, path, sha256, mtime) VALUES(?,?,?,?)", (name, rel, sha, path.stat().st_mtime))
     for rel in set(known) - seen:  # deleted files
-        for cid, in db.execute("SELECT id FROM chunks WHERE repo=? AND path=?", (name, rel)):
-            db.execute("INSERT INTO chunks_fts(chunks_fts, rowid, body, heading, path, repo) VALUES('delete', ?, '', '', '', '')", (cid,))
-        db.execute("DELETE FROM chunks WHERE repo=? AND path=?", (name, rel))
+        delete_file_chunks(db, name, rel)
         db.execute("DELETE FROM files WHERE repo=? AND path=?", (name, rel))
     db.commit()
     log(f"{name}: {files} Dateien neu, {written} Abschnitte")
