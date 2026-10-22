@@ -37,6 +37,8 @@ SKIP_DIRS = {".git", "Library", "Temp", "Logs", "obj", "bin", "node_modules", "_
              ".claude/worktrees", "Packages", "ProjectSettings", "UserSettings", "archive"}
 MAX_CHUNK = 1800          # characters per chunk (about 400 tokens)
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+REPO_ALIASES = {"motiongen": "cubeescape-reference", "cubeescape-motiongen": "cubeescape-reference",
+                "formgen": "cubeescape-design", "cubeescape-formgen": "cubeescape-design"}
 
 
 # ----------------------------------------------------------------------------------------------------------------- sources
@@ -256,8 +258,11 @@ def search(query: str, k: int = 8, repo: str | None = None, kind: str | None = N
     db = open_index(index)
     where, args = [], [fts_query(query)]
     if repo:
-        where.append("c.repo LIKE ?")
-        args.append(f"%{repo}%")
+        names = {name.casefold(): name for (name,) in db.execute("SELECT DISTINCT repo FROM files")}
+        # An actual index name wins over historical aliases; other substrings still work.
+        exact = names.get(repo.casefold()) or names.get(REPO_ALIASES.get(repo.casefold(), ""))
+        where.append("c.repo = ?" if exact else "c.repo LIKE ?")
+        args.append(exact if exact else f"%{repo}%")
     if kind:
         where.append("c.kind = ?")
         args.append(kind)
@@ -312,7 +317,7 @@ TOOLS = [
                     "only that part. Use before reading a long doc or when asking 'was that solved before?'.",
      "inputSchema": {"type": "object", "required": ["query"],
                      "properties": {"query": {"type": "string"}, "k": {"type": "integer", "default": 8},
-                                    "repo": {"type": "string", "description": "substring of a repo name, e.g. toolgen"},
+                                    "repo": {"type": "string", "description": "index name, public alias (formgen/motiongen), or name substring"},
                                     "kind": {"type": "string", "enum": ["lesson", "doc", "skill", "version", "data", "code"]}}}},
     {"name": "ce_search_status", "description": "When the index was built, which repos and how many chunks it holds.",
      "inputSchema": {"type": "object", "properties": {}}},
