@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time as _time
 import unittest
 from pathlib import Path
 
@@ -25,7 +26,9 @@ am = hook.am
 NAME = "TG 0.24 „Salvo“ · Mac"
 
 
-def comment(number, body, created="2026-10-22T18:10:00Z"):
+def comment(number, body, created=None):
+    # a fixed time turned these tests red 30 min after it (the watcher reads from the reservation or the look-back): relative to now
+    created = created or _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() - 60))
     return {"id": number, "created_at": created, "body": body, "pr": 16}
 
 

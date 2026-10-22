@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.0 „Tidemark“ – unveröffentlicht
+
+- `./ce plugins check|fix` (`ce_plugins.py`): hält die Claude-Code-Installationen von ce-shared auf einer Version. `check` listet die Einträge aus `installed_plugins.json` (Exit 1 bei Abweichung), `fix` setzt veraltete Einträge (jeder Bereich) auf die neueste Installation mit vorhandenen Dateien und entfernt Einträge verschwundener Worktrees – Probelauf, mit `--apply` Sicherung und atomares Schreiben, `--user-only` lässt nur die Nutzer-Installation.
+- Der SessionStart-Hook vergleicht das geladene ce-shared mit der neuesten Version auf dem Rechner (Marketplace-Klon, alle Installationen) und warnt sichtbar (`systemMessage`). Einbinden mit `"autoUpdate": true` am Marketplace-Eintrag.
+- Anlass: Nach dem Rollout 0.15.1 standen 6 von 9 Installationen am Mac auf 0.11/0.13, `claude plugin update --scope project` erreichte sie nicht. Nebenbei: die Wächter-Tests der 0.15 hingen an einer festen Uhrzeit, jetzt relativ. 445 Tests. [Version](docs/versions/0.16.md).
+
 ## 0.15.1 – unveröffentlicht
 
 - Live-Probe 22.10.2026: Beide Postfach-Hooks blieben still, weil sie den reservierten Branch als ausgecheckt verlangten – `--reserve` legt ihn aber nur an, und eine Cloud-Sitzung arbeitet auf ihrem vorgegebenen Branch. Die Reservierung gilt jetzt für den Worktree (Datei im eigenen Git-Ordner), Ablauf nach 3 Tagen (`reserved_at`, sonst Dateizeit); `say` nimmt den Absender ebenfalls aus der Reservierung. 425 Tests, drei neue Gegenbeweise. [Version](docs/versions/0.15.md#patch-0151).
