@@ -1,0 +1,21 @@
+{
+ "source": "Antigravity IDE 2.5.5, workspace .agents/hooks.json, CE_HOOK_LOG of the coordinator probe 2026-10-22T12:25:21 (hook ran in <workspace>/.agents); answer: deny commit-on-main",
+ "input": {
+  "artifactDirectoryPath": "/Users/ffunk/.gemini/antigravity-ide/brain/2000f8a8-533b-483d-954b-adeb8f17245c",
+  "conversationId": "2000f8a8-533b-483d-954b-adeb8f17245c",
+  "modelName": "gemini-3.8-flash-high",
+  "stepIdx": 4,
+  "toolCall": {
+   "args": {
+    "CommandLine": "printf 'attempted\\n' > ide-main-attempted.txt; git commit -m 'Gatehouse IDE main probe' .",
+    "Cwd": "<workspace>",
+    "WaitMsBeforeAsync": 5000
+   },
+   "name": "run_command"
+  },
+  "transcriptPath": "/Users/ffunk/.gemini/antigravity-ide/brain/2000f8a8-533b-483d-954b-adeb8f17245c/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+   "<workspace>"
+  ]
+ }
+}

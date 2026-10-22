@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0 „Gatehouse“ – unveröffentlicht (Prüfstopp 2026-10-22)
+
+- Derselbe Wächter (`guard.decide`, keine neue Regel) für Codex und Antigravity: dünne Adapter `hooks/codex_guard.py` (Bash, `apply_patch` je Datei; Block als `permissionDecision: deny`, Warnung als `additionalContext` + `systemMessage`) und `hooks/antigravity_guard.py` (`CommandLine`/`TargetFile` nach Argumentform; `deny` bzw. `allow` mit Grund). Claude-Subagent-Profile gelten dort nicht; Fehler lassen durch; `CE_HOOK_LOG` protokolliert echte Clientläufe.
+- `commit-on-main` urteilt nach dem tatsächlichen Branch (neues Regelfeld `git_commit` in `guard.py`, für alle drei Clients): ein schlichtes `git commit` in einem Checkout auf main ging im gemessenen Codex-Lauf durch, weil die Regel nur `checkout main && commit` als Text erkannte. Der neue statische Shell-Leser behandelt `&&`/`||`, if/Schleifen und Funktionen; die dritte unabhängige Prüfung weist weiterhin Lücken bei Variablen, Funktionsumgebung, Pipelines und gescheiterten Wechseln nach (nicht freigegeben, Details im Versionsbericht); Branches liest ein fester System-Git-Pfad ohne `PATH`/Loader aus der Zeile. Geprüft: Arbeitsbranches, `-b`/`-c`, `git -C`/`-C<pfad>`, `cd`, Datei-Checkout, `checkout|switch X --`, Subshells/Pipelines, Quotes, Kommentare, Heredocs, Shellskripte auf stdin, `$((…))`, `env -C/-u/-i/-S` sowie `--git-dir`/`--work-tree`/`GIT_DIR`.
+- Git-Netz `githooks/ce_githooks.py install|uninstall|status`: pre-commit sperrt Commits auf main/master, pre-push Pushes nach main/master (Ausnahme `CE_ALLOW_MAIN=1`), Löschen von main, Tag-Überschreiben und echte Nicht-Fast-Forwards. Eigener `core.hooksPath` je Repo, vorhandene Hooks laufen weiter (Exitcode und Eingabe erhalten), vollständig umkehrbar; startet der Wächter nicht (Syntax-/Importfehler), läuft Git mit Meldung weiter. Grenzen: `--force` eines Fast-Forwards und `--no-verify` sind für Git-Hooks unsichtbar ([Version 0.12](docs/versions/0.12.md)).
+
 ## 0.11.1 – 2026-10-22
 
 - Vertragsaudit benennt fehlende Toolgen-Konzeptprüfer vor deren Ausführung; ein älterer oder unvollständiger Checkout bleibt mit null geprüften Eingaben fehlgeschlagen. Regression prüft fehlenden Importer und fehlenden Loader.

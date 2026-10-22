@@ -1,0 +1,17 @@
+{
+ "source": "codex-cli 0.162.1, codex exec, trusted project hook, CE_HOOK_LOG of the coordinator probe 2026-10-22 12:15 (plain commit on main passed before the branch-aware commit-on-main)",
+ "input": {
+  "session_id": "01a1631b-ce96-7632-80eb-2a5681335086",
+  "turn_id": "01a1631b-d68a-76a2-8f33-8fb9bf07f52c",
+  "transcript_path": "/Users/ffunk/.codex/sessions/2026/10/22/rollout-2026-10-22T12-15-31-01a1631b-ce96-7632-80eb-2a5681335086.jsonl",
+  "cwd": "<repo>",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6-luna",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "printf 'called\\n' > codex-main-attempted.txt; git commit -m 'Gatehouse main probe' ."
+  },
+  "tool_use_id": "exec-67a3efee-8646-41cf-b96a-5cf2bd535e77"
+ }
+}
