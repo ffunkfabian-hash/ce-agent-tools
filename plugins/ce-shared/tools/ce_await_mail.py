@@ -8,7 +8,7 @@ Claude Code: Bash with run_in_background; the session wakes when the script exit
 exit 2 = timeout without message (start again silently with the same arguments), exit 3 = GitHub unreachable several times in a row (report once).
 
 A comment counts as addressed when a line holds `→ <recipient>` and the recipient names this session: same version and name
-(`0.19 „Kinetic“`), regardless of repo kürzel, quote style and place. Considered are comments from `--lookback` minutes before the start on (a reply
+(`0.19 „Kinetic“`), regardless of repo kürzel, quote style and place; `→ alle:` reaches every session but the sender (0.14). Considered are comments from `--lookback` minutes before the start on (a reply
 that came while the session was still busy is not lost); after handling message N, start again with `--after N`.
 The script only reads; what a message may trigger is decided by the rules, not here.
 """
@@ -33,16 +33,37 @@ def session_key(name: str) -> str:
     return name.split("·")[0].strip().lower()
 
 
+def normalize(text: str) -> str:
+    """Spelling-proof form of a name or key: lower case, umlauts spelt out, hyphens as spaces (0.14: `Cross-Talk` = `Cross Talk`,
+    `Über` = `ueber`), so a name derived from a branch slug reaches the same watcher."""
+    text = text.lower().translate(str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "-": " ", "_": " "}))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def same_name(recipient: str, key: str) -> bool:
+    """A recipient without version is the whole name: place (`· Mac`) and a note in brackets aside, `CE Patch laser` is not
+    `CE Patch laser-seeder` (0.14, word boundary instead of prefix)."""
+    return normalize(re.sub(r"\(.*?\)", "", recipient.split("·")[0])) == key
+
+
 def addressed(body: str, key: str) -> bool:
     """True when a line of the comment sends something to the session with this key (`… → [Kürzel] <Version> „<Name>“ …`)."""
-    for line in body.splitlines():
+    key = normalize(key if QUOTED.search(key) else re.sub(r"\(.*?\)", "", key))  # a note in brackets belongs to neither side
+    lines = body.splitlines()
+    first = next((index for index, line in enumerate(lines) if line.strip()), -1)
+    for index, line in enumerate(lines):
         if "→" not in line:
             continue
-        recipient = line.split("→", 1)[1].split(":", 1)[0]
+        sender, rest = line.split("→", 1)
+        recipient = rest.split(":", 1)[0]
+        if index == first and normalize(recipient.strip(" *")) == "alle" and ":" in rest and sender.strip(" *"):
+            if not addressed(f"→ {sender.strip(' *')}:", key):
+                return True  # 0.14: a message to everybody (head line only), except the sender's own watcher
+            continue
         found = RECIPIENT.match(recipient)
-        if found and f"{found.group(1)} {found.group(2).strip().lower()}" == key:
+        if found and normalize(f"{found.group(1)} {found.group(2).strip()}") == key:
             return True
-        if not QUOTED.search(key) and recipient.strip(" *").lower().startswith(key):
+        if not QUOTED.search(key) and same_name(recipient.strip(" *"), key):
             return True
     return False
 

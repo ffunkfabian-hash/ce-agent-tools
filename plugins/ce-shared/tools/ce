@@ -1,6 +1,6 @@
 #!/bin/sh
 # ce - one entry for the shared tools of a repo (0.5.0): ./ce <command> [args]
-#   check [--full|--nightly]   session reserve|topics|mail   codex quota|cloud|judge
+#   check [--full|--nightly]   session reserve|patch|topics|mail|say|who   codex quota|cloud|judge
 #   evidence clip|sheet|still|diff   search query|index|status   lock <resource>|status   docs   report   api login|status|budget|ask
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
@@ -9,10 +9,12 @@ case "$cmd" in
   session)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
     case "$sub" in
-      reserve) exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
+      reserve) [ "${1:-}" = --name ] && shift; exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
       topics) exec python3 "$tools/ce_session_name.py" --task Blick --topics "$@";;
+      patch) exec python3 "$tools/ce_session_name.py" --reserve --patch "$@";;
       mail) exec python3 "$tools/ce_await_mail.py" "$@";;
-      *) echo "session reserve <Name> | topics | mail --name <Name>"; exit 2;;
+      say|who) exec python3 "$tools/ce_postfach.py" "$sub" "$@";;
+      *) echo "session reserve <Name> | patch <kurzname> | topics | mail --name <Name> | say [--to <Empfänger>] <Thema> [Zeilen] | who"; exit 2;;
     esac;;
   codex)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
@@ -31,7 +33,7 @@ case "$cmd" in
       *) echo "evidence clip | sheet | still | diff"; exit 2;;
     esac;;
   check)    mode=quick; case "${1:-}" in --full) mode=full; shift;; --nightly) mode=nightly; shift;; esac; exec python3 "$tools/ce_check.py" "$mode" "$@";;
-  reserve)  exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
+  reserve)  [ "${1:-}" = --name ] && shift; exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
   topics)   exec python3 "$tools/ce_session_name.py" --task Blick --topics;;
   search)
     case "${1:-}" in query|index|status|serve) exec python3 "$tools/ce_search.py" "$@";; esac
@@ -54,6 +56,7 @@ case "$cmd" in
   api)      exec python3 "$tools/ce_api.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
   mail)     exec python3 "$tools/ce_await_mail.py" --name "$@";;
+  say|who)  exec python3 "$tools/ce_postfach.py" "$cmd" "$@";;
   help|--help|-h) sed -n 2,4p "$0";;
   *)        sed -n 2,4p "$0"; exit 2;;
 esac

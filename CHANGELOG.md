@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 „Crosstalk“ – unveröffentlicht
+
+- Sitzungen melden sich selbst an: `--reserve` (und neu `--patch <kurzname>`) schreibt nach dem Branch-Push `<Name> → Sightline: angemeldet` mit Repo, Branch, Basis, Auftrag und Wächterbefehl ins Postfach #16. Eine fehlgeschlagene Anmeldung hebt die Reservierung nicht auf und gibt den Text zum Einfügen aus.
+- Sitzungen schreiben einander mit `./ce session say [--to <Sitzung|Rolle|alle>] <Thema> [Zeilen]` (Absender aus dem Branch, Regelformat, höchstens zehn Zeilen); `./ce session who` listet die angemeldeten Sitzungen. Der Wächter weckt bei `→ alle:` jede Sitzung außer der absendenden.
+- Gesendet wird nur aus Repos, deren `origin` eine GitHub-URL ist (lokale Origins wie in Tests bleiben stumm, `CE_MAILBOX=0` schaltet ab). Der Absender ist der beim Reservieren gemerkte Name (`<git-dir>/ce-session.json`), sonst aus dem Branch abgeleitet; Schreibweisen (Bindestrich, Umlaut, Groß/klein) zählen gleich. [Version](docs/versions/0.14.md).
+
 ## 0.13.0 „Glasshouse“ – 2026-10-22
 
 - Bestehende Prüfwege erweitert: portable Vorher/Nachher-Ansicht, explizite RGB-Referenzgrenzen, lesende Ressourcen-/Sitzungs-/Quotenübersicht, semantische Referenz-/Zyklusprüfung, strenge Cloud-Auftragsdeklaration, native Prüfprofile sowie Blender-Preflight/Turnaround über bestehende Medienexporte.
