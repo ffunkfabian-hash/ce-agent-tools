@@ -6,7 +6,7 @@ action: block
 conditions:
   - field: git_commit
     operator: regex_match
-    pattern: (?m)^(main|master)\s|--allow-empty-message
+    pattern: (?m)^(?-i:main|master)\s|--allow-empty-message
 ---
 
 **Kein Commit direkt auf `main`:** jede Arbeit läuft auf einem Branch `claude/<repo>-<version>-<name>` (Reservierung per

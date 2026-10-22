@@ -39,6 +39,17 @@ def denied(result):
     return result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
 
 
+def verdict(command, cwd):
+    """commit-on-main's answer: "block", "net" (passes with a note: the Git net decides at run time) or "pass"."""
+    result = guard.decide(bash(command, cwd=str(cwd)), RULES)
+    if denied(result):
+        return "block" if "[commit-on-main]" in result["systemMessage"] else "other block"
+    message = result.get("systemMessage", "")
+    if "[commit-on-main]" in message:
+        return "net" if "Git-Netz (pre-commit)" in message else "other"
+    return "pass"
+
+
 class SharedRuleTests(unittest.TestCase):
     CASES = {
         "git-kein-force-push": (
@@ -68,11 +79,17 @@ class SharedRuleTests(unittest.TestCase):
         "heavy-resource": (
             ["python3 Tools/heavy_lock.py run --what x -- ./verify.sh run", "python3 scripts/heavy_lock.py run -- bash check_output.sh"],
             ["python3 Tools/heavy_lock.py run --resource unity -- ./verify.sh run", "python3 Tools/heavy_lock.py status"]),
-        "commit-on-main": (
-            ["git checkout main && git commit -m x", "git switch main && git add . && git commit -am y"],
+        "commit-on-main": (  # outside a repository only --allow-empty-message decides; branches: CommitOnMainTests
+            ["git commit --allow-empty-message -m ''", "git -C /x commit -q --allow-empty-mess -m ''",
+             "git add . && git commit --allow-empty-message -m ''", "git commit -am x --allow-empty-message"],
             ["git checkout claude/ce-0.106-fastlane && git commit -m x", "git commit -m 'auf branch'", "git checkout main",
-             "git checkout main && git checkout -b fix && git commit -m x", "echo 'git checkout main && git commit'"]),
+             "git checkout main && git checkout -b fix && git commit -m x", "echo 'git checkout main && git commit'",
+             "git commit -m --allow-empty-message", "git commit -m 'kein --allow-empty-message'",
+             "echo 'git commit --allow-empty-message'", "git commit --allow-empty -m x"]),
     }
+    # Gatehouse (bounded pre-check): the old lexical hits are compound lines. They are no longer guessed but passed
+    # with a note to the Git net, which rejects them at run time (test_githooks.PrecheckBoundaryTests).
+    DELEGATED = ["git checkout main && git commit -m x", "git switch main && git add . && git commit -am y"]
     WARN_CASES = {
         "heavy-unlocked": (
             ["bash .agents/skills/ce-testing/scripts/verify.sh run --full", "python3 toolgen/generate_tools.py --tier full",
@@ -104,6 +121,10 @@ class SharedRuleTests(unittest.TestCase):
             for command in misses:
                 self.assertNotIn(name, names(bash(command)), command)
 
+    def test_former_lexical_commit_hits_are_delegated_to_the_git_net_with_a_note(self):
+        for command in self.DELEGATED:
+            self.assertEqual(verdict(command, OUTSIDE_GIT), "net", command)
+
     def test_workflow_edits_warn_but_do_not_block(self):
         result = guard.decide(edit("/r/.github/workflows/tests.yml"), RULES)
         self.assertIn("actions-sparsam", result.get("systemMessage", ""))
@@ -121,8 +142,8 @@ class SharedRuleTests(unittest.TestCase):
 
 
 class CommitOnMainTests(unittest.TestCase):
-    """commit-on-main judges the branch the commit really lands on, in real repositories (Gatehouse: a plain
-    `git commit` in a checkout already on main used to pass)."""
+    """commit-on-main judges the branch a single simple `git commit` really lands on, in real repositories (Gatehouse:
+    a plain `git commit` in a checkout already on main used to pass). Compound lines are left to the Git net."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -137,29 +158,92 @@ class CommitOnMainTests(unittest.TestCase):
                         "--allow-empty", "-m", "x"], check=True, env=env)
         subprocess.run(["git", "-C", str(detached), "checkout", "-q", "--detach"], check=True, env=env)
 
-    def blocked(self, command, cwd):
-        return "commit-on-main" in names(bash(command, cwd=str(self.base / cwd)))
+    def check(self, expected, cases):
+        for command, cwd in cases:
+            self.assertEqual(verdict(command, self.base / cwd), expected, (command, cwd))
 
-    def test_the_real_branch_decides(self):
+    def test_the_real_branch_decides_a_simple_commit(self):
         main, feature = self.base / "on main", self.base / "feature"
-        for command, cwd in [("git commit -m x", "on main"), ("git commit -am 'fix'", "old"),
-                             ("git add . && git commit -m x", "on main"), ('git -c user.name=x commit -m "y"', "on main"),
-                             ("GIT_AUTHOR_NAME=x git commit --amend --no-edit", "on main"),
-                             (f'git -C "{main}" commit -m x', "feature"), (f"cd '{main}' && git commit -m x", "feature"),
-                             ("cd ../'on main'; git commit -m x", "feature"), (f"(cd '{main}' && git commit -m x)", "feature"),
-                             ("git checkout feature-x && git switch main && git commit -m x", "feature"),
-                             ("git status\ngit commit -m x", "on main")]:
-            self.assertTrue(self.blocked(command, cwd), (command, cwd))
-        for command, cwd in [("git commit -m x", "feature"), ("git commit -m x", "detached"), ("git commit -m x", "."),
-                             ("git checkout -b claude/x-patch-y && git commit -m x", "on main"),
-                             ("git switch -c codex/x && git commit -m x", "on main"),
-                             ("git checkout main -- f.txt && git commit -m x", "feature"),
-                             (f'git -C "{feature}" commit -m x', "on main"), (f"cd '{feature}' && git commit -m x", "on main"),
-                             ("echo 'git commit -m x'", "on main"), ('echo "run: git commit" # git commit', "on main"),
-                             ("git log --grep commit", "on main"), ("git commit-tree HEAD^{tree} -m x", "on main"),
-                             ("cat > x.sh <<'EOF'\ngit commit -m x\nEOF\nchmod +x x.sh", "on main"),
-                             ("git checkout main", "feature")]:
-            self.assertFalse(self.blocked(command, cwd), (command, cwd))
+        self.check("block", [("git commit -m x", "on main"), ("git commit -am 'fix'", "old"),
+                             ('git -c user.name=x commit -m "y"', "on main"),
+                             (f'git -C "{main}" commit -m x', "feature"), ("/usr/bin/git commit -m x", "on main"),
+                             ("git commit -m x  # note", "on main"), ("git \\\n  commit -m x", "on main"),
+                             ("git commit -m x\n", "on main")])
+        self.check("pass", [("git commit -m x", "feature"), ("git commit -m x", "detached"), ("git commit -m x", "."),
+                            (f'git -C "{feature}" commit -m x', "on main"), ("echo 'git commit -m x'", "on main"),
+                            ('echo "run: git commit" # git commit', "on main"), ("git log --grep commit", "on main"),
+                            ("git commit-tree HEAD^{tree} -m x", "on main"), ("git checkout main", "feature")])
+
+    def test_quotes_and_backslashes_inside_words_are_read_not_skipped(self):
+        """Root counter-check (bounded-parent-boundary-findings.json): the raw text never mentions `git commit`, the
+        shell words do. The raw mention only decides about notes; literal calls are judged from the words."""
+        commands = ["'gi't commit -m x", "git 'c'ommit -m x", "g\\it commit -m x", '"git" commit -m x',
+                    "gi\"t\" co'mm'it -am x", "\\git commit -m x"]
+        self.check("block", [(command, "on main") for command in commands] + [(commands[0], "old")])
+        self.check("pass", [(command, "feature") for command in commands] + [("'gi't log -m x", "on main"),
+                                                                              ("echo 'gi't commit", "on main")])
+
+    def test_prefix_assignments_are_left_to_the_git_net(self):
+        """Gatehouse boundary fix: NAME=value prefixes are no longer read before the line runs (a quoted name such as
+        'PATH'=x is no assignment at all in bash). Formerly blocked prefix cases now pass with a note; CE_ALLOW_MAIN as
+        a prefix reaches the Git net, which honours it (test_githooks.PrecheckBoundaryTests)."""
+        main = self.base / "on main"
+        self.check("net", [("GIT_AUTHOR_NAME=x git commit --amend --no-edit", "on main"),
+                           ("CE_ALLOW_MAIN=1 git commit -m x", "on main"), ("'PATH'=/missing git commit -m x", "on main"),
+                           ("'GIT_DIR'=/missing git commit -m x", "on main"), (f"GIT_DIR='{main}/.git' git commit", "feature"),
+                           ("X=1 git commit -m x", "feature")])
+        self.check("pass", [("X=1 make test", "on main"), ("FOO=bar ls", "on main"), ("'PATH'=/x ls", "on main")])
+
+    def test_lines_without_a_commit_get_no_note(self):
+        self.check("pass", [("make test && ls -la", "on main"), ("echo a; echo b | cat > out.txt", "on main"),
+                            ("for f in *.md; do wc -l \"$f\"; done", "on main"), ("cd sub && git status", "on main"),
+                            ("ls $HOME", "on main"), ("(cd x; make)", "on main")])
+        # review 4c: "git" from the raw line and "commit" from the read words must not add up to a mention
+        self.check("pass", [("echo commit; git status", "on main"), ("echo 'commit'; git log", "on main"),
+                            ("printf commit | cat; git status", "on main")])
+        self.check("net", [("echo x; git commit -m x", "on main"), ("echo x; 'gi't commit -m x", "on main")])
+
+    def test_only_lowercase_main_and_master_are_protected(self):  # review 4b: like the Git net (refs/heads/main)
+        env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "PATH": "/usr/bin:/bin"}
+        for name, branch in (("upper", "MAIN"), ("titled", "Master"), ("mixed", "mAiN")):
+            subprocess.run(["git", "init", "-q", "-b", branch, str(self.base / name)], check=True, env=env)
+        self.check("pass", [("git commit -m x", "upper"), ("git commit -m x", "titled"), ("git commit -m x", "mixed")])
+        self.check("block", [("git commit -m x", "on main"), ("git commit -m x", "old"),
+                             ("git commit --allow-empty-message -m ''", "upper")])
+        self.assertNotIn("commit-on-main", names(bash("git commit -m x", cwd=str(self.base / "upper"))))
+
+    def test_a_tag_named_like_the_branch_does_not_hide_main(self):
+        """Root metadata case: with a tag main next to branch main, `symbolic-ref --short HEAD` says "heads/main"; the
+        full ref refs/heads/main is read instead. Temporary repositories only."""
+        env = dict(GIT_ENV)
+        for name, branch, tags in (("main tagged", "main", ("main",)), ("master tagged", "master", ("master",)),
+                                   ("work tagged", "work", ("work", "main", "master"))):
+            path = self.base / name
+            subprocess.run(["git", "init", "-q", "-b", branch, str(path)], check=True, env=env)
+            subprocess.run(["git", "-C", str(path), "commit", "-q", "--allow-empty", "-m", "start"], check=True, env=env)
+            for tag in tags:
+                subprocess.run(["git", "-C", str(path), "tag", tag], check=True, env=env)
+            short = subprocess.run(["/usr/bin/git", "-C", str(path), "symbolic-ref", "--short", "HEAD"], env=env,
+                                   capture_output=True, text=True).stdout.strip()
+            self.assertEqual(short, f"heads/{branch}", "precondition: --short is ambiguous here")
+        self.check("block", [("git commit -m x", "main tagged"), ("git commit -m x", "master tagged"),
+                             (f"git -C '{self.base / 'main tagged'}' commit -m x", "work tagged")])
+        self.check("pass", [("git commit -m x", "work tagged"),
+                            (f"git -C '{self.base / 'work tagged'}' commit -m x", "main tagged")])
+
+    def test_compound_lines_pass_with_a_note_for_the_git_net(self):
+        """Formerly read by the shell interpreter; now the Git net decides when they run."""
+        main, feature = self.base / "on main", self.base / "feature"
+        self.check("net", [("git add . && git commit -m x", "on main"), (f"cd '{main}' && git commit -m x", "feature"),
+                           ("cd ../'on main'; git commit -m x", "feature"),
+                           (f"(cd '{main}' && git commit -m x)", "feature"),
+                           ("git checkout feature-x && git switch main && git commit -m x", "feature"),
+                           ("git status\ngit commit -m x", "on main"),
+                           ("git checkout -b claude/x-patch-y && git commit -m x", "on main"),
+                           ("git switch -c codex/x && git commit -m x", "on main"),
+                           ("git checkout main -- f.txt && git commit -m x", "feature"),
+                           (f"cd '{feature}' && git commit -m x", "on main"),
+                           ("cat > x.sh <<'EOF'\ngit commit -m x\nEOF\nchmod +x x.sh", "on main")])
 
     def test_codex_and_claude_get_the_same_answer_from_the_session_folder(self):
         payload = bash("git commit -m x", cwd=str(self.base / "on main"))
@@ -171,9 +255,11 @@ GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "PATH":
            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
 
 
-class ShellContextTests(unittest.TestCase):
-    """Gatehouse review (Sol high): file checkouts, `--`, subshell folders, quoted heredoc-like text and other
-    repositories (--git-dir, --work-tree, GIT_DIR) must neither let a commit on main pass nor block one on a branch."""
+class BoundedPrecheckTests(unittest.TestCase):
+    """Gatehouse after three Sol-high reviews of the shell interpreter (tools-judge-final.txt): the pre-check judges
+    only a single simple `git … commit` of literal words and its explicit repository (`-C`, `--git-dir`, `--work-tree`,
+    GIT_DIR); every other line that may commit passes with a note and the Git net decides at run time. The interpreter's
+    test inputs stay here as explicit delegation cases; their run-time outcome is in test_githooks.PrecheckBoundaryTests."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -202,148 +288,99 @@ class ShellContextTests(unittest.TestCase):
         self.git(path, "commit", "-q", "-m", "start")
         return path
 
-    def check(self, blocked, cwd, commands):
+    def check(self, expected, cwd, commands):
         for command in commands:
-            self.assertEqual("commit-on-main" in names(bash(command, cwd=str(cwd))), blocked, (command, str(cwd)))
+            self.assertEqual(verdict(command, cwd), expected, (command, str(cwd)))
 
-    def test_a_file_checkout_keeps_the_branch_and_a_branch_checkout_changes_it(self):
-        self.check(True, self.main, [
-            "git checkout README.md && git commit -m x", "git checkout -- README.md; git commit -m x",
-            "git checkout . && git commit -am x", "git checkout '*.md' && git commit -m x",
-            "git checkout HEAD && git commit -m x", "git checkout topic README.md && git commit -m x",
-            "git checkout -p topic && git commit -m x", "git checkout fresh && git commit -m x"])
-        self.check(False, self.main, [
-            "git checkout topic && git commit -m x", "git checkout HEAD~0 && git commit -m x",
-            "git checkout --detach && git commit -m x", "git branch fresh && git checkout fresh && git commit -m x",
-            "git checkout -b fresh && git commit -m x", "git checkout new-from-remote && git commit -m x"])
-        self.git(self.dash, "update-ref", "refs/remotes/origin/master", "HEAD")
-        self.check(True, self.dash, [
-            "git checkout main -- && git commit -m x", "git checkout - && git commit -m x",
-            "git checkout -t origin/master && git commit -m x"])
-        self.check(False, self.dash, [
-            "git checkout -- main && git commit -m x", "git checkout main -- README.md && git commit -m x",
-            "git switch main && git switch - && git commit -m x"])
-
-    def test_switch_with_a_double_dash_still_switches(self):
-        self.check(True, self.dash, ["git switch main -- && git commit -m x", "git switch -- main && git commit -m x",
-                                     "git switch --discard-changes main && git commit -m x"])
-        self.check(False, self.main, ["git switch topic -- && git commit -m x", "git switch -c fix -- && git commit -m x"])
-
-    def test_subshells_pipelines_and_substitutions_keep_their_folder_and_branch(self):
-        feature, main = self.feature, self.main
-        self.check(True, main, [
-            f"(cd '{feature}' && git status); git commit -m x", f"(cd '{feature}'); git commit -m x",
-            f"cd '{feature}' | cat; git commit -m x", f"cd '{feature}' & git commit -m x",
-            f"echo $(cd '{feature}') && git commit -m x", f"bash -c \"cd '{feature}'\" && git commit -m x",
-            f"pushd '{feature}' && popd && git commit -m x", f"cd '{feature}' && cd - && git commit -m x",
-            "bash -c 'git commit -m x'", "echo $(git commit -m x)",
-            "echo `git commit -m x`", "sh -lc 'git commit -m x'", "if git commit -m x; then echo ok; fi",
-            "command git commit -m x", "timeout 5 git commit -m x", "/usr/bin/git commit -m x",
-            f"cd '{feature}' &&\ncd '{main}' && git commit -m x"])
-        self.check(False, main, [
-            f"{{ cd '{feature}'; }}; git commit -m x", f"(cd '{feature}' && git commit -m x)",
-            f"eval \"cd '{feature}'\"; git commit -m x", f"cd '{feature}' && (cd '{main}') && git commit -m x",
-            "cd ../feature && git commit -m x", "command -v git commit",
-            "(git checkout topic) && git commit -m x"])  # round 2: the switch outlives the subshell (HEAD is on disk)
-        self.check(True, feature, [f"(cd '{main}' && git commit -m x)", f"cd '{main}' | cat\ncd '{main}'; git commit"])
-
-    def test_quotes_comments_and_heredocs_are_read_like_the_shell(self):
-        self.check(True, self.main, [
-            'echo "<<EOF"\ngit commit -m x', "echo '<<EOF' && git commit -m x", "echo x \\<<EOF\ngit commit -m x",
-            "# cat <<EOF\ngit commit -m x", 'git commit -m "a <<EOF b"\necho done',
-            "cat <<'EOF'\ngit commit -m in-body\nEOF\ngit commit -m real", "cat > notes.txt <<EOF\n$(git commit -m x)\nEOF",
-            "bash <<'EOF'\ngit commit -m x\nEOF", "echo $((1<<2)); git commit -m x", 'cat <<<"<<EOF"; git commit -m x',
-            "printf '%s\\n' \"it's\" && git commit -m x", "git commit -m 'x' 2>&1 | tail -3"])
-        self.check(False, self.main, [
-            "cat > notes.txt <<'EOF'\n$(git commit -m x)\nEOF", "cat <<-EOF\n\tgit commit -m x\n\tEOF\necho ok",
-            'echo "git commit" # $(git commit)', "echo \"git commit -m x\"; echo 'git commit'",
-            "cat <<EOF\ngit commit -m x\nEOF", "git log --format='%s' -- commit"])
-        self.check(False, self.feature, ["git commit -m 'line\nmain x'", "git commit -m \"$(printf 'a\\nmain b')\""])
-
-    def test_the_effective_repository_decides(self):
+    def test_the_explicit_repository_of_a_simple_commit_decides(self):
         main, feature = self.main, self.feature
-        self.check(True, feature, [
+        self.check("block", feature, [
             f"git --git-dir='{main}/.git' --work-tree='{main}' commit -m x", f"git --git-dir='{main}/.git' commit -m x",
-            f"git '--git-dir={main}/.git' commit -m x", f"GIT_DIR='{main}/.git' git commit -m x",
-            f"export GIT_DIR='{main}/.git'; git commit -m x",
-            f"env GIT_DIR='{main}/.git' GIT_WORK_TREE='{main}' git commit -m x",
-            f"export GIT_DIR='{main}/.git' && bash -c 'git commit -m x'",
-            f"GIT_DIR='{main}/.git'; export GIT_DIR; git commit -m x"])
-        self.check(False, feature, [
-            f"export GIT_DIR='{main}/.git'; unset GIT_DIR; git commit -m x", f"GIT_DIR='{main}/.git' true; git commit -m x",
-            f"GIT_DIR='{main}/.git'; git commit -m x",
-            f"git --git-dir='{main}/.git' switch -c fix && git --git-dir='{main}/.git' commit -m x",
-            f"git -C '{main}' switch -c fix && cd '{main}' && git commit -m x"])
-        self.check(False, main, [f"git --git-dir='{feature}/.git' commit -m x", f"GIT_DIR='{feature}/.git' git commit -m x"])
+            f"git '--git-dir={main}/.git' commit -m x", f"git -C '{self.base}' -C 'main repo' commit -m x"])
+        self.check("pass", main, [f"git --git-dir='{feature}/.git' commit -m x"])
+        # boundary fix: a GIT_DIR prefix is no longer read (formerly block / pass); the Git net judges where it lands
+        self.check("net", feature, [f"GIT_DIR='{main}/.git' git commit -m x"])
+        self.check("net", main, [f"GIT_DIR='{feature}/.git' git commit -m x"])
         tree = self.base / "linked tree"
         self.git(main, "worktree", "add", "-q", "-b", "wt", str(tree))
-        self.check(False, main, [f"git -C '{tree}' commit -m x"])
-        self.check(True, tree, [f"git -C '{main}' commit -m x"])
-        os.environ["CE_MAIN"] = str(main)
-        self.check(True, feature, ['cd "$CE_MAIN" && git commit -m x'])
+        self.check("pass", main, [f"git -C '{tree}' commit -m x"])
+        self.check("block", tree, [f"git -C '{main}' commit -m x"])
         os.environ["GIT_DIR"] = str(main / ".git")  # inherited from the client like the shell would
-        self.check(True, feature, ["git commit -m x"])
-        self.check(False, feature, ["unset GIT_DIR; git commit -m x"])
+        self.check("block", feature, ["git commit -m x"])
+        self.check("net", feature, ["unset GIT_DIR; git commit -m x"])
 
-    # Round 2 (tools-judge-round2.txt): HEAD is repository state, folder and variables are process state; control flow
-    # and failing switches are possible paths; functions run when called; env and attached -C; stdin scripts; $((…)).
+    def test_quotes_comments_and_continuations_are_read_like_the_shell(self):
+        self.check("block", self.main, [
+            'git commit -m "a <<EOF b"', "git commit -m 'x; y && z | w'", "git commit -m \"it's\" -- README.md",
+            'git commit -m "say \\"hi\\""', "git commit -m x \\\n  --no-verify", "git commit -m 'a\nb'"])
+        self.check("pass", self.feature, ["git commit -m 'line\nmain x'", "git commit -m 'x' # main"])
+        self.check("pass", self.main, [
+            "echo 'git commit -m x'", 'echo "git commit" # $(git commit)', "git log --format='%s' -- commit",
+            "command -v git", "git status", "printf '%s\\n' 'git commit'"])
 
-    def test_branch_switches_outlive_subshells_but_folders_do_not(self):  # 4, 7b, coordinator-subshell-head-finding
-        self.check(False, self.main, [
-            "(git switch topic); git commit -m x", "bash -c 'git switch topic'; git commit -m x",
-            "echo $(git switch topic) && git commit -m x", "git switch topic | cat; git commit -m x"])
-        self.check(True, self.main, [f"(cd '{self.feature}' && git switch -c fix); git commit -m x"])  # other repo
-        self.check(True, self.dash, [
-            "(git switch main); git commit -m x", 'bash -c "git switch main"; git commit -m x',
-            "x=$(git switch main); git commit -m x", "git switch main | cat; git commit -m x",
-            "git switch main & git commit -m x", "(git checkout main) && git commit -m x"])
-
-    def test_paths_that_may_not_run_and_failing_switches_never_rule_main_out(self):  # 7c
-        self.check(True, self.main, [
-            "false && git switch topic; git commit -m x", "git switch -c topic; git commit -m x",
-            "git checkout -b topic; git commit -m x", "git switch -c topic || true; git commit -m x",
-            "test -f nope && git switch topic; git commit -m x", "if false; then git switch topic; fi; git commit -m x",
-            "while false; do git switch topic; done; git commit -m x", "for b in topic; do git switch $b; done; git commit",
-            "git switch maybe-remote; git commit -m x", "git branch topic && git switch topic; git commit -m x",
-            "case x in y) git switch topic;; esac; git commit -m x", "git checkout - ; git commit -m x"])
-        self.check(False, self.main, [
-            "git switch topic; git commit -m x", "git switch -c fresh2; git commit -m x",
-            "git switch -c topic || exit 1; git commit -m x", "if git switch -c fix; then git commit -m x; fi",
-            "git switch topic && git commit -m x || echo failed", "true || git switch main; git switch topic && git commit"])
-        self.check(True, self.dash, ["git switch main || exit 1; git commit -m x"])
-
-    def test_a_function_runs_when_it_is_called_not_when_it_is_defined(self):  # 7d
-        self.check(False, self.main, [
-            "save() { git commit -m x; }; printf ready", "function save { git commit -m x; }", "f() ( git commit )",
-            "f() { git switch topic; }; f && git commit -m x", "function f() { git switch topic; }\nf\ngit commit"])
-        self.check(True, self.main, [
-            "save() { git commit -m x; }; save", "f() { git switch topic; }; git commit -m x",
-            f"f() ( cd '{self.feature}' ); f; git commit -m x", "f() { f; }; f; git commit -m x"])
-
-    def test_env_options_and_an_attached_dash_c_change_the_repository(self):  # 7e
+    def test_every_former_interpreter_case_is_delegated_on_main_and_on_a_branch(self):
         main, feature = self.main, self.feature
-        self.check(True, feature, [f"env -C '{main}' git commit -m x", f"env --chdir='{main}' git commit -m x",
-                                   f"git '-C{main}' commit -m x", f"env -C '{self.base}' -S 'git -C \"{main.name}\" commit'"])
-        self.check(False, main, [f"env -C '{feature}' git commit -m x", f"git '-C{feature}' commit -m x"])
-        os.environ["GIT_DIR"] = str(feature / ".git")
-        self.check(False, main, ["git commit -m x", f"env -i GIT_DIR='{feature}/.git' git commit -m x"])
-        self.check(True, main, ["env -u GIT_DIR git commit -m x", "env -i git commit -m x", "env --unset=GIT_DIR git commit",
-                                "env -i bash -c 'git commit -m x'"])
+        compound = [
+            # file and branch checkouts, `--`, `-`
+            "git checkout README.md && git commit -m x", "git checkout -- README.md; git commit -m x",
+            "git checkout topic && git commit -m x", "git checkout -b fresh && git commit -m x",
+            "git switch main -- && git commit -m x", "git checkout - && git commit -m x",
+            # subshells, pipelines, background, substitutions, nested shells, wrappers
+            f"(cd '{feature}' && git status); git commit -m x", f"cd '{feature}' | cat; git commit -m x",
+            f"cd '{feature}' & git commit -m x", f"echo $(cd '{feature}') && git commit -m x",
+            "bash -c 'git commit -m x'", "echo $(git commit -m x)", "echo `git commit -m x`", "sh -lc 'git commit -m x'",
+            "if git commit -m x; then echo ok; fi", "command git commit -m x", "timeout 5 git commit -m x",
+            f"eval \"cd '{feature}'\"; git commit -m x", "(git checkout topic) && git commit -m x",
+            "git switch topic | cat; git commit -m x", "git switch main & git commit -m x",
+            # heredocs, here-strings, arithmetic, redirections (Claude Code's usual commit form included)
+            "cat <<'EOF'\ngit commit -m in-body\nEOF\ngit commit -m real", "bash <<'EOF'\ngit commit -m x\nEOF",
+            "bash <<<'git commit -m x'", "echo $(( $(git commit -m x; echo 0) + 1 ))", "git commit -m 'x' 2>&1 | tail -3",
+            "git commit -m \"$(cat <<'EOF'\nMessage \"quoted\"\nEOF\n)\"", "git commit -m x > log.txt",
+            "printf 'called\\n' > probe.txt; git commit -m 'probe' .",
+            # repository context the pre-check does not follow
+            f"export GIT_DIR='{main}/.git'; git commit -m x", f"env GIT_DIR='{main}/.git' git commit -m x",
+            f"env -C '{main}' git commit -m x", f"git '-C{main}' commit -m x", "git --exec-path=/x commit -m x",
+            # control flow, failing switches, functions, variables, child exit (tools-judge-final 7a-7e)
+            "false && git switch topic; git commit -m x", "git switch -c topic || true; git commit -m x",
+            "for b in topic; do git switch $b; done; git commit", "case x in y) git switch topic;; esac; git commit -m x",
+            "save() { git commit -m x; }; save", "function f() { git switch topic; }\nf\ngit commit",
+            'target=main; git switch "$target" && git commit -m x', f"save() {{ git commit -m x; }}; GIT_DIR='{main}/.git' save",
+            "{ sleep 10; git switch topic; } | git commit --allow-empty -m x",
+            "git switch -c fix missing-start; git commit -m x", "git switch -b fix; git commit -m x",
+            "bash -c 'exit 0; git commit -m x'", 'git commit -m "$msg"', "$GIT commit -m x",
+            "git commit -m x *.md", "git -C ~other commit -m x"]
+        for cwd in (main, feature, self.dash):
+            self.check("net", cwd, compound)
 
-    def test_shell_scripts_on_standard_input_are_read(self):  # 7f
-        self.check(True, self.main, [
-            "bash - <<'EOF'\ngit commit -m x\nEOF", "bash <<<'git commit -m x'", 'sh -s <<<"git commit -m x"',
-            "zsh -s -- <<'EOF'\ngit commit -m x\nEOF", "bash 0<<<'git commit -m x'"])
-        self.check(False, self.main, [
-            "bash 3<<'EOF'\ngit commit -m x\nEOF", "bash <<<'git commit -m x' </dev/null", "cat <<<'git commit -m x'",
-            "bash script.sh <<<'git commit -m x'"])
+    def test_allow_empty_message_is_blocked_in_every_literal_commit_segment(self):
+        self.check("block", self.feature, [
+            "git commit --allow-empty-message -m ''", "git add . && git commit --allow-empty-message -m ''",
+            "(git commit --allow-empty-message -m '')", "git commit -q --allow-empty-m -F msg.txt"])
+        self.check("pass", self.feature, ["git commit -m --allow-empty-message", "git commit -F --allow-empty-message",
+                                          "git commit -m x -- --allow-empty-message"])
+        self.check("net", self.feature, ["bash -c 'git commit --allow-empty-message -m \"\"'"])
 
-    def test_substitutions_inside_arithmetic_run(self):  # 7g
-        self.check(True, self.main, ["echo $(( $(git commit -m x; echo 0) + 1 ))", "x=$(( `git commit -m x` ))",
-                                     'echo "$(( $(git commit -m x) ))"', "echo $(( 1 + $(( $(git commit) )) ))"])
-        self.check(False, self.main, ["echo $((1 << 2)) git commit", "echo $(( 2 * (3 + 4) ))"])
+    def test_a_branch_that_cannot_be_read_fails_open_with_a_note(self):
+        with mock.patch.object(guard, "trusted_git", return_value=None):
+            self.check("net", self.main, ["git commit -m x"])
+        with mock.patch.object(guard.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 3)):
+            self.check("net", self.main, ["git commit -m x"])
+        (self.base / "foreign").mkdir()
+        self.check("pass", self.base / "foreign", ["git commit -m x"])  # no repository: no commit can land
+        self.check("pass", self.base / "missing", ["git commit -m x"])
 
-    def test_the_reader_never_starts_a_git_named_by_the_line_or_its_environment(self):  # 7a
+    def test_an_internal_error_of_the_commit_field_keeps_the_other_rules(self):
+        heavy = "python3 Tools/heavy_lock" + ".py run -- ./verify.sh run; git commit -m x"
+        with mock.patch.object(guard, "shell_segments", side_effect=RuntimeError("kaputt")):
+            result = guard.decide(bash(heavy, cwd=str(self.main)), RULES)
+            self.assertTrue(denied(result))
+            self.assertIn("[heavy-resource]", result["systemMessage"])
+            result = guard.decide(bash("git commit -m x", cwd=str(self.main)), RULES)
+            self.assertFalse(denied(result))
+            self.assertIn("Vorabprüfung fehlgeschlagen (RuntimeError: kaputt)", result["systemMessage"])
+            self.assertEqual(guard.git_commits("git commit -m x", str(self.main)), "")
+
+    def test_the_reader_never_starts_a_git_named_by_the_line_or_its_environment(self):  # round 2, 7a
         fake = self.base / "fake bin"
         fake.mkdir()
         marker = self.base / "fake git ran"
@@ -351,13 +388,18 @@ class ShellContextTests(unittest.TestCase):
             (fake / name).write_text(f"#!/bin/sh\ntouch '{marker}'\necho main\n")
             (fake / name).chmod(0o755)
         library = self.base / "inject.dylib"
-        self.check(True, self.main, [
+        # boundary fix: prefixes on the line are no longer read at all (formerly blocked here); still nothing runs
+        self.check("net", self.main, [
+            f"PATH='{fake}' git commit -m x", f"DYLD_INSERT_LIBRARIES='{library}' LD_PRELOAD='{library}' git commit",
+            f"GIT_EXEC_PATH='{fake}' GIT_CONFIG_PARAMETERS=\"'core.fsmonitor={fake}/git'\" git commit -m x",
             f"PATH='{fake}':$PATH git commit -m x", f"export PATH='{fake}'; git commit -m x",
-            f"env PATH='{fake}' git commit -m x", f"DYLD_INSERT_LIBRARIES='{library}' LD_PRELOAD='{library}' git commit",
-            f"GIT_EXEC_PATH='{fake}' GIT_CONFIG_PARAMETERS=\"'core.fsmonitor={fake}/git'\" git commit -m x"])
-        os.environ["PATH"] = f"{fake}:{os.environ.get('PATH', '')}"
-        self.check(True, self.main, ["git commit -m x"])
-        self.check(False, self.feature, ["git commit -m x"])
+            f"env PATH='{fake}' git commit -m x"])
+        # the real inherited environment of the hook process: the branch query keeps its fixed Git and environment
+        os.environ.update({"PATH": f"{fake}:{os.environ.get('PATH', '')}", "DYLD_INSERT_LIBRARIES": str(library),
+                           "LD_PRELOAD": str(library), "GIT_EXEC_PATH": str(fake),
+                           "GIT_CONFIG_PARAMETERS": f"'core.fsmonitor={fake}/git'"})
+        self.check("block", self.main, ["git commit -m x"])
+        self.check("pass", self.feature, ["git commit -m x"])
         self.assertFalse(marker.exists(), "a git or xcrun from the line's PATH ran during the review")
         self.assertIn(guard.trusted_git(), guard.GIT_CANDIDATES)
         env = guard.git_environment({"PATH": str(fake), "DYLD_INSERT_LIBRARIES": "x", "LD_PRELOAD": "x",
@@ -368,8 +410,11 @@ class ShellContextTests(unittest.TestCase):
 
     def test_broken_lines_do_not_crash_the_reader(self):
         for text in ["git commit -m 'x", "echo $(git commit", "git commit <<", ")))", "((((", "`git commit",
-                     "git commit \\", "cat <<'EOF\ngit commit", "$(" * 50 + "git commit"]:
+                     "git commit \\", "cat <<'EOF\ngit commit", "$(" * 50 + "git commit", 'git commit -m "x',
+                     "git -C", "git -c", "GIT_DIR= git commit", "git {", "~", "git commit ~"]:
             self.assertIsInstance(guard.git_commits(text, str(self.main)), str, text)
+            self.assertIn(verdict(text, self.main), ("block", "net", "pass"), text)
+        self.check("net", self.main, ["git commit -m 'x", 'git commit -m "x'])  # unterminated quote: not judged
 
 
 class HookifyParityTests(unittest.TestCase):

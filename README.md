@@ -25,25 +25,34 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | `teleport-nur-frisch` | blockiert | Teleport einer Cloud-Sitzung aus einer laufenden Sitzung heraus (verwarf zweimal offene Arbeit) |
 | `unity-nie-auf-checkout` | blockiert | Unity oder die Unity-CLI mit einem Cube-Escape-Checkout als Projekt (`-projectPath`, `--project-path`, `unity open/run/build`) |
 | `unity-cli-ziel-nennen` | blockiert | `unity mcp/command/list/job/eval/pipeline install` ohne `--project-path` (die CLI nähme sonst irgendeinen Editor) |
-| `commit-on-main` | blockiert | `git commit`, der tatsächlich auf `main`/`master` landet (Feld `git_commit`, unten), und `--allow-empty-message` |
+| `commit-on-main` | blockiert | ein einfacher `git commit`, dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
 | `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` |
 | `heavy-unlocked`, `output-cap`, `judge-template` | warnt | schwerer Lauf ohne sichtbare Sperre; ganze JSON-/Log-Datei ausgeben; `codex exec` ohne Checkliste |
 | `actions-sparsam` | warnt | Bearbeiten eines GitHub-Workflows: globale Regel „GitHub Actions sparsam“ |
 
 Format wie hookify (`event: bash|file`, `conditions` mit `field` command/file_path/content/new_text/old_text, Operatoren
 `regex_match` (ohne Groß/klein), `contains`, `not_contains`, `equals`, `starts_with`, `ends_with`; `action: warn|block`).
-Zusätzlich `git_commit` (nur Bash): je Branch, auf dem ein `git commit` der Zeile landen kann, eine Zeile
-`<Branch> <Befehl>` (`-` ohne Branch). Die Zeile wird wie von der Shell zerlegt (Quotes, Kommentare, Heredocs,
-Substitutionen auch in `$((…))`, Listen, `&&`/`||`, Pipelines, Subshells, Gruppen, if/while/for/case, Funktionen) und
-über alle möglichen Abläufe verfolgt: Ein Pfad, der nicht laufen muss, oder ein Branchwechsel, der scheitern kann
-(`-b`/`-c` auf vorhandenen Branch, unbekanntes Ziel), schließt main nie aus. Der Branch folgt dem Sitzungsordner (`cwd`
-des Hook-Eingangs), `cd`/`pushd`, `git -C` (auch `-C<pfad>`), `--git-dir`/`--work-tree`, `GIT_DIR` (Präfix, `export`,
-`unset`, `env -u/-i/-C/-S`) und `checkout`/`switch` (Datei-Checkout ändert ihn nicht, `checkout X --`/`switch X --`
-schon). Ordner und Variablen bleiben in Subshells, Pipeline-Elementen, Hintergrundjobs, Substitutionen und `sh -c`;
-Branchwechsel dort gelten danach weiter (HEAD liegt im Repo). Funktionen wirken erst beim Aufruf; Shellskripte auf
-der Standardeingabe (`bash <<EOF`, `bash -`, `<<<`) werden gelesen. Branches liest das System-Git (fester Pfad,
-`/usr/bin/git` zuerst) mit kleiner fester Umgebung – nie ein `git`, `PATH` oder Loader aus der geprüften Zeile.
-Skriptdateien, Eingabe aus Dateien und erst zur Laufzeit entstehende Werte bleiben offen; dafür gibt es das Git-Netz.
+Zusätzlich `git_commit` (nur Bash), die **begrenzte Vorabprüfung** von `commit-on-main`: Beurteilt wird nur eine Zeile,
+die als Ganzes ein einziger einfacher Befehl `git [Optionen] commit …` aus festen Wörtern ist. Quotes, Backslashes,
+Zeilenfortsetzung und Kommentare werden wie in der Shell gelesen, auch innerhalb eines Worts (`'gi't commit`,
+`git 'c'ommit`, `g\it commit` zählen wie `git commit`); kein `$`, kein Backtick, keine Muster-/Klammererweiterung und
+keine Präfix-Zuweisung `NAME=wert` (auch nicht `GIT_DIR=…`, `PATH=…`, `CE_ALLOW_MAIN=1`). Der Branch kommt aus dem Ordner
+des Hook-Eingangs (`cwd`), `git -C`, `--git-dir`/`--work-tree`/`--bare` und den vom Client geerbten
+`GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR`; gelesen vom System-Git (fester Pfad, `/usr/bin/git` zuerst) mit kleiner
+fester Umgebung – nie ein `git`, `PATH` oder Loader aus der geprüften Zeile oder der geerbten Umgebung. Auf
+`main`/`master` sperrt die Regel (ohne Ausnahme, `CE_ALLOW_MAIN` gilt nur im Git-Netz). Losgelöster HEAD, kein Repository oder fehlender Ordner sperren
+nicht. Ist der Branch nicht lesbar (kein System-Git, Zeitlimit, unerwarteter Git-Fehler) oder scheitert die Prüfung
+intern, läuft der Befehl mit Hinweis weiter; die übrigen Regeln werden trotzdem geprüft.
+
+**Nicht nachgebildet** wird die Shell: Präfix-Zuweisungen, Operatoren (`&&`, `;`, `|`, `&`, Zeilenumbruch), Subshells, Gruppen, Variablen,
+Befehlsersetzungen (auch Claudes übliches `git commit -m "$(cat <<'EOF' …)"`), Heredocs, Umleitungen, Funktionen,
+Wrapper (`env`, `command`, `timeout` …), eingebettete Shells (`bash -c`) und nicht ausgewertete Git-Optionen. Erwähnt
+eine solche Zeile `git … commit`, geht sie mit dem Hinweis „Vorabprüfung: möglicher `git commit` … das Git-Netz
+(pre-commit) prüft den tatsächlichen Branch beim Ausführen“ durch; der Hinweis kann auch bei harmlosen Zeilen erscheinen,
+die `git … commit` nur erwähnen; Zeilen ohne erkennbaren Commit bleiben still. Diese Fälle schützt nur das
+[Git-Netz](#git-netz) – in Repos ohne installiertes Netz gibt es für sie keine Sperre. Git-Aliase (`git ci`) erkennt die
+Vorabprüfung nicht; für den Hinweis bei zusammengesetzten Zeilen dient nur eine Texterkennung von `git … commit`. `--allow-empty-message` (auch als eindeutige Abkürzung) wird in jedem festen `git … commit`-Abschnitt der Zeile
+gesperrt, auch in zusammengesetzten Zeilen; als Wert von `-m`/`-F` oder nach `--` nicht.
 Eine neue Regel braucht Fälle in `SharedRuleTests.CASES`.
 
 ### Subagent-Profile
@@ -132,6 +141,8 @@ nachgebauter Eingabe sind keine. Was in welchem Client tatsächlich feuert, steh
 gemessenen CLI-/IDE-Proben `allow.reason` bei Warnungen und Fehlern nicht sichtbar an den Agenten weitergegeben;
 Sperren über `deny` greifen. Eine sichtbare Warnung ist dort derzeit nicht belegt.
 
+Mehrere Workspace-Ordner: Antigravity CLI 1.4.5 liefert kein `Cwd`; der erste `workspacePaths`-Eintrag ist dann nur ein Kontext-Fallback. Gemessen sind Einordner-Workspaces. Bei mehreren Roots kann die Commit-Vorabprüfung falsch zuordnen; einen einzelnen Workspace oder absolutes `git -C` verwenden. Das Git-Netz arbeitet am tatsächlichen Aufruf ([Gatehouse](docs/versions/0.12.md)).
+
 ### Git-Netz
 
 `python3 plugins/ce-shared/githooks/ce_githooks.py install|status|uninstall [--repo P …] [--dry-run]` (Nexogen:
@@ -152,6 +163,11 @@ Fast-Forward ist, sieht aus wie ein normaler und geht durch (die Client-Wächter
 Prüfung lassen Git weiterlaufen; fehlt das Skript oder startet es nicht (z. B. Syntax-/Importfehler), melden die Wrapper
 dies und reichen an die vorherigen Hooks weiter. Deren Exitcode bleibt erhalten. Nur der Exitcode `REJECT` (86) von
 `ce_githooks.py check` ist eine bewusste Ablehnung; dann laufen die vorherigen Hooks nicht.
+
+Das Netz ist die Laufzeitschranke für alles, was die Vorabprüfung von `commit-on-main` nicht beurteilt (Variablen,
+Funktionen, Pipelines, gescheiterte Branchwechsel, Kindshells …): pre-commit sieht den HEAD, auf dem der Commit
+tatsächlich entsteht. `tests/test_githooks.py` › `PrecheckBoundaryTests` führt solche Zeilen mit echter Bash in
+Wegwerf-Repos aus – gegen main abgelehnt, auf Arbeitsbranches normal.
 
 ## Entwickeln
 
@@ -185,6 +201,7 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **Einen Vorab-Wächter nicht zur Shell ausbauen:** Ein statischer Shell-Leser für `commit-on-main` wuchs auf ~860 Zeilen, und jede unabhängige Prüfung fand neue Gegenbeispiele (Variablen, Funktionsumgebung, parallele Pipelines, gescheiterte Wechsel). Vorabprüfung auf statisch eindeutige Formen begrenzen, den Rest mit Hinweis an eine Laufzeitschranke (Git-Hook) geben und diese mit echten Shellläufen testen ([0.12](docs/versions/0.12.md)).
 - **Ein Wächter darf nichts aus der geprüften Zeile ausführen:** Der Branchleser startete `git` mit der Umgebung des Befehls; `PATH=/fremd git commit` hätte schon bei der Prüfung ein fremdes `git` gestartet. Leseabfragen nur mit festem Git-Pfad und eigener kleiner Umgebung ([0.12](docs/versions/0.12.md)).
 - **Ein fehlendes Hook-Skript sperrt Codex komplett:** `python3 fehlt.py` endet mit Exit 2, und Exit 2 heißt in Codex „Werkzeugaufruf sperren“. Ein Syntax-/Importfehler endet mit Exit 1 ohne Antwort. Client-Hooks deshalb so eintragen, dass nur eine Antwort mit Exit 0 durchkommt, sonst eine Meldung ohne Block ([0.12](docs/versions/0.12.md)).
 - **Antigravitys Web-Doku und installierter Stand können abweichen:** Die im `language_server` eingebettete Hook-Doku nennt eine andere `allow`-Bedeutung und Werkzeugnamen aus Step-Typen; Adapter nach Argumentform statt Namen, Verhalten am echten Client messen. Gemessen: der Hook läuft im Ordner der `hooks.json`, und das CLI sendet kein `Cwd` – den Repo-Ordner aus `workspacePaths` nehmen ([0.12](docs/versions/0.12.md)).

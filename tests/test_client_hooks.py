@@ -24,7 +24,7 @@ import guard  # noqa: E402
 from test_guard import OUTSIDE_GIT, RULES, SharedRuleTests  # noqa: E402
 
 HEAVY = "python3 Tools/heavy_lock" + ".py run -- ./verify.sh run"  # split: the session's own guard reads this file too
-BLOCK_CASES = {"commit-on-main": "git checkout main && git commit -m x", "heavy-resource": HEAVY,
+BLOCK_CASES = {"commit-on-main": "git commit --allow-empty-message -m ''", "heavy-resource": HEAVY,
                "git-kein-force-push": "git push --force origin main"}
 WARN_CASES = {"heavy-unlocked": "bash .agents/skills/ce-testing/scripts/verify.sh run --full",
               "output-cap": "cat logs/toolgen_report.json", "judge-template": "codex exec -m gpt-6-luna 'Prüfe' < d.txt"}
@@ -246,7 +246,10 @@ class AntigravityAdapterTests(unittest.TestCase):
 
 
 class RealBranchTests(unittest.TestCase):
-    """The measured Codex input of a plain commit on main (it passed the lexical rule) - now denied in both clients."""
+    """The measured client inputs of a commit on main (it passed the lexical rule). Their line is compound
+    (`printf … > file; git commit …`): the bounded pre-check passes it with a note in both clients and the Git net
+    rejects it at run time (test_githooks.PrecheckBoundaryTests). The same input with only its `git commit` part is
+    denied before it runs - on main only, in the folder each client reports."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -257,13 +260,27 @@ class RealBranchTests(unittest.TestCase):
                            env={"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "PATH": "/usr/bin:/bin"})
         self.measured = json.loads((SCHEMAS / "measured-plain-commit.json").read_text())["input"]
 
-    def test_the_measured_plain_commit_is_denied_on_main_only(self):
+    def test_the_measured_line_is_left_to_the_git_net_in_both_clients(self):
         self.assertEqual(validate(self.measured, INPUT_SCHEMA), [])
-        _, output = answer(codex_guard, dict(self.measured, cwd=str(self.base / "main repo")))
-        self.assertIn("[commit-on-main]", output["hookSpecificOutput"]["permissionDecisionReason"])
-        _, output = answer(codex_guard, dict(self.measured, cwd=str(self.base / "work")))
-        self.assertIsNone(output)
         command = self.measured["tool_input"]["command"]
+        for repo in ("main repo", "work"):
+            _, output = answer(codex_guard, dict(self.measured, cwd=str(self.base / repo)))
+            self.assertEqual(validate(output, OUTPUT_SCHEMA), [])
+            self.assertNotIn("permissionDecision", output["hookSpecificOutput"], repo)
+            self.assertIn("Git-Netz (pre-commit)", output["hookSpecificOutput"]["additionalContext"], repo)
+            _, output = answer(antigravity_guard, antigravity_input("run_command", {"CommandLine": command},
+                                                                    workspacePaths=[str(self.base / repo)]))
+            self.assertEqual(output["decision"], "allow", repo)
+            self.assertIn("Git-Netz (pre-commit)", output["reason"], repo)
+
+    def test_the_plain_commit_of_the_measured_input_is_denied_on_main_only(self):
+        command = self.measured["tool_input"]["command"].split("; ", 1)[1]
+        self.assertTrue(command.startswith("git commit -m"), command)
+        measured = dict(self.measured, tool_input=dict(self.measured["tool_input"], command=command))
+        _, output = answer(codex_guard, dict(measured, cwd=str(self.base / "main repo")))
+        self.assertIn("[commit-on-main]", output["hookSpecificOutput"]["permissionDecisionReason"])
+        _, output = answer(codex_guard, dict(measured, cwd=str(self.base / "work")))
+        self.assertIsNone(output)
         _, output = answer(antigravity_guard, antigravity_input("run_command", {"CommandLine": command},
                                                                 workspacePaths=[str(self.base / "main repo")]))
         self.assertEqual(output["decision"], "deny")
@@ -276,8 +293,13 @@ class RealBranchTests(unittest.TestCase):
         folder = Path(__file__).resolve().parent / "fixtures" / "antigravity"
         for name in ("measured-cli-1.4.5-plain-commit.json", "measured-ide-2.5.5-plain-commit.json"):
             for repo, decision in (("main repo", "deny"), ("work", "allow")):
-                raw = (folder / name).read_text().replace("<workspace>", str(self.base / repo))
-                _, output = answer(antigravity_guard, json.loads(raw)["input"])
+                payload = json.loads((folder / name).read_text().replace("<workspace>", str(self.base / repo)))["input"]
+                _, output = answer(antigravity_guard, payload)
+                self.assertEqual(output["decision"], "allow", (name, repo, "measured compound line"))
+                self.assertIn("Git-Netz (pre-commit)", output["reason"], (name, repo))
+                args = payload["toolCall"]["args"]
+                args["CommandLine"] = args["CommandLine"].split("; ", 1)[1]  # its plain `git commit`
+                _, output = answer(antigravity_guard, payload)
                 self.assertEqual(output["decision"], decision, (name, repo))
 
 
@@ -286,7 +308,7 @@ class ParityTests(unittest.TestCase):
 
     def test_every_shared_shell_case_has_the_claude_verdict_in_both_clients(self):
         corpus = [c for hits, misses in list(SharedRuleTests.CASES.values()) + list(SharedRuleTests.WARN_CASES.values())
-                  for c in hits + misses]
+                  for c in hits + misses] + SharedRuleTests.DELEGATED
         for command in corpus:
             claude = guard.decide({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": OUTSIDE_GIT}, RULES)
             claude_kind = "deny" if "hookSpecificOutput" in claude else "warn" if claude else "none"

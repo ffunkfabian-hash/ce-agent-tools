@@ -17,7 +17,6 @@ import fnmatch
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -67,10 +66,11 @@ def load_rules(folder=RULES_DIR):
     return rules
 
 
-def field_value(field, tool, data, cwd=None):
+def field_value(field, tool, data, cwd=None, facts=None):
     if tool == "Bash":
         if field == "git_commit":
-            return git_commits(data.get("command", ""), cwd or os.getcwd())
+            facts = facts or commit_facts(data.get("command", ""), cwd or os.getcwd())
+            return "\n".join(facts.lines)
         return data.get("command", "") if field == "command" else None
     if tool in FILE_TOOLS:
         if field == "file_path":
@@ -86,8 +86,8 @@ def field_value(field, tool, data, cwd=None):
     return None
 
 
-def condition_holds(condition, tool, data, cwd=None):
-    value = field_value(condition.get("field", ""), tool, data, cwd)
+def condition_holds(condition, tool, data, cwd=None, facts=None):
+    value = field_value(condition.get("field", ""), tool, data, cwd, facts)
     if value is None:
         return False
     pattern, operator = condition.get("pattern", ""), condition.get("operator", "regex_match")
@@ -105,580 +105,190 @@ def condition_holds(condition, tool, data, cwd=None):
     }.get(operator, lambda: False)()
 
 
-def matching_rules(rules, tool, data, cwd=None):
+def matching_rules(rules, tool, data, cwd=None, facts=None):
     event = "bash" if tool == "Bash" else "file" if tool in FILE_TOOLS else None
     if event is None:
         return []
     return [rule for rule in rules if rule.get("event", "all") in (event, "all")
-            and all(condition_holds(c, tool, data, cwd) for c in rule["conditions"])]
+            and all(condition_holds(c, tool, data, cwd, facts) for c in rule["conditions"])]
 
 
 # ---------------------------------------------------------------------------------------------- git commit field
 #
-# commit-on-main needs the branch a `git commit` really lands on. The line is tokenised and parsed like the shell does
-# (quotes, comments, heredocs, substitutions also inside $((…)), lists, && and ||, pipelines, subshells, groups,
-# if/while/for/case, functions) and then run on the set of states it can reach: a switch that may fail or sits on a
-# path that may not run never rules main out. Folder and variables stay inside a subshell, branch switches are on
-# disk and do not. Branches are read with the system's Git (fixed path, small fixed environment), never with a PATH
-# or loader variable taken from the line. What cannot be known before the line runs (script files, a folder made on
-# the way, input from a file) leaves the branch unknown; the Git net (githooks/) covers that.
+# commit-on-main judges one statically clear form before the line runs: a whole line that is a single simple command
+# `git [options] commit …` of literal words (quotes, backslashes and comments are read like the shell does, also inside
+# a word: 'gi't, g\it; no $, `, glob or brace character). Its branch comes from the folder of the hook input,
+# `git -C`, `--git-dir`, `--work-tree`, `--bare` and GIT_DIR/GIT_WORK_TREE/GIT_COMMON_DIR inherited from the client,
+# read with the system's Git (fixed path, small fixed environment) - never a git, PATH or loader named by the line.
+# Everything else that may run a commit (prefix assignments NAME=value, operators, subshells, variables, substitutions,
+# functions, wrappers, scripts, redirections, pipelines) is not simulated: it passes with a note and the Git net
+# (githooks/: pre-commit sees the real HEAD) decides when it runs. --allow-empty-message is blocked in every literal
+# `git … commit` segment of the line.
 
-GIT_VALUE_OPTIONS = ("-c", "--namespace", "--config-env")
-GIT_CONTEXT_OPTIONS = ("-C", "--git-dir", "--work-tree")
-SWITCH_NEW = ("-b", "-B", "-c", "-C", "--orphan", "--create", "--force-create")
-SHELLS = ("sh", "bash", "zsh", "dash", "ksh")
-WRAPPERS = {"env": (), "command": (), "builtin": (), "exec": ("-a",), "nohup": (), "time": (), "nice": ("-n",),
-            "timeout": ("-s", "-k", "--signal", "--kill-after")}  # value: options taking a value
-ENV_OPTIONS = {"-u": "unset", "--unset": "unset", "-C": "chdir", "--chdir": "chdir", "-S": "split",
-               "--split-string": "split", "-P": "path"}
 GIT_CANDIDATES = ("/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git")
 GIT_REPOSITORY_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
-MAX_STATES, MAX_DEPTH = 256, 12
-UNKNOWN = object()  # standard input only known when the line runs
+GIT_CONTEXT_OPTIONS = ("-C", "--git-dir", "--work-tree")  # followed (with their value) by the branch query
+GIT_FLAGS = ("--bare", "--no-pager", "-P", "-p", "--paginate", "--no-optional-locks", "--literal-pathspecs",
+             "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-replace-objects", "--no-advice")
+COMMIT_VALUE_OPTIONS = ("-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
+                        "--fixup", "--squash", "--author", "--date", "-t", "--template", "--cleanup", "--trailer",
+                        "--pathspec-from-file")
+INERT = ("echo", "printf", "grep", "egrep", "rg", "cat", "head", "tail", "less", "man", "true", "false", "test", "[")
 ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
-CURRENT, PREVIOUS = "<current>", "<previous>"  # branch at the start of the line / of @{-1}, resolved on demand
+MENTIONS_COMMIT = re.compile(r"\bgit\b[\s\S]*\bcommit\b", re.IGNORECASE)  # only decides whether a note is due
+OPERATORS = ("&&", "||", ";;", "<<<", "<<", ">>", "&>", "|&", "&", "|", ";", "<", ">", "(", ")", "\n")
+NET = ("das Git-Netz (pre-commit) prüft den tatsächlichen Branch beim Ausführen; ob es in diesem Repo aktiv ist, "
+       "zeigt `ce_githooks.py status`")
 
 
-class Heredoc:
-    def __init__(self, delimiter, strip_tabs, quoted):
-        self.delimiter, self.strip_tabs, self.quoted, self.body, self.subs = delimiter, strip_tabs, quoted, "", []
-        self.fd = None  # file descriptor it feeds; None = standard input
+class CommitFacts:
+    """lines: "<branch> git commit[ --allow-empty-message]" per judged commit ("-" no branch, "?" not judged) for the
+    rule; notes: why a possible commit was left to the Git net."""
+
+    def __init__(self, lines=(), notes=()):
+        self.lines, self.notes = list(lines), list(notes)
 
 
-def shell_tokens(text, i=0, nested=False):
-    """Tokens of a shell line: ("word", text without quotes), ("op", control operator, "(" or ")"), ("sub", tokens of
-    a $(…), `…` or <(…), also inside $((…))), ("redirect", (fd, operator)) before a redirection target, ("herestring",
-    fd) before its word and ("heredoc", Heredoc). Quotes, backslashes, comments and heredoc bodies are read the way the
-    shell reads them. nested: stop at the ")" that closes a $( or <( and return its index."""
-    tokens, word, started, depth, pending, n = [], [], False, 0, [], len(text)
+def shell_segments(text):
+    """The words of a shell line, split into segments at unquoted operator characters, and the first construct that
+    makes the line more than one simple command of literal words (None if there is none). A word is (text, literal):
+    quotes and backslashes removed; literal False when it holds an expansion ($, `, glob or brace characters, ~user).
+    A heredoc ends the reading - its body is no command line."""
+    segments, words, chars, why = [], [], [], None
+    literal, started, i, n = True, False, 0, len(text)
 
     def end_word():
-        nonlocal word, started
+        nonlocal chars, literal, started
         if started:
-            tokens.append(("word", "".join(word)))
-        word, started = [], False
+            words.append(("".join(chars), literal))
+        chars, literal, started = [], True, False
 
     while i < n:
-        c, two = text[i], text[i:i + 2]
+        c = text[i]
         if c == "\\":
-            if two != "\\\n":
-                word.append(text[i + 1:i + 2])
+            if text[i + 1:i + 2] != "\n":  # backslash-newline continues the line
+                chars.append(text[i + 1:i + 2])
                 started = True
             i += 2
-        elif c == "'" or two == "$'":
-            end = start = i + 1 + (c == "$")
-            while end < n and text[end] != "'":
-                end += 2 if c == "$" and text[end] == "\\" else 1
-            word.append(text[start:end])
+        elif c == "'":
+            end = text.find("'", i + 1)
+            why = why or ("offenes Anführungszeichen" if end < 0 else None)
+            end = n if end < 0 else end
+            chars.append(text[i + 1:end])
             started, i = True, end + 1
         elif c == '"':
-            value, subs, i = double_quoted(text, i + 1, '"')
-            word.append(value)
-            tokens += [("sub", sub) for sub in subs]
-            started = True
-        elif text.startswith("$((", i):
-            end, subs = arithmetic(text, i + 3)
-            tokens += [("sub", sub) for sub in subs]
-            word.append(text[i:end])
-            started, i = True, end
-        elif two in ("$(", "<(", ">("):
-            if c != "$":
-                end_word()
-            sub, end = shell_tokens(text, i + 2, nested=True)
-            tokens.append(("sub", sub))
-            word.append(text[i:end + 1])
-            started, i = True, end + 1
-        elif c == "`":
-            end = backtick_end(text, i + 1)
-            tokens.append(("sub", shell_tokens(text[i + 1:end])[0]))
-            word.append(text[i:end + 1])
-            started, i = True, end + 1
-        elif c == "#" and not started:
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and text[i + 1:i + 2] in ('"', "\\", "$", "`", "\n"):
+                    chars.append(text[i + 1] if text[i + 1] != "\n" else "")
+                    i += 2
+                    continue
+                if text[i] in "$`":
+                    literal, why = False, why or "Variable oder Befehlsersetzung"
+                chars.append(text[i])
+                i += 1
+            why = why or ("offenes Anführungszeichen" if i >= n else None)
+            started, i = True, i + 1
+        elif c == "#" and not started:  # a comment up to the end of the line
             end = text.find("\n", i)
             i = n if end < 0 else end
         elif c in " \t":
             end_word()
             i += 1
-        elif c == "\n":
+        elif c == "\n" and not text[i:].strip():
+            break  # trailing whitespace
+        elif any(text.startswith(op, i) for op in OPERATORS):
+            op = next(op for op in OPERATORS if text.startswith(op, i))
+            why = why or ("Zeilenumbruch" if op == "\n" else f"Operator `{op}`")
             end_word()
-            tokens.append(("op", "\n"))
-            i += 1
-            for doc in pending:
-                i = read_heredoc(text, i, doc)
-            pending = []
-        elif c in "()":
-            end_word()
-            if c == ")" and nested and depth == 0:
-                return tokens, i
-            depth += 1 if c == "(" else -1
-            tokens.append(("op", c))
-            i += 1
-        elif c in "<>" or two == "&>":
-            fd = None
-            if started and c != "&" and "".join(word).isdigit():
-                fd, word, started = int("".join(word)), [], False  # a file descriptor: 2>&1, 3<<EOF
-            end_word()
-            if text.startswith("<<<", i):
-                tokens.append(("herestring", fd))
-                i += 3
-            elif two == "<<":
-                doc, i = heredoc_operator(text, i + 2)
-                doc.fd = fd
-                pending.append(doc)
-                tokens.append(("heredoc", doc))
-            else:
-                start, i = i, i + 1
-                while i < n and text[i] in "<>&|":
-                    i += 1
-                tokens.append(("redirect", (fd, text[start:i])))
-        elif c in ";&|":
-            end_word()
-            op = two if two in ("&&", "||", "|&", ";;", ";&") else c
-            tokens.append(("op", op))
+            segments.append(words)
+            words = []
+            if op == "<<":
+                break  # heredoc
             i += len(op)
         else:
-            word.append(c)
+            if c in "$`":
+                why = why or "Variable oder Befehlsersetzung"
+                literal = False
+            elif c in "*?[" or (c == "{" and brace_expansion(text, i, started)):
+                why = why or "Muster, Klammererweiterung oder Gruppe"
+                literal = False
+            elif c == "~" and not started:
+                home, rest = os.environ.get("HOME"), text[i + 1:i + 2]
+                if home and (rest in ("", "/", " ", "\t", "\n") or rest in ";&|<>()"):
+                    chars.append(home)
+                    started, i = True, i + 1
+                    continue
+                why, literal = why or "Tilde-Erweiterung", False
+            chars.append(c)
             started, i = True, i + 1
     end_word()
-    return tokens, n
+    segments.append(words)
+    return [words for words in segments if words], why
 
 
-def double_quoted(text, i, closing):
-    """Value and substitutions of a double-quoted text from i up to `closing` (None: to the end, a heredoc body)."""
-    value, subs, n = [], [], len(text)
-    while i < n:
-        c = text[i]
-        if closing and c == closing:
-            return "".join(value), subs, i + 1
-        if c == "\\" and i + 1 < n and (text[i + 1] in "$`\\\n" or text[i + 1] == closing):
-            value.append("" if text[i + 1] == "\n" else text[i + 1])
-            i += 2
-        elif text.startswith("$((", i):
-            end, inner = arithmetic(text, i + 3)
-            subs += inner
-            value.append(text[i:end])
-            i = end
-        elif text.startswith("$(", i):
-            sub, end = shell_tokens(text, i + 2, nested=True)
-            subs.append(sub)
-            value.append(text[i:end + 1])
-            i = end + 1
-        elif c == "`":
-            end = backtick_end(text, i + 1)
-            subs.append(shell_tokens(text[i + 1:end])[0])
-            value.append(text[i:end + 1])
-            i = end + 1
-        else:
-            value.append(c)
-            i += 1
-    return "".join(value), subs, n
+def brace_expansion(text, i, started):
+    """True for an unquoted { at i that the shell expands or reads as a group: `{ …; }`, {a,b}, {1..3}."""
+    if not started and text[i + 1:i + 2] in ("", " ", "\t", "\n"):
+        return True
+    end = text.find("}", i)
+    inner = text[i + 1:end] if end > 0 else ""
+    return not re.search(r"[\s'\"]", inner) and ("," in inner or ".." in inner)
 
 
-def arithmetic(text, i):
-    """End index and command substitutions of the arithmetic expansion whose "$((" ends just before i."""
-    depth, subs = 2, []
-    while i < len(text) and depth:
-        if text.startswith("$((", i):
-            depth, i = depth + 2, i + 3
-        elif text.startswith("$(", i):
-            sub, end = shell_tokens(text, i + 2, nested=True)
-            subs.append(sub)
-            i = end + 1
-        elif text[i] == "`":
-            end = backtick_end(text, i + 1)
-            subs.append(shell_tokens(text[i + 1:end])[0])
-            i = end + 1
-        else:
-            depth += {"(": 1, ")": -1}.get(text[i], 0)
-            i += 1
-    return i, subs
-
-
-def backtick_end(text, i):
-    while i < len(text) and text[i] != "`":
-        i += 2 if text[i] == "\\" else 1
-    return min(i, len(text))
-
-
-def heredoc_operator(text, i):
-    """The heredoc after `<<` at i: delimiter (quotes removed; quoted means a literal body) and the index after it."""
-    strip = text.startswith("-", i)
-    i += strip
-    while i < len(text) and text[i] in " \t":
+def commit_call(words):
+    """What one segment runs: None (no `git commit`), a str (why it may run one that is not judged here) or
+    (git context options, commit arguments) of a literal `git [options] commit …`."""
+    text = " ".join(word for word, _ in words)
+    if ASSIGNMENT.match(words[0][0]):  # NAME=value prefixes (or a quoted name that only looks like one): not read
+        return "Präfix-Zuweisung `NAME=…` wird vorab nicht ausgewertet" if MENTIONS_COMMIT.search(text) else None
+    program, literal = words[0]
+    if not literal or os.path.basename(program) != "git":
+        if not MENTIONS_COMMIT.search(text) or (literal and os.path.basename(program) in INERT):
+            return None
+        return ("Programmname erst beim Ausführen bekannt" if not literal
+                else f"`{os.path.basename(program)}` kann `git commit` starten: Wrapper, Shell, Funktion oder Skript")
+    context, i = [], 1
+    while i < len(words) and words[i][0].startswith("-"):
+        arg, literal = words[i]
+        name, equals, value = arg.partition("=")
+        if not literal:
+            return "Variable oder Ersetzung in den Git-Optionen"
+        if arg in GIT_CONTEXT_OPTIONS or (equals and name in GIT_CONTEXT_OPTIONS[1:]):
+            if not equals:
+                if i + 1 >= len(words) or not words[i + 1][1]:
+                    return "Git-Option ohne festen Wert"
+                i, value = i + 1, words[i + 1][0]
+            context += [name, value]
+        elif arg == "--bare":
+            context.append(arg)
+        elif arg == "-c":
+            i += 1  # a config value does not move HEAD
+        elif arg not in GIT_FLAGS:
+            return f"Git-Option `{arg}` wird vorab nicht ausgewertet"
         i += 1
-    delimiter, quoted = [], False
-    while i < len(text) and text[i] not in " \t\n;&|()<>":
-        c = text[i]
-        if c in "'\"":
-            end = text.find(c, i + 1)
-            end = len(text) if end < 0 else end
-            delimiter.append(text[i + 1:end])
-            quoted, i = True, end + 1
-        elif c == "\\":
-            delimiter.append(text[i + 1:i + 2])
-            quoted, i = True, i + 2
-        else:
-            delimiter.append(c)
-            i += 1
-    return Heredoc("".join(delimiter), strip, quoted), i
+    if i >= len(words):
+        return None
+    subcommand, literal = words[i]
+    if not literal:
+        return "Git-Unterbefehl erst beim Ausführen bekannt" if MENTIONS_COMMIT.search(text) else None
+    return (context, [word for word, _ in words[i + 1:]]) if subcommand == "commit" else None
 
 
-def read_heredoc(text, i, doc):
-    """Reads the body of `doc` from line start i up to its delimiter line; returns the index after that line."""
-    lines = []
-    while i < len(text):
-        end = text.find("\n", i)
-        end = len(text) if end < 0 else end
-        line, i = text[i:end], end + 1
-        if (line.lstrip("\t") if doc.strip_tabs else line) == doc.delimiter:
-            break
-        lines.append(line)
-    doc.body = "\n".join(lines)
-    if not doc.quoted:  # an unquoted body expands $(…) and `…` when the line runs
-        doc.subs = double_quoted(doc.body, 0, None)[1]
-    return min(i, len(text))
-
-
-def unwrap(words, env):
-    """The program behind env, command, exec, nohup, nice, time and timeout, and what env changes for it:
-    (words, folder of env -C or None, clear for env -i). Assignments and env -u go to `env` (None = unset)."""
-    folder, clear = None, False
-    while words and os.path.basename(words[0]) in WRAPPERS:
-        head, rest = os.path.basename(words[0]), words[1:]
-        if head == "command" and rest[:1] in (["-v"], ["-V"]):
-            return [], None, False  # only names what would run
-        while rest and (rest[0].startswith("-") or (head == "env" and ASSIGNMENT.match(rest[0]))):
-            arg, rest = rest[0], rest[1:]
-            if head != "env":
-                rest = rest[1:] if arg in WRAPPERS[head] and rest else rest
-            elif ASSIGNMENT.match(arg):
-                name, value = arg.split("=", 1)
-                env[name] = value
-            elif arg in ("-i", "-", "--ignore-environment"):
-                clear = True
-                env.clear()
-            else:
-                option, equals, value = arg.partition("=") if arg.startswith("--") else (arg[:2], "", arg[2:])
-                action = ENV_OPTIONS.get(option)
-                if action and not equals and not value and rest:
-                    value, rest = rest[0], rest[1:]
-                if action == "unset":
-                    env[value] = None
-                elif action == "chdir":
-                    folder = value
-                elif action == "split":
-                    rest = shlex.split(value) + rest  # env -S 'git commit': the program is in the string
-        if head == "timeout" and rest:
-            rest = rest[1:]  # the duration
-        words = rest
-    return words, folder, clear
-
-
-def shell_script(args, stdin):
-    """The script `sh|bash|zsh <args>` runs: the -c text; else its standard input (no file operand, `-` or -s) when
-    that is known text; else None (a script file, or input only known when the line runs)."""
-    command_mode, stdin_mode, i = False, False, 0
-    while i < len(args) and args[i].startswith(("-", "+")) and args[i] not in ("-", "--"):
-        if args[i] in ("-o", "+o", "-O", "+O"):
-            i += 1
-        elif not args[i].startswith("--"):
-            command_mode |= "c" in args[i][1:]
-            stdin_mode |= "s" in args[i][1:]
-        i += 1
-    if command_mode:
-        i += i < len(args) and args[i] == "--"
-        return args[i] if i < len(args) else None
-    i += i < len(args) and args[i] == "--"
-    if stdin_mode or i >= len(args) or args[i] == "-":
-        return stdin if isinstance(stdin, str) else None
-    return None
-
-
-def switch_target(command, args, kind):
-    """What `git checkout|switch <args>` does to HEAD: (branch, how) - branch a name ("-" = the previous one) or None
-    (detached), how "create" (fails when the branch exists), "sure" or "maybe" (may fail: not a known branch yet) - or
-    (..., "files") when HEAD stays. kind(name, path_possible) -> "branch" | "new" | "commit" | "path", like checkout."""
-    names, paths, dashdash, detach, track, i = [], [], False, False, False, 0
-    while i < len(args):
-        arg = args[i]
-        option, _, value = arg.partition("=")
-        if dashdash:
-            paths.append(arg)
+def allows_empty_message(args):
+    """True when the commit arguments set --allow-empty-message (Git also takes an unambiguous prefix)."""
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
         elif arg == "--":
-            dashdash = True
-        elif option in SWITCH_NEW:
-            name = value if "=" in arg else args[i + 1] if i + 1 < len(args) else None
-            return name, "sure" if option in ("-B", "-C", "--force-create") else "create"
-        elif arg[:2] in SWITCH_NEW and not arg.startswith("--"):  # -bname
-            return arg[2:], "sure" if arg[:2] in ("-B", "-C") else "create"
-        elif arg in ("-d", "--detach"):
-            detach = True
-        elif arg in ("-t", "--track") or arg.startswith("--track="):
-            track = True
-        elif arg in ("-p", "--patch") or arg.startswith("--pathspec-from-file"):
-            return ..., "files"
-        elif arg == "--conflict":
-            i += 1
-        elif arg == "-" or not arg.startswith("-"):
-            names.append(arg)
-        i += 1
-    if command == "switch":  # no paths: `switch main --` and `switch -- main` both switch
-        names, paths = names + paths, []
-    if detach:
-        return (None, "sure") if not paths else (..., "files")
-    if paths or len(names) != 1:
-        return ..., "files"  # checkout <tree-ish> <paths>: files only; or nothing named
-    name = names[0]
-    if track:
-        return name.split("/", 1)[-1], "create"  # -t origin/x makes and checks out x
-    if name in ("HEAD", "@"):
-        return ..., "files"
-    if name == "-" or name.startswith("@{-"):
-        return "-", "maybe"
-    found = kind(name, command == "checkout" and not dashdash)
-    if found == "path":
-        return ..., "files"
-    if found == "commit":
-        return (None, "sure") if command == "checkout" else (..., "files")  # switch wants --detach: an error
-    return name, "sure" if found == "branch" else "maybe"
-
-
-# The shell grammar the reader follows. Nodes: ("list", [(and_or, terminator)]), ("andor", [(None|"&&"|"||",
-# pipeline)]), ("pipeline", negate, [command]), ("simple", tokens), ("subshell", list), ("group", list), ("if", cond,
-# then, else), ("loop", cond, body), ("for", subs, body), ("case", subs, [list]), ("function", name, command).
-
-SEPARATORS = (";", "\n", "&")
-
-
-class Parser:
-    """Recursive descent over shell_tokens. Lenient: a token it cannot place is skipped, so a broken line still yields
-    what it contains."""
-
-    def __init__(self, tokens):
-        self.tokens, self.i = tokens, 0
-
-    def peek(self, ahead=0):
-        j = self.i + ahead
-        return self.tokens[j] if j < len(self.tokens) else ("eof", None)
-
-    def word(self, *values):
-        return self.peek()[0] == "word" and self.peek()[1] in values
-
-    def op(self, *values):
-        return self.peek()[0] == "op" and self.peek()[1] in values
-
-    def skip(self, kind, value):
-        if self.peek() == (kind, value):
-            self.i += 1
-
-    def newlines(self):
-        while self.op("\n"):
-            self.i += 1
-
-    def until(self, stop):
-        """Skips to the word `stop`, returning the substitutions on the way (for/case headers)."""
-        subs = []
-        while self.peek()[0] != "eof" and not self.word(stop):
-            kind, value = self.peek()
-            subs += [value] if kind == "sub" else []
-            self.i += 1
-        self.skip("word", stop)
-        return subs
-
-    def parse_list(self, stop_words=(), stop_ops=()):
-        items = []
-        while True:
-            while self.op("\n", ";"):
-                self.i += 1
-            if self.peek()[0] == "eof" or self.word(*stop_words) or self.op(*stop_ops):
-                return ("list", items)
-            start = self.i
-            node = self.and_or()
-            terminator = self.peek()[1] if self.op(*SEPARATORS) else None
-            self.i += terminator is not None
-            if self.i == start:
-                self.i += 1  # a token that fits nowhere: a stray ")" or "fi"
-                continue
-            items.append((node, terminator))
-
-    def and_or(self):
-        parts = [(None, self.pipeline())]
-        while self.op("&&", "||"):
-            operator = self.peek()[1]
-            self.i += 1
-            self.newlines()
-            parts.append((operator, self.pipeline()))
-        return ("andor", parts)
-
-    def pipeline(self):
-        negate = False
-        while self.word("!", "time"):
-            negate ^= self.peek()[1] == "!"
-            self.i += 1
-        commands = [self.command()]
-        while self.op("|", "|&"):
-            self.i += 1
-            self.newlines()
-            commands.append(self.command())
-        return ("pipeline", negate, commands)
-
-    def command(self):
-        if self.op("("):
-            self.i += 1
-            node = ("subshell", self.parse_list(stop_ops=(")",)))
-            self.skip("op", ")")
-        elif self.word("{"):
-            self.i += 1
-            node = ("group", self.parse_list(stop_words=("}",)))
-            self.skip("word", "}")
-        elif self.word("if"):
-            node = self.if_clause()
-        elif self.word("while", "until"):
-            self.i += 1
-            condition = self.parse_list(stop_words=("do",))
-            self.skip("word", "do")
-            node = ("loop", condition, self.parse_list(stop_words=("done",)))
-            self.skip("word", "done")
-        elif self.word("for", "select"):
-            self.i += 1
-            subs = self.until("do")
-            node = ("for", subs, self.parse_list(stop_words=("done",)))
-            self.skip("word", "done")
-        elif self.word("case"):
-            self.i += 1
-            node = ("case", self.until("in"), self.case_clauses())
-        elif self.word("function"):
-            self.i += 1
-            name = self.peek()[1]
-            self.i += 1
-            if self.op("(") and self.peek(1) == ("op", ")"):
-                self.i += 2
-            self.newlines()
-            return ("function", name, self.command())
-        else:
-            tokens = []
-            while self.peek()[0] in ("word", "sub", "redirect", "heredoc", "herestring"):
-                tokens.append(self.peek())
-                self.i += 1
-            if len(tokens) == 1 and tokens[0][0] == "word" and self.op("(") and self.peek(1) == ("op", ")"):
-                self.i += 2
-                self.newlines()
-                return ("function", tokens[0][1], self.command())
-            return ("simple", tokens)
-        while self.peek()[0] in ("redirect", "heredoc", "herestring"):  # `{ …; } >log`, `done <<EOF`
-            self.i += 1 + (self.peek()[0] != "heredoc" and self.peek(1)[0] == "word")
-        return node
-
-    def if_clause(self):
-        self.i += 1  # if / elif
-        condition = self.parse_list(stop_words=("then",))
-        self.skip("word", "then")
-        then = self.parse_list(stop_words=("elif", "else", "fi"))
-        if self.word("elif"):
-            return ("if", condition, then, self.if_clause())  # the elif chain shares one fi
-        other = None
-        if self.word("else"):
-            self.i += 1
-            other = self.parse_list(stop_words=("fi",))
-        self.skip("word", "fi")
-        return ("if", condition, then, other)
-
-    def case_clauses(self):
-        clauses = []
-        while True:
-            while self.op("\n", ";"):
-                self.i += 1
-            if self.peek()[0] == "eof" or self.word("esac"):
-                self.skip("word", "esac")
-                return clauses
-            start = self.i
-            while self.peek()[0] != "eof" and not self.op(")"):  # the patterns
-                self.i += 1
-            self.skip("op", ")")
-            clauses.append(self.parse_list(stop_words=("esac",), stop_ops=(";;", ";&")))
-            if self.op(";;", ";&"):
-                self.i += 1
-            if self.i == start:
-                self.i += 1
-
-
-def parse(tokens):
-    return Parser(tokens).parse_list()
-
-
-class ShellState:
-    """One possible state of the shell during the line. Process state - folder, exported variables (None = unset),
-    shell variables not exported yet (local), functions - stays inside a subshell; repository state - per repository
-    the branch an earlier checkout/switch left (heads), the one before it (before) and branches made on the way - is
-    on disk and outlives the subshell that changed it."""
-
-    def __init__(self, folder):
-        self.folder, self.oldpwd, self.stack, self.env, self.local, self.functions = folder, None, [], {}, {}, {}
-        self.clean = False  # env -i started this shell: nothing inherited
-        self.heads, self.before, self.made = {}, {}, {}
-
-    def copy(self):
-        twin = self.with_repo(self)
-        return twin
-
-    def with_repo(self, other):
-        """This process state with the repository state of `other` (a subshell has ended)."""
-        twin = ShellState(self.folder)
-        twin.oldpwd, twin.stack, twin.env, twin.local, twin.functions, twin.clean = \
-            self.oldpwd, list(self.stack), dict(self.env), dict(self.local), dict(self.functions), self.clean
-        twin.heads, twin.before = dict(other.heads), dict(other.before)
-        twin.made = {key: set(names) for key, names in other.made.items()}
-        return twin
-
-    def key(self):
-        ordered = lambda items: tuple(sorted(items, key=repr))
-        return (self.folder, self.oldpwd, self.clean, tuple(self.stack), ordered(self.env.items()),
-                ordered(self.local.items()),
-                ordered((name, id(body)) for name, body in self.functions.items()), ordered(self.heads.items()),
-                ordered(self.before.items()), ordered((key, ordered(names)) for key, names in self.made.items()))
-
-    def environment(self, extra=None, clear=False):
-        env = {} if clear or self.clean else dict(os.environ)
-        for name, value in [*([] if clear else self.env.items()), *(extra or {}).items()]:
-            if value is None:
-                env.pop(name, None)
-            else:
-                env[name] = value
-        return env
-
-    def exported(self, name):
-        return self.env[name] is not None if name in self.env else not self.clean and name in os.environ
-
-    def expand(self, word, extra=None):
-        env = self.environment(extra)
-        if word == "~" or word.startswith("~/"):
-            word = env.get("HOME", "~") + word[1:]
-        return re.sub(r"\$(\w+)|\$\{(\w+)\}", lambda m: env.get(m.group(1) or m.group(2), m.group(0)), word)
-
-    def change_folder(self, program, args):
-        """Applies cd/pushd/popd; True when it surely succeeds (the folder exists now)."""
-        args = [a for a in args if a == "-" or not a.startswith("-")]  # cd -P, -L, -e, -@, --
-        if program == "popd":
-            if self.stack:
-                self.oldpwd, self.folder = self.folder, self.stack.pop()
-            return bool(self.stack) or self.folder is not None
-        if program == "pushd":
-            self.stack.append(self.folder)
-        target = (self.oldpwd or self.folder) if args[:1] == ["-"] else self.expand(args[0] if args else "~")
-        self.oldpwd, self.folder = self.folder, os.path.normpath(os.path.join(self.folder, target))
-        return os.path.isdir(self.folder)
-
-
-def unique(states):
-    seen, kept = set(), []
-    for state in states:
-        key = state.key()
-        if key not in seen:
-            seen.add(key)
-            kept.append(state)
-    if len(kept) > MAX_STATES:
-        raise RuntimeError(f"Shellzeile hat mehr als {MAX_STATES} mögliche Abläufe")
-    return kept
+            return False
+        elif arg in COMMIT_VALUE_OPTIONS or (re.fullmatch(r"-[a-zA-Z]+", arg) and arg[-1] in "mFCct"
+                                             and not re.search(r"[mFCct]", arg[1:-1])):
+            skip = True  # its value follows: `-m --allow-empty-message` is a message
+        elif len(arg) > len("--allow-empty") and "--allow-empty-message".startswith(arg):
+            return True
+    return False
 
 
 def trusted_git():
@@ -695,285 +305,56 @@ def git_environment(effective):
     return env
 
 
-class CommitFinder:
-    """Runs the parsed line on the set of states it can reach. Each node maps states to (success, failure) states:
-    `&&` continues on success, `||` on failure, `;` on both; a branch switch may fail unless it surely works; a
-    subshell, pipeline element, background job, substitution or `sh -c` keeps its folder and variables but not its
-    branch switches. Every `git commit` notes "<branch> <command>" for each state it can run in."""
+def read_branch(cwd, context):
+    """(branch or None, problem or None) of HEAD where the commit would run. No repository there (or no such folder):
+    no commit can land, (None, None). Detached HEAD: (None, None). Anything else unexpected is a problem (fail open)."""
+    if not os.path.isdir(cwd):
+        return None, None
+    git = trusted_git()
+    if git is None:
+        return None, f"kein System-Git gefunden ({', '.join(GIT_CANDIDATES)})"
+    try:
+        result = subprocess.run([git, *context, "symbolic-ref", "-q", "HEAD"], cwd=cwd, capture_output=True,
+                                text=True, timeout=3, env=git_environment(os.environ))
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        return None, f"Branch nicht lesbar ({error.__class__.__name__}: {error})"
+    if result.returncode == 0:  # full ref: --short gives "heads/main" when a tag main exists too
+        ref = result.stdout.strip()
+        return (ref[len("refs/heads/"):] or None) if ref.startswith("refs/heads/") else None, None
+    if result.returncode == 1 or "not a git repository" in result.stderr or "cannot change to" in result.stderr:
+        return None, None
+    detail = (result.stderr.strip().splitlines() or [f"Exit {result.returncode}"])[-1]
+    return None, f"Branch nicht lesbar (git: {detail[:200]})"
 
-    def __init__(self):
-        self.lines, self.answers, self.git_binary = [], {}, trusted_git()
 
-    def run(self, node, states, top, depth=0):
-        """(success, failure) states after `node`. top: the line's own shell, where `exit` ends everything."""
-        if not states:
-            return [], []
-        if depth > MAX_DEPTH:
-            return states, states
-        kind = node[0]
-        if kind == "list":
-            status = (states, [])
-            for and_or, terminator in node[1]:
-                if terminator == "&":  # background: may or may not have happened when the next command runs
-                    done = self.nested(and_or, states, depth)
-                    states = unique(states + done[0] + done[1])
-                    status = (states, [])
-                else:
-                    status = self.run(and_or, states, top, depth)
-                    states = unique(status[0] + status[1])
-            return status
-        if kind == "andor":
-            success, failure = self.run(node[1][0][1], states, top, depth)
-            for operator, pipeline in node[1][1:]:
-                if operator == "&&":
-                    success, more = self.run(pipeline, success, top, depth)
-                    failure = unique(failure + more)
-                else:
-                    more, failure = self.run(pipeline, failure, top, depth)
-                    success = unique(success + more)
-            return success, failure
-        if kind == "pipeline":
-            negate, commands = node[1], node[2]
-            if len(commands) == 1:
-                status = self.run(commands[0], states, top, depth)
-            else:  # every element runs in a subshell
-                for command in commands[:-1]:
-                    done = self.nested(command, states, depth)
-                    states = unique(done[0] + done[1])
-                status = self.nested(commands[-1], states, depth)
-            return status[::-1] if negate else status
-        if kind == "subshell":
-            return self.nested(node[1], states, depth)
-        if kind == "group":
-            return self.run(node[1], states, top, depth)
-        if kind == "if":
-            success, failure = self.run(node[1], states, top, depth)
-            then = self.run(node[2], success, top, depth)
-            other = self.run(node[3], failure, top, depth) if node[3] else (failure, [])
-            return unique(then[0] + other[0]), unique(then[1] + other[1])
-        if kind in ("loop", "for", "case"):  # any number of passes, any clause: everything reachable, status unknown
-            if kind != "loop":
-                states = self.substitutions(node[1], states, depth)
-            parts = [node[1], node[2]] if kind == "loop" else [node[2]] if kind == "for" else node[2]
-            reached = list(states)
-            for _ in range(2):
-                for part in parts:
-                    done = self.run(part, reached, top, depth + 1)
-                    reached = unique(reached + done[0] + done[1])
-            return reached, reached
-        if kind == "function":
-            defined = []
-            for state in states:
-                state = state.copy()
-                state.functions[node[1]] = node[2]
-                defined.append(state)
-            return defined, []
-        success, failure = [], []
-        for state in states:
-            done = self.simple(node[1], state, top, depth)
-            success, failure = success + done[0], failure + done[1]
-        return unique(success), unique(failure)
-
-    def nested(self, node, states, depth, prepare=None):
-        """A subshell: its folder and variables stay inside, its branch switches do not."""
-        success, failure = [], []
-        for state in states:
-            child = state.copy()
-            if prepare:
-                prepare(child)
-            done = self.run(node, [child], False, depth + 1)
-            success += [state.with_repo(inner) for inner in done[0]]
-            failure += [state.with_repo(inner) for inner in done[1]]
-        return unique(success), unique(failure)
-
-    def substitutions(self, subs, states, depth):
-        for sub in subs:
-            done = self.nested(parse(sub), states, depth)
-            states = unique(done[0] + done[1])
-        return states
-
-    def simple(self, tokens, state, top, depth):
-        words, subs, stdin, target = [], [], None, None
-        for kind, value in tokens:
-            if kind == "sub":
-                subs.append(value)
-            elif kind == "word" and target:
-                stdin = value if target == "herestring" else stdin
-                target = None
-            elif kind == "word":
-                words.append(value)
-            elif kind == "heredoc":
-                subs += value.subs
-                stdin = value.body if value.fd in (None, 0) else stdin
-            elif kind == "herestring":
-                target = "herestring" if value in (None, 0) else "other"
-            elif kind == "redirect":
-                fd, operator = value
-                stdin = UNKNOWN if operator.startswith("<") and fd in (None, 0) else stdin
-                target = "other"
-        success, failure = [], []
-        for current in self.substitutions(subs, [state], depth):
-            done = self.command(words, stdin, current, top, depth)
-            success, failure = success + done[0], failure + done[1]
-        return success, failure
-
-    def command(self, words, stdin, state, top, depth):
-        env = {}
-        while words and ASSIGNMENT.match(words[0]):
-            name, value = words[0].split("=", 1)
-            env[name] = value
-            words = words[1:]
-        if not words:  # NAME=value alone reaches later commands only once NAME is exported
-            state = state.copy()
-            for name, value in env.items():
-                (state.env if state.exported(name) else state.local)[name] = value
-            return [state], []
-        words, chdir, clear = unwrap(words, env)
-        if not words:
-            return [state], [state]
-        program, args = os.path.basename(words[0]), words[1:]
-        if program in state.functions:
-            return self.run(state.functions[program], [state], top, depth + 1)
-        if program in ("true", ":"):
-            return [state], []
-        if program == "false":
-            return [], [state]
-        if program == "exit":
-            return ([], []) if top else ([state], [state])  # nested: only that shell ends, conservatively go on
-        if program in ("cd", "pushd", "popd", "export", "unset"):
-            changed = state.copy()
-            if program in ("cd", "pushd", "popd"):
-                return [changed], [] if changed.change_folder(program, args) else [state]
-            for arg in args:
-                if program == "unset" and not arg.startswith("-"):
-                    changed.env[arg] = None
-                    changed.local.pop(arg, None)
-                elif program == "export":
-                    name, value = arg.split("=", 1) if ASSIGNMENT.match(arg) else (arg, changed.local.get(arg))
-                    changed.env.update({name: value} if value is not None else {})
-            return [changed], []
-        if program == "eval":
-            return self.run(parse(shell_tokens(" ".join(args))[0]), [state], top, depth + 1)
-        if program in SHELLS:
-            script = shell_script(args, stdin)
-            if script is None:
-                return [state], [state]
-
-            def prepare(child):
-                child.env, child.clean = ({}, True) if clear else (child.env, child.clean)
-                child.env.update(env)
-                child.folder = os.path.join(child.folder, child.expand(chdir)) if chdir else child.folder
-            return self.nested(parse(shell_tokens(script)[0]), [state], depth, prepare)
-        if program == "git":
-            return self.git(args, state, env, chdir, clear)
-        return [state], [state]
-
-    def ask(self, repo, *args):
-        """stdout of a read-only `git <repository options> <args>` as the line would run it, None on failure."""
-        folder, context, env = repo
-        key = (folder, tuple(context), tuple(sorted(env.items())), args)
-        if key not in self.answers:
-            self.answers[key] = None
-            if self.git_binary:
-                try:
-                    result = subprocess.run([self.git_binary, *context, *args], cwd=folder, env=env,
-                                            capture_output=True, text=True, timeout=3)
-                    self.answers[key] = result.stdout.strip() if result.returncode == 0 else None
-                except (OSError, subprocess.SubprocessError, ValueError):
-                    pass
-        return self.answers[key]
-
-    def branch(self, repo, value):
-        if value == CURRENT:
-            return self.ask(repo, "symbolic-ref", "-q", "--short", "HEAD")
-        if value == PREVIOUS:
-            name = self.ask(repo, "rev-parse", "--symbolic-full-name", "@{-1}") or ""
-            return name[len("refs/heads/"):] if name.startswith("refs/heads/") else None
-        return value
-
-    def known_branch(self, repo, key, state, name):
-        return name in state.made.get(key, ()) or bool(self.ask(repo, "rev-parse", "-q", "--verify",
-                                                                 f"refs/heads/{name}"))
-
-    def git(self, args, state, extra, chdir, clear):
-        here = os.path.join(state.folder, state.expand(chdir, extra)) if chdir else state.folder
-        folder, context, i = here, [], 0
-        while i < len(args) and args[i].startswith("-"):
-            name, equals, value = args[i].partition("=")
-            if args[i].startswith("-C") and args[i] != "-C":  # -C<path>: Git 2.54 rejects it, following it is safe
-                name, equals, value = "-C", "=", args[i][2:]
-            if name in GIT_CONTEXT_OPTIONS and (equals or i + 1 < len(args)):
-                if not equals:
-                    i += 1
-                    value = args[i]
-                value = state.expand(value, extra)
-                context += [name, value]
-                here = os.path.join(here, value) if name == "-C" else here
-            elif args[i] == "--bare":
-                context.append(args[i])
-            elif args[i] in GIT_VALUE_OPTIONS:
-                i += 1
-            i += 1
-        if i >= len(args):
-            return [state], [state]
-        repo = (folder, context, git_environment(state.environment(extra, clear)))
-        found = self.ask(repo, "rev-parse", "--absolute-git-dir")
-        key = os.path.realpath(found) if found else ("?", os.path.normpath(here), repr(context),
-                                                       repo[2].get("GIT_DIR"))
-        sub, rest = args[i], [state.expand(a, extra) for a in args[i + 1:]]
-        if sub in ("checkout", "switch"):
-            target, how = switch_target(sub, rest, lambda name, path_possible: self.kind(
-                repo, key, here, state, name, path_possible))
-            if target is ...:
-                return [state], [state]
-            if how == "create" and target and self.known_branch(repo, key, state, target):
-                return [], [state]  # the branch exists: creating it fails, HEAD stays
-            switched, now = state.copy(), state.heads.get(key, CURRENT)
-            if target == "-":
-                target = self.branch(repo, state.before.get(key, PREVIOUS))
-            switched.before[key], switched.heads[key] = now, target
-            if how == "create" and target:
-                switched.made.setdefault(key, set()).add(target)
-            return [switched], [state] if how == "maybe" else []
-        if sub == "branch":
-            flags, names = [a for a in rest if a.startswith("-")], [a for a in rest if not a.startswith("-")]
-            changed = state.copy()
-            if {"-m", "-M", "--move"} & set(flags):
-                if len(names) == 1 or (len(names) == 2 and names[0] == self.branch(repo, state.heads.get(key, CURRENT))):
-                    changed.heads[key] = names[-1]  # the checked-out branch was renamed
-                return [changed], [state]
-            if names and set(flags) <= {"-f", "--force", "-t", "--track", "--no-track", "-q", "--quiet"}:
-                if not {"-f", "--force"} & set(flags) and self.known_branch(repo, key, state, names[0]):
-                    return [], [state]
-                changed.made.setdefault(key, set()).add(names[0])
-                return [changed], []
-            return [state], [state]
-        if sub == "commit":
-            branch = self.branch(repo, state.heads.get(key, CURRENT))
-            line = f"{branch or '-'} " + shlex.join(["git", *args]).replace("\n", "\\n")
-            if line not in self.lines:
-                self.lines.append(line)
-        return [state], [state]
-
-    def kind(self, repo, key, here, state, name, path_possible):
-        if self.known_branch(repo, key, state, name):
-            return "branch"
-        if self.ask(repo, "rev-parse", "-q", "--verify", f"{name}^{{commit}}"):
-            return "commit"
-        if path_possible and (name.startswith(":") or any(c in name for c in "*?[")
-                              or os.path.lexists(os.path.join(here, name))):
-            return "path"
-        return "new"  # unknown now: made from a remote branch, or an error that changes nothing
+def commit_facts(command, cwd):
+    """CommitFacts of a shell line. Never raises: an internal error becomes a note, the other rules still run."""
+    try:
+        segments, why = shell_segments(command)
+        calls = [commit_call(words) for words in segments]
+        lines = ["? git commit --allow-empty-message" for call in calls
+                 if isinstance(call, tuple) and allows_empty_message(call[1])]
+        if why is None and len(calls) == 1 and isinstance(calls[0], tuple):
+            context, args = calls[0]
+            branch, problem = read_branch(cwd, context)
+            line = f"{branch or '-'} git commit" + (" --allow-empty-message" if allows_empty_message(args) else "")
+            return CommitFacts([line], [f"Vorabprüfung: {problem}; nicht gesperrt, {NET}."] if problem else [])
+        reasons = [call for call in calls if isinstance(call, str)]
+        words = " ".join(word for segment in segments for word, _ in segment)
+        if not any(isinstance(call, tuple) for call in calls) and not reasons and (
+                why is None or not (MENTIONS_COMMIT.search(command) or MENTIONS_COMMIT.search(words))):
+            return CommitFacts(lines)  # no commit in sight: echo 'git commit', git log --grep commit, make && ls
+        reason = why or reasons[0]
+        return CommitFacts(lines, [f"Vorabprüfung: möglicher `git commit`, Branch vorab nicht sicher bestimmbar "
+                                   f"({reason}); nicht gesperrt, {NET}."])
+    except Exception as error:  # never lose the other rules over this field
+        return CommitFacts([], [f"Vorabprüfung fehlgeschlagen ({error.__class__.__name__}: {error}); nicht gesperrt, "
+                                f"{NET}."])
 
 
 def git_commits(command, cwd):
-    """One line "<branch> <git commit ...>" per branch a `git commit` of the shell line can land on ("-" = no branch:
-    detached, no repository, unknown)."""
-    if not re.search(r"\bgit\b", command) or "commit" not in command:
-        return ""
-    finder = CommitFinder()
-    finder.run(parse(shell_tokens(command)[0]), [ShellState(cwd)], True)
-    return "\n".join(finder.lines)
+    """The git_commit field: one line per judged commit of the shell line (see CommitFacts)."""
+    return "\n".join(commit_facts(command, cwd).lines)
 
 
 # ------------------------------------------------------------------------------------------------ agent profiles
@@ -1094,9 +475,13 @@ def agent_problem(payload):
 def decide(payload, rules=None):
     rules = load_rules() if rules is None else rules
     tool, data = payload.get("tool_name", ""), payload.get("tool_input") or {}
-    hits = matching_rules(rules, tool, data, payload.get("cwd"))
+    cwd = payload.get("cwd")
+    commit_rules = [r["name"] for r in rules if any(c.get("field") == "git_commit" for c in r["conditions"])]
+    facts = commit_facts(data.get("command", ""), cwd or os.getcwd()) if tool == "Bash" and commit_rules else None
+    hits = matching_rules(rules, tool, data, cwd, facts)
     blocks = [f"**[{r['name']}]**\n{r['message']}" for r in hits if r.get("action") == "block"]
     warnings = [f"**[{r['name']}]**\n{r['message']}" for r in hits if r.get("action") != "block"]
+    warnings += [f"**[{commit_rules[0]}]**\n{note}" for note in (facts.notes if facts else [])]
     problem = agent_problem(payload)
     if problem:
         blocks.append(problem)

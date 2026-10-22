@@ -14,8 +14,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "plugins" / "ce-shared" / "githooks" / "ce_githooks.py"
-sys.path.insert(0, str(SCRIPT.parent))
+sys.path[:0] = [str(SCRIPT.parent), str(SCRIPT.parent.parent / "hooks")]
 import ce_githooks  # noqa: E402
+import guard  # noqa: E402
+
+RULES = guard.load_rules(SCRIPT.parent.parent / "rules")
 
 MARKER_HOOK = '#!/bin/sh\necho "$0 $*" >> "{log}"\ncat >> "{log}"\nexit {code}\n'
 
@@ -402,6 +405,117 @@ class StartFailureTests(GitHookTestCase):
         lines = f"refs/heads/x {'a' * 40} refs/heads/main {'b' * 40}\n"
         self.assertEqual(self.wrapper("pre-push", "origin", "url", stdin=lines).returncode, 1)
         self.assertFalse(push_log.exists())
+
+
+class PrecheckBoundaryTests(GitHookTestCase):
+    """The architecture boundary of Gatehouse: the client pre-check (guard.decide) does not simulate the shell; lines it
+    cannot judge pass with a note, and the Git net decides when they run. The counter-examples of the last interpreter
+    review (tools-judge-final.txt 7a-7e) and the measured client probe run here as real bash lines in repositories with
+    the net installed - against main and against a working branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.tool("install")
+        self.repo.run("branch", "topic")
+        (self.base / "second").mkdir()
+        self.second = Repo(self.base / "second")
+        self.second.run("switch", "-q", "-c", "work")
+        self.second.tool("install")
+
+    def sha(self, ref, repo=None):
+        return (repo or self.repo).run("rev-parse", "-q", "--verify", ref, check=False).stdout.strip() or None
+
+    def line(self, text, start="main", repo=None, env=None):
+        """Pre-check verdict of the line in the start state, then the line run by bash: (verdict, completed run)."""
+        repo = repo or self.repo
+        repo.run("switch", "-q", start)
+        result = guard.decide({"tool_name": "Bash", "tool_input": {"command": text}, "cwd": str(repo.path)}, RULES)
+        message = result.get("systemMessage", "")
+        verdict = ("block" if "hookSpecificOutput" in result else
+                   "net" if "[commit-on-main]" in message and "Git-Netz (pre-commit)" in message else "pass")
+        run = subprocess.run(["/bin/bash", "-c", text], cwd=repo.path, capture_output=True, text=True, timeout=60,
+                             env=dict(repo.env, **(env or {})))
+        return verdict, run
+
+    def test_lines_that_aim_at_main_pass_the_pre_check_and_are_rejected_by_the_net(self):
+        cases = [  # (start branch, line, the net rejected a commit attempt: True/False, None = depends on timing)
+            ("topic", 'target=main; git switch -q "$target" && git commit --allow-empty -m x', True),  # 7a
+            ("topic", "b=main; git switch -q $b; git commit --allow-empty -m x", True),
+            ("topic", "f() { git switch -q main; }; f && git commit --allow-empty -m x", True),
+            ("topic", "git switch -q main && git commit --allow-empty -m x | cat", True),
+            ("topic", "bash -c 'git switch -q main; git commit --allow-empty -m x; exit 0'", True),
+            ("topic", "git checkout -q main && git commit --allow-empty -m x", True),  # the former lexical block case
+            ("main", "git switch -c fix missing-start; git commit --allow-empty -m x", True),  # 7d
+            ("main", "git switch -b fix; git commit --allow-empty -m x", True),  # 7d
+            ("main", "printf 'attempted\\n' > f.txt; git commit -m 'probe' .", True),  # shape of the measured probes
+            ("main", "{ sleep 0.3; git switch -q topic; } | git commit --allow-empty -m x", None),  # 7c: either order
+            ("main", "bash -c 'exit 0; git commit --allow-empty -m x'", False),  # 7e: no commit at all
+        ]
+        main = self.sha("main")
+        for start, text, attempted in cases:
+            verdict, run = self.line(text, start)
+            case = (start, text, run.stderr)
+            self.assertEqual(verdict, "net", case)
+            self.assertEqual(self.sha("main"), main, case)
+            if attempted is not None:
+                self.assertEqual("ce-shared pre-commit: abgelehnt" in run.stderr, attempted, case)
+            self.assertIsNone(self.sha("refs/heads/fix"), case)
+            self.repo.run("checkout", "-q", "-f", "main")
+
+    def test_the_same_lines_on_a_working_branch_commit_normally(self):
+        cases = [  # (start branch, line, branch that gets the commit)
+            ("main", 'target=topic; git switch -q "$target" && git commit --allow-empty -m x', "topic"),  # 7a
+            ("topic", "save() { git commit --allow-empty -m x; }; save", "topic"),
+            ("topic", "git commit --allow-empty -m x | cat", "topic"),
+            ("topic", "git switch -c fix missing-start; git commit --allow-empty -m x", "topic"),  # 7d
+            ("topic", "bash -c 'git commit --allow-empty -m x; exit 0'", "topic"),
+        ]
+        for start, text, branch in cases:
+            before, main = self.sha(branch), self.sha("main")
+            verdict, run = self.line(text, start)
+            case = (start, text, run.stderr)
+            self.assertEqual(verdict, "net", case)
+            self.assertNotEqual(self.sha(branch), before, case)
+            self.assertEqual(self.sha("main"), main, case)
+        before = self.sha("topic")
+        verdict, run = self.line("bash -c 'exit 0; git commit --allow-empty -m x'", "topic")  # 7e: not blocked
+        self.assertEqual((verdict, run.returncode, self.sha("topic")), ("net", 0, before))
+
+    def test_a_function_with_a_prefix_git_dir_is_judged_where_it_lands(self):  # 7b
+        main, work = self.sha("main"), self.sha("work", self.second)
+        text = "save() {{ git commit --allow-empty -m x; }}; GIT_DIR='{}' save"
+        verdict, run = self.line(text.format(self.repo.path / ".git"), "work", repo=self.second)
+        self.assertEqual(verdict, "net")
+        self.assertIn("ce-shared pre-commit: abgelehnt", run.stderr)
+        self.assertEqual(self.sha("main"), main)
+        verdict, run = self.line(text.format(self.second.path / ".git"), "main")
+        self.assertEqual(verdict, "net")
+        self.assertNotEqual(self.sha("work", self.second), work, run.stderr)
+        self.assertEqual(self.sha("main"), main)
+
+    def test_ce_allow_main_is_the_net_s_run_time_exception_not_the_pre_check_s(self):
+        for text in ("export CE_ALLOW_MAIN=1; git commit --allow-empty -m allowed",
+                     "CE_ALLOW_MAIN=1 git commit --allow-empty -m allowed"):  # boundary fix: prefixes go to the net
+            main = self.sha("main")
+            verdict, run = self.line(text)
+            self.assertEqual(verdict, "net", text)
+            self.assertNotEqual(self.sha("main"), main, (text, run.stderr))
+        main = self.sha("main")
+        with mock.patch.dict(os.environ, {"CE_ALLOW_MAIN": "1"}):  # even inherited by the client, no pre-check exception
+            verdict, run = self.line("git commit --allow-empty -m x")
+        self.assertEqual(verdict, "block", "a simple commit on main is denied before it runs")
+        self.assertEqual(self.sha("main"), main, "run without the exception: the net rejects it as well")
+
+    def test_a_git_dir_prefix_is_judged_by_the_net_where_it_lands(self):  # boundary fix: formerly read by the pre-check
+        main, work = self.sha("main"), self.sha("work", self.second)
+        verdict, run = self.line(f"GIT_DIR='{self.repo.path / '.git'}' git commit --allow-empty -m x", "work",
+                                 repo=self.second)
+        self.assertEqual(verdict, "net")
+        self.assertIn("ce-shared pre-commit: abgelehnt", run.stderr)
+        self.assertEqual(self.sha("main"), main)
+        verdict, run = self.line(f"GIT_DIR='{self.second.path / '.git'}' git commit --allow-empty -m x", "main")
+        self.assertEqual(verdict, "net")
+        self.assertNotEqual(self.sha("work", self.second), work, run.stderr)
 
 
 if __name__ == "__main__":
