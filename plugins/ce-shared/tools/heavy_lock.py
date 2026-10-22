@@ -194,6 +194,7 @@ class HeavyLock:
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)  # never inherited (O_CLOEXEC, PEP 446)
         start = last = time.monotonic()
         announced = False
+        waiter = None
         gate = None
         try:
             if self.resource:
@@ -211,6 +212,11 @@ class HeavyLock:
                     waiting_path = (os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT) if descriptor == gate else path
                     now = time.monotonic()
                     if not announced:
+                        try:
+                            import ce_lock_status
+                            waiter = ce_lock_status.announce(path, self.resource, self.what, self.checkout, waiting_path)
+                        except Exception:
+                            pass  # older embedded installations still use the same real lock
                         self.out("heavy lock (%s): waiting for %s - held by %s (CE_HEAVY_LOCK=0 skips the queue)"
                                  % (self.resource or "shared", waiting_path, who))
                         announced = True
@@ -219,10 +225,14 @@ class HeavyLock:
                         last = now
                     time.sleep(self.poll)
         except BaseException:
+            if waiter is not None:
+                ce_lock_status.forget(waiter)
             os.close(fd)
             if gate is not None:
                 os.close(gate)
             raise
+        if waiter is not None:
+            ce_lock_status.forget(waiter)
         self._gate_fd = gate
         self.waited = time.monotonic() - start
         if announced:

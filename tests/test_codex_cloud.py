@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -13,6 +15,15 @@ cloud = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cloud)
 
 
+def write_eligibility(prompt):
+    path = prompt.with_suffix('.eligibility.json')
+    path.write_text(json.dumps({'manifest_version': 1, 'kind': 'pure_logic',
+        'prompt_sha256': hashlib.sha256(prompt.read_bytes()).hexdigest(),
+        'required_capabilities': {'unity': False, 'blender': False, 'visuals': False, 'viewer': False},
+        'scopes': [{'path': 'README.md', 'kind': 'documentation'}]}))
+    return path
+
+
 class SubmitGuards(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -21,7 +32,8 @@ class SubmitGuards(unittest.TestCase):
         prompt.write_text("Nur README.md lesen, nichts aendern.")
         self.args = SimpleNamespace(prompt_file=prompt, branch="claude/test",
             model="gpt-6-luna", effort="low", reason="Lesen", env="env_test",
-            repo=Path(self.temp.name), dry_run=False, push_approved=True)
+            repo=Path(self.temp.name), dry_run=False, push_approved=True,
+            eligibility_file=write_eligibility(prompt))
 
     @patch.object(cloud, "run")
     def test_no_approval_never_contacts_cloud(self, run):
@@ -63,8 +75,10 @@ class SubmitGuards(unittest.TestCase):
     @patch.object(cloud, "run")
     def test_submit_uses_one_attempt_and_literal_prompt(self, run):
         self.args.prompt_file.write_text("README.md: `danger` $(no) ; untouched")
+        self.args.eligibility_file = write_eligibility(self.args.prompt_file)
         run.side_effect = [SimpleNamespace(stdout=""), SimpleNamespace(stdout="abc"),
                            SimpleNamespace(stdout=""), SimpleNamespace(stdout="abc refs/heads/claude/test"),
+                           SimpleNamespace(stdout=""), SimpleNamespace(stdout=""),
                            SimpleNamespace(stdout=""), SimpleNamespace(stdout="")]
         cloud.submit(self.args)
         command = run.call_args_list[-1].args[0]
@@ -114,9 +128,11 @@ class DoctorChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             prompt = Path(tmp) / "prompt.txt"
             prompt.write_text("README.md lesen")
+            eligibility = write_eligibility(prompt)
             argv = ["codex_cloud.py", "submit", "--env", "env_test",
                     "--repo", tmp, "--branch", "claude/test", "--prompt-file", str(prompt),
-                    "--model", "gpt-6-luna", "--effort", "low", "--reason", "Lesen", "--dry-run"]
+                    "--model", "gpt-6-luna", "--effort", "low", "--reason", "Lesen", "--dry-run",
+                    "--eligibility-file", str(eligibility)]
             with patch.object(cloud.sys, "argv", argv), patch("builtins.print"):
                 self.assertEqual(cloud.main(), 0)
         run.assert_not_called()

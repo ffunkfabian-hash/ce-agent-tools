@@ -278,6 +278,9 @@ def hints(info: dict) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--dashboard":
+        import ce_console
+        return ce_console.main(argv[1:] or ["snapshot"])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("transcript", nargs="?", type=Path)
     parser.add_argument("--since", help="aggregate Claude transcripts since e.g. 7d (record timestamps, not file mtime)")

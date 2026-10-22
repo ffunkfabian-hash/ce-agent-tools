@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -183,13 +184,18 @@ def main(argv: list[str]) -> int:
     parser.add_argument("mode", choices=["quick", "full", "nightly"])
     parser.add_argument("--repo", help="repository (default: current directory)")
     parser.add_argument("--verbose", action="store_true", help="print the output of every command")
+    parser.add_argument("--profile", help="run an existing named .ce-repo.json check profile instead of quick")
     parser.add_argument("--targeted", dest="targeted", action="store_true", default=None,
                         help="only for the changed files (check.targeted; default in quick)")
     parser.add_argument("--no-targeted", dest="targeted", action="store_false")
     args = parser.parse_args(argv)
     try:
         root, config = ce_common.open_repo(args.repo)
-        if args.mode == "full":
+        if args.profile:
+            if args.mode != 'quick' or args.profile in ('full','nightly','targeted','rerun_failed') or not re.fullmatch(r'[a-z][a-z0-9_-]*', args.profile):
+                raise ce_common.RepoError('--profile benötigt quick und einen ausdrücklich konfigurierten Prüfnamen')
+            outcome = run_mode(root, config, args.profile)
+        elif args.mode == "full":
             outcome = run_full(root, config)
         elif args.mode == "nightly":
             outcome = run_mode(root, config, "nightly")
@@ -198,7 +204,7 @@ def main(argv: list[str]) -> int:
     except ce_common.RepoError as error:
         print(f"ce_check: {error}")
         return 2
-    print(report(config.get("name", root.name), args.mode, outcome, args.verbose))
+    print(report(config.get("name", root.name), args.profile or args.mode, outcome, args.verbose))
     return 0 if outcome["green"] else 1
 
 

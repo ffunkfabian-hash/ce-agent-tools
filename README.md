@@ -79,6 +79,64 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_sync.py [--repo P\|--all] [--check]` | schreibt die Werkzeuge als eingebettete Kopie nach `<repo>/<tools_dir>` (Standard `scripts/ce_tools`, Kopfzeile + Prüfsumme); respektiert `hold` in `repos.json` (Schreibsperre ohne `--check`); `--check` meldet abweichende/editierte Kopien (auch in `ce_lint.py`). Die Repos rufen nur diese Kopien, nie das Plugin |
 | `ce_worktrees.py [--repos P…] [--active-minutes N] [--list\|--json]` | Tabelle (Standard) der Worktrees aller acht Repos (`repos.json`, `CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, `~/.codex/sessions`, laufende Prozesse), „NICHT LÖSCHEN“ |
 
+## Glasshouse-Erweiterungen (0.13)
+
+Analyse vor dem Bau: Die 13 praktischen Versuche im Cube-Escape-Ökosystem bestätigen fünf vorhandene Wege
+(Richter, Logiktests, Importer, Lebenszyklustests, Blender/Medien). Acht Erweiterungen schließen deren Lücken;
+vier zusätzliche Implementierungen (Richter, Logikrunner, Runtime-Sentinel, Unity-MCP-Server) werden nicht eingeführt.
+
+| Aufruf | Ergänzung |
+|---|---|
+| `./ce report --dashboard snapshot --out /tmp/ce.html` | Portable lesende Ansicht aus bestehenden Lock-/Worktree-/Kontingentquellen; `serve --port 8768` auf Loopback mit manuellem Aktualisieren |
+| `./ce evidence diff A.png B.png --viewer /tmp/diff.html` | Eingebettete Bilder, tastaturbedienbarer Schieber, Heatmap, optional `--clip video.mp4` (bis 20 MiB) |
+| `./ce evidence diff A.png B.png --reference ref.json` | Versioniertes Referenzprofil, RGB-Pixelgrenze zusätzlich zu SSIM, optional Region in Originalkoordinaten |
+| `./ce check --profile logic` | Vorhandenen `.ce-repo.json`-Prüfbefehl aufrufen; kein zusätzlicher Runner und kein Unity-Aufruf durch den Dispatcher selbst |
+| `./ce evidence preflight --profile rig.json --asset model.blend --out /tmp/preflight.json --blender /Pfad/zu/blender` | Explizite Bones/Parents, zugewiesene Materialien, exakte Bildnamen/Farbräume, Szeneneinheiten (.blend) und optional Objekt-Skalierung |
+| `./ce evidence turnaround --example-profile` | Neutrales Profil auf stdout; das gewählte Generatorprofil ist bei jeder Aufnahme ausdrücklich erforderlich |
+| `./ce evidence turnaround --input model.fbx --profile render.json --out /tmp/neuer-ordner --frames 4 --resolution 256 --blender /Pfad/zu/blender` | Bounds-Kamera, kleine Frames und Kontaktbogen via `ce_media`; MP4 nur mit ausdrücklichem `--clip --fps 12` |
+
+Die Turnaround-Ausgabe braucht einen neuen/leeren Ordner außerhalb des Eingabeordners und außerhalb von Repos.
+Preflight braucht ebenfalls externe, neue Report-/Skriptpfade; ein älterer Bericht wird niemals als aktuelles Ergebnis übernommen.
+Szeneneinheiten sind nur in .blend prüfbar; FBX meldet sie ausdrücklich als nicht verfügbar und prüft die tatsächlichen
+Objekt-Skalierungen weiter. Beide Blenderadapter koordinieren ihre Läufe über die bestehende Blender-Ressourcensperre.
+`.blend` wird mit `--disable-autoexec` geöffnet. Generatorprofile besitzen eigene Namen, Bounds-Marge, Farbmanagement
+und Auflösungs-/Frame-Limits; keine vermeintlich gemeinsame Rig-Namenskonvention. Beispiel für Preflight:
+
+```json
+{"format":1,"generator":"example","unit_scale":1,"require_unit_object_scale":true,
+ "bones":[{"name":"Root","parent":null}],"materials":{"Body":"Body"},
+ "images":{"albedo":{"name":"BodyColor","color_space":"sRGB","required":true}}}
+```
+
+Referenzprofil für Bildvergleiche (RGB-Grenze und SSIM müssen beide bestehen):
+
+```json
+{"version":1,"ssim":0.99,"max_changed_percent":0,"pixel_tolerance":0,"region":[0,0,640,480]}
+```
+
+Dashboard: `--mail` liest zusätzlich das vorhandene Postfach #16; ohne diesen Schalter keine GitHub-Abfrage.
+Nur neue Lock-Aufrufer melden Wartende, also keine vollständige Warteschlange. Worktree-Branches belegen keine aktive
+Sitzung. Codex-Werte stammen aus lokalen Rollout-Dateien und werden nach 15 Minuten als veraltet markiert;
+fehlende Werte sind unbekannt. API-Werte stammen aus dem lokalen Budget-Ledger, ohne Login, API-Aufruf oder
+Ledgeränderung; sie ersetzen keine Anbieterabrechnung. Der lokale Webserver liefert ausschließlich `/` und
+`/api/state` und führt keine Aktionen aus. Portable HTML-Dateien enthalten lokale Pfade und gehören in private Ablagen.
+
+Inkompatible CLI-Ergänzung ab Agent Tools 0.13: Cloud-Submit verlangt nun `--eligibility-file` mit exakt diesen Feldern; `prompt_sha256` ist der SHA-256 der
+Prompt-Dateibytes. Nur einzelne relative Dateien mit passender Kategorie sind erlaubt; keine Globs, Verzeichnisse,
+Symlinks, Engine-/Bilddateien oder CI-Konfiguration. Doppelte JSON-Schlüssel und nichtendliche Zahlen scheitern.
+
+```json
+{"manifest_version":1,"kind":"pure_logic","prompt_sha256":"<64 hex characters>",
+ "required_capabilities":{"unity":false,"blender":false,"visuals":false,"viewer":false},
+ "scopes":[{"path":"src/rules.py","kind":"logic_code"}]}
+```
+
+Weitere Kategorien: `logic_test`, `logic_data`, `documentation`. Dies ist eine geprüfte Auftragsdeklaration,
+keine semantische Promptgarantie oder Remote-Sandbox. Dry-run bestätigt keine Cloud-Umgebung. Reales Submit prüft
+weiterhin Branchfreigabe, sauberen veröffentlichten HEAD, Login und die ausdrücklich gewählte verfügbare Umgebung.
+`ce_contract.py` ergänzt Schema-/Typprüfungen durch gültige Referenzziele und zyklusfreie Elternketten; das ersetzt
+keinen semantischen Produzenten-/Abnehmertest. Unity-spezifische Kamera-/MCP-Erweiterungen bleiben im Unity-Fachrepo.
+
 ## Einbinden
 
 In `.claude/settings.json` jedes Repos:

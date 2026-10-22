@@ -12,6 +12,7 @@ counts as done, the consumer validates on import. Additive only: a new format ad
 A small JSON-Schema subset is implemented here (no dependency): type, enum, const, required, properties, additionalProperties,
 items, minItems, maxItems, minLength, minProperties, minimum, maximum, exclusiveMinimum, pattern, $ref (#/$defs/...). Unknown
 keywords are ignored, so the schemas stay valid for full validators (jsonschema, Unity's) too.
+After structural validation, device and arm contracts also resolve named object/material links and reject parent cycles.
 Exit code: 0 valid, 1 findings, 2 schema or file problem.
 """
 from __future__ import annotations
@@ -185,6 +186,100 @@ def arm_references(document: dict) -> list[str]:
     return errors
 
 
+def graph_references(parents: dict, locations: dict) -> list[str]:
+    """Resolve a named hierarchy and detect cycles without recursive traversal."""
+    errors = []
+    for name, parent in parents.items():
+        if parent is not None and parent not in parents:
+            errors.append(f'{locations[name]}.parent: unbekannter Knoten {parent}')
+    completed = set()
+    for name in parents:
+        current, chain = name, set()
+        while current in parents and current not in completed:
+            if current in chain:
+                errors.append(f'{locations[name]}.parent: zyklische Elternkette')
+                break
+            chain.add(current)
+            current = parents[current]
+        completed.update(chain)
+    return errors
+
+
+def device_references(document: dict) -> list[str]:
+    """Resolve the v4/v5 device hierarchy without mixing object and material names.
+
+    Toolgen exports empty objects in nodes, Socket_* objects in anchors and mesh
+    objects in renderers. Root metadata may also describe an entry in nodes.
+    Older contracts can describe a renderer in nodes as well, or omit its parent.
+    """
+    errors = []
+    root = document['root']['name']
+    parents = {root: None}
+    locations = {root: '$.root'}
+    declared = {}
+    for collection in ('nodes', 'anchors', 'renderers'):
+        names = set()
+        for index, entry in enumerate(document.get(collection, [])):
+            name = entry['name']
+            where = f'$.{collection}[{index}]'
+            if (name in names or (collection == 'anchors' and name in declared)
+                    or (collection == 'renderers' and declared.get(name) == 'anchors')):
+                errors.append(f'{where}.name: doppelter Objektname {name}')
+            names.add(name)
+            if 'parent' in entry:
+                parent = entry['parent']
+                if parent is not None and not isinstance(parent, str):
+                    errors.append(f'{where}.parent: erwartet Knotenname oder null')
+                    continue
+                if name in declared and parents.get(name) != parent:
+                    errors.append(f'{where}.parent: widersprüchliche Eltern für {name}')
+                parents[name] = parent
+            else:
+                parents.setdefault(name, None)
+            locations[name] = where
+            declared[name] = collection
+    # Contract 5 can carry a second device root under the left hand. Those
+    # objects are declared only in assembly, while nodes describes the right
+    # device in isolation (its root.parent is null instead of Prop_R).
+    if document['format'] == 5 and 'assembly' in document:
+        assembly, assembly_locations = {}, {}
+        entries = document['assembly']
+        if not isinstance(entries, list):
+            errors.append('$.assembly: erwartet Knotenliste')
+            entries = []
+        for index, entry in enumerate(entries):
+            where = f'$.assembly[{index}]'
+            if (not isinstance(entry, dict) or not isinstance(entry.get('name'), str) or not entry['name']
+                    or 'parent' not in entry or (entry['parent'] is not None and not isinstance(entry['parent'], str))):
+                errors.append(f'{where}: erwartet name und parent (Knotenname oder null)')
+                continue
+            name, parent = entry['name'], entry['parent']
+            if name in assembly:
+                errors.append(f'{where}.name: doppelter Objektname {name}')
+            assembly[name], assembly_locations[name] = parent, where
+            if name in parents and name != root and parents[name] != parent:
+                errors.append(f'{where}.parent: widersprüchliche Eltern für {name}')
+        errors += graph_references(assembly, assembly_locations)
+        for name, parent in assembly.items():
+            if name not in parents:
+                parents[name], locations[name] = parent, assembly_locations[name]
+    errors += graph_references(parents, locations)
+    for index, renderer in enumerate(document['renderers']):
+        for material in renderer['materials']:
+            if material not in document['materials']:
+                errors.append(f'$.renderers[{index}].materials: unbekanntes Material {material}')
+    for index, collider in enumerate(document['colliders']):
+        part = collider.get('part')
+        if part is not None and (not isinstance(part, str) or part not in parents):
+            errors.append(f'$.colliders[{index}].part: unbekannter Knoten {part}')
+    hold = document.get('hold', {})
+    for field in ('hand_socket', 'support_socket', 'muzzle_socket', 'sight_socket', 'eye_socket'):
+        target = hold.get(field)
+        if target is not None and (not isinstance(target, str) or target not in parents):
+            errors.append(f'$.hold.{field}: unbekannter Knoten {target}')
+    return errors
+
+
 def check_file(path: Path, schema_name: str | None) -> tuple[str, list[str]]:
     document = read_json(path)
     name = schema_name or schema_for(document, path)
@@ -192,6 +287,8 @@ def check_file(path: Path, schema_name: str | None) -> tuple[str, list[str]]:
     errors = validate(document, schema, schema)
     if not errors and name.removesuffix('.json') == 'unity_contract_arms.v5':
         errors += arm_references(document)
+    if not errors and name.removesuffix('.json') == 'unity_contract.v4':
+        errors += device_references(document)
     return name, errors
 
 

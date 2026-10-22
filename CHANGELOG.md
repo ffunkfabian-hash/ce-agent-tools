@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0 „Glasshouse“ – 2026-10-22
+
+- Bestehende Prüfwege erweitert: portable Vorher/Nachher-Ansicht, explizite RGB-Referenzgrenzen, lesende Ressourcen-/Sitzungs-/Quotenübersicht, semantische Referenz-/Zyklusprüfung, strenge Cloud-Auftragsdeklaration, native Prüfprofile sowie Blender-Preflight/Turnaround über bestehende Medienexporte.
+- Inkompatible Cloud-CLI ab 0.13: jeder Submit benötigt `--eligibility-file`; ältere Aufrufe müssen Manifest und Prompt-Hash ergänzen.
+- Kein zweiter Richter, Logikrunner, Runtime-Sentinel oder Unity-MCP-Server. Quoten ohne frische Quelle bleiben unbekannt, API-Budgets stammen ausschließlich aus dem lokalen Ledger; keine bezahlten Abfragen.
+- Basis 0.11.1; parallel entwickelte Hook-Version 0.12 ist vor gemeinsamer Auslieferung separat zusammenzuführen und zu prüfen. [Version](docs/versions/0.13.md).
+
 ## 0.11.1 – 2026-10-22
 
 - Vertragsaudit benennt fehlende Toolgen-Konzeptprüfer vor deren Ausführung; ein älterer oder unvollständiger Checkout bleibt mit null geprüften Eingaben fehlgeschlagen. Regression prüft fehlenden Importer und fehlenden Loader.
