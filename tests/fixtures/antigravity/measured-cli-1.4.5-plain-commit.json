@@ -1,0 +1,21 @@
+{
+ "source": "agy CLI 1.4.5, workspace .agents/hooks.json, CE_HOOK_LOG of the coordinator probe 2026-10-22T12:25:45 (hook ran in <workspace>/.agents); answer: deny commit-on-main",
+ "input": {
+  "artifactDirectoryPath": "/Users/ffunk/.gemini/antigravity-cli/brain/f59c1370-bf2a-4464-b8c0-f22df0e5bfc2",
+  "conversationId": "f59c1370-bf2a-4464-b8c0-f22df0e5bfc2",
+  "modelName": "gemini-3.8-flash-high",
+  "stepIdx": 2,
+  "toolCall": {
+   "args": {
+    "CommandLine": "printf 'attempted\\n' > agy-main-attempted.txt; git commit -m 'Gatehouse CLI main probe' .",
+    "WaitMsBeforeAsync": 10000,
+    "toolSummary": "Execute git commit probe"
+   },
+   "name": "run_command"
+  },
+  "transcriptPath": "/Users/ffunk/.gemini/antigravity-cli/brain/f59c1370-bf2a-4464-b8c0-f22df0e5bfc2/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+   "<workspace>"
+  ]
+ }
+}
