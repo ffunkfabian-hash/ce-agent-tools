@@ -12,12 +12,13 @@ case "$cmd" in
   session)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
     case "$sub" in
-      reserve) [ "${1:-}" = --name ] && shift; exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
+      reserve) case "${1:-}" in -h|--help|"") exec python3 "$tools/ce_session_name.py" --help;; --name) shift;; esac  # 0.21: no `--name --help`
+               exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
       topics) exec python3 "$tools/ce_session_name.py" --task Blick --topics "$@";;
       patch) exec python3 "$tools/ce_session_name.py" --reserve --patch "$@";;
       mail) exec python3 "$tools/ce_await_mail.py" "$@";;
       say|who) exec python3 "$tools/ce_postfach.py" "$sub" "$@";;
-      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] | say [--to <Empfänger>] <Thema> [Zeilen] | who"; exit 2;;
+      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] [--follow] [--also-pr] | say [--to <Empfänger>[,…]] [--freigabe commit,push,pr --zitat …] <Thema> [Zeilen] | who"; exit 2;;
     esac;;
   codex)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
@@ -36,7 +37,8 @@ case "$cmd" in
       *) echo "evidence clip | sheet | still | diff"; exit 2;;
     esac;;
   check)    mode=quick; case "${1:-}" in --full) mode=full; shift;; --nightly) mode=nightly; shift;; esac; exec python3 "$tools/ce_check.py" "$mode" "$@";;
-  reserve)  [ "${1:-}" = --name ] && shift; exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
+  reserve)  case "${1:-}" in -h|--help|"") exec python3 "$tools/ce_session_name.py" --help;; --name) shift;; esac
+            exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
   topics)   exec python3 "$tools/ce_session_name.py" --task Blick --topics;;
   search)
     case "${1:-}" in query|index|status|serve) exec python3 "$tools/ce_search.py" "$@";; esac

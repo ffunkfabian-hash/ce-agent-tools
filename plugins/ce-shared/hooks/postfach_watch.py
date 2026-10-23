@@ -11,6 +11,8 @@ It ends quietly when nothing comes, when the process that started it is gone (th
 the stop once (`decision: block`) with the exact command – at most once every REMIND_EVERY_H hours, never without `gh` and not after
 a recent GitHub failure, so a session that cannot listen is not woken again and again. `stop_hook_active` ends a loop in one round.
 Nothing happens without a reservation or with CE_WATCH=0; every error lets the session stop normally.
+0.21: a message that hooks/postfach_inbox.py already handed to the working session (`hinted`) does not wake it again; a release
+message gets its check line (ce_await_mail.release_note) in front.
 """
 import json
 import os
@@ -70,6 +72,11 @@ def remind(payload: dict, sleep=time.sleep, now=time.time, which=shutil.which) -
                       f"{REMIND_EVERY_H} h)."}
 
 
+def hinted(folder: Path, number: int) -> bool:
+    """0.21: the PostToolUse inbox already put this message into the running session (`hinted` in ce-watch.json, read fresh)."""
+    return number <= am.state_int(am.load_state(folder), "hinted")
+
+
 def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, parent=os.getppid, err=sys.stderr) -> int:
     folder, session = am.reservation(payload.get("cwd") or os.getcwd())
     if folder is None:
@@ -85,19 +92,19 @@ def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, par
         first_parent = parent()
 
         def guarded_sleep(seconds):
-            if parent() != first_parent:
+            if parent() != first_parent or not am.still_reserved(folder, session["name"]):  # 0.21: reserved anew -> not ours
                 raise SessionGone()
             sleep(seconds)
 
         fetch = fetch or (lambda since_: am.fetch_comments(am.REPO, [am.MAILBOX], since_))
         try:
             code, result = am.watch(fetch, am.session_key(session["name"]), after, since, INTERVAL_S, MAX_HOURS * 3600,
-                                    sleep=guarded_sleep, clock=clock)
+                                    sleep=guarded_sleep, clock=clock, skip=lambda number: hinted(folder, number))
         except SessionGone:
             return 0
         if code == 3:
             am.save_state(folder, last_failure=time.time())
-        if code != 0 or parent() != first_parent:  # nobody to wake: leave the message unmarked for the next watcher
+        if code != 0 or parent() != first_parent or not am.still_reserved(folder, session["name"]):  # nobody to wake: leave it unmarked
             return 0
         deliveries = am.state_int(state, "deliveries") + 1 if result["id"] == pending else 1
         saved = am.save_state(folder, pending=result["id"], pending_since=result.get("created_at", since), deliveries=deliveries)
@@ -108,6 +115,9 @@ def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, par
             print(am.REDELIVERY.format(id=result["id"]), file=err)
         print(f"Postfach (cubeescape-nexogen#{result.get('pr', am.MAILBOX)}), Kommentar {result['id']} ({result.get('created_at', '')}):\n",
               file=err)
+        note = am.release_note(result.get("body", ""), am.session_key(session["name"]))
+        if note:
+            print(note + "\n", file=err)
         print(result.get("body", ""), file=err)
         print("\nDer Wächter startet beim nächsten Stopp von selbst neu (ce-shared 0.15).", file=err)
         return 2

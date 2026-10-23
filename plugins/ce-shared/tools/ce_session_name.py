@@ -14,6 +14,10 @@ branches of origin so a session can see whether the same subject is already bein
 0.14: `--reserve` also announces the session in the Postfach (cubeescape-nexogen#16, `<Name> → Sightline: angemeldet`, see
 ce_postfach.py) so other sessions know it exists and how to reach it; `--about`/`--model` fill the message, `--no-announce` skips it.
 A failed announcement never undoes the reservation. `--patch <kurzname>` reserves and announces a patch branch the same way.
+0.21: `--reserve` fetches origin's default branch first; a worktree that is only behind it (no own commits) gets the branch on the
+fresh tip (Loupe 6369967340 and Prismwake 6368620553 announced stale bases), own commits stay and are named. The reservation keeps
+`--model`/`--about`, so `say` writes the model line without repeating `--model`, and a new name in a reused worktree drops the
+previous session's undelivered watcher state.
 """
 import argparse
 import json
@@ -145,12 +149,15 @@ def main(argv=None) -> int:
         for other in sorted(b for b in branches if b.startswith(("claude/", "codex/", "gemini/"))):
             print("offen:       ", other)
     if args.reserve:
-        code = reserve(args.repo, branch)
+        if not args.model:
+            print("Hinweis:      --model fehlt (z. B. --model \"Opus 5.5, high\") - Anmeldung und spätere Nachrichten ohne Modellzeile",
+                  file=sys.stderr)
+        code, base = reserve(args.repo, branch)
         if code == 0:
-            remember(args.repo, name, branch)
+            remember(args.repo, name, branch, args.model, args.about)
             if not args.no_announce:
                 try:
-                    announce(args.repo, name, branch, args.about, args.model, args.to)
+                    announce(args.repo, name, branch, args.about, args.model, args.to, base)
                 except Exception as error:  # the reservation stands whatever the announcement does
                     print(f"Anmeldung nicht gesendet ({type(error).__name__}: {error}) - Reservierung gilt.", file=sys.stderr)
         return code
@@ -168,24 +175,55 @@ def patch_word(repo_name: str) -> str:
 SESSION_FILE = "ce-session.json"
 
 
-def remember(repo: Path, name: str, branch: str) -> None:
+WATCH_STATE = "ce-watch.json"
+FOREIGN_STATE = ("pending", "pending_ids", "pending_since", "deliveries", "hinted", "reminded_at", "last_failure")
+
+
+def remember(repo: Path, name: str, branch: str, model: str = "", about: str = "") -> None:
     """The reserved name in the worktree's own git dir, so `./ce session say` sends under exactly this name (0.14); the time lets the
-    Postfach watcher read from the reservation on and ignore stale ones (0.15)."""
+    Postfach watcher read from the reservation on and ignore stale ones (0.15); model and task for later messages (0.21)."""
     try:
         git_dir = subprocess.run(["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, timeout=20).stdout.strip()
-        if git_dir:
-            (Path(git_dir) / SESSION_FILE).write_text(json.dumps({"name": name, "branch": branch, "reserved_at": time.time()},
-                                                                 ensure_ascii=False), encoding="utf-8")
+        if not git_dir:
+            return
+        folder = Path(git_dir)
+        try:
+            previous = json.loads((folder / SESSION_FILE).read_text(encoding="utf-8")).get("name")
+        except (OSError, ValueError, AttributeError):
+            previous = None
+        record = {"name": name, "branch": branch, "reserved_at": time.time()}
+        record.update({key: value for key, value in (("model", model), ("about", about)) if value})
+        (folder / SESSION_FILE).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        if previous and previous != name:
+            forget_foreign_state(folder / WATCH_STATE)
+            try:
+                (folder / "ce-inbox.json").unlink()  # the previous session's fetched mail (hooks/postfach_inbox.py)
+            except OSError:
+                pass
     except (OSError, subprocess.TimeoutExpired):
         pass
 
 
-def announce(repo: Path, name: str, branch: str, about: str = "", model: str = "", to: str = "Sightline") -> int:
+def forget_foreign_state(path: Path) -> None:
+    """A message pending for the previous session of a reused worktree must not reach the new one (Courier found Lodestar's state)."""
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict) or not any(key in state for key in FOREIGN_STATE):
+        return
+    state = {key: value for key, value in state.items() if key not in FOREIGN_STATE}
+    temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    temp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def announce(repo: Path, name: str, branch: str, about: str = "", model: str = "", to: str = "Sightline", base: str = "") -> int:
     """The announcement after a reservation; its result only informs (the reservation stands either way)."""
     import ce_postfach  # late: ce_postfach imports this module
     origin = ce_postfach.sn_git(repo, "remote", "get-url", "origin")
     found = re.search(r"github\.com[:/]([^/]+/[^/.]+)", origin or "")
-    base = ce_postfach.sn_git(repo, "rev-parse", "--short", "HEAD") or "?"
+    base = base or ce_postfach.sn_git(repo, "rev-parse", "--short", "HEAD") or "?"
     try:
         body = ce_postfach.announcement(name, branch, base, found.group(1) if found else repo.resolve().name, about, model, to)
     except ValueError as error:
@@ -194,19 +232,56 @@ def announce(repo: Path, name: str, branch: str, about: str = "", model: str = "
     return ce_postfach.send(body, repo)
 
 
-def reserve(repo: Path, branch: str) -> int:
-    """The reservation: the branch at HEAD, pushed to origin. Fails (exit 1) when origin already has it."""
+def git_out(repo: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def fresh_base(repo: Path):
+    """(start point, short sha, note) for the reserved branch (0.21): origin's default branch is fetched first. HEAD only behind it ->
+    the fresh tip; HEAD with own commits -> HEAD, and the note says how far it is from the tip; fetch failed -> HEAD with a note."""
+    head = git_out(repo, "rev-parse", "HEAD")
+    default = git_out(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/") or "main"
+    try:
+        fetched = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", default], capture_output=True, text=True,
+                                 timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        fetched = False
+    tip = git_out(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{default}") if fetched else ""
+    if not tip:
+        return "HEAD", head[:8], f"origin/{default} nicht geholt - Basis ist HEAD, vor der Arbeit selbst prüfen"
+    if not head or head == tip:
+        return tip, tip[:8], ""
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", head, tip], capture_output=True).returncode == 0:
+        return tip, tip[:8], (f"Worktree stand auf {head[:8]}, origin/{default} ist {tip[:8]} - Branch auf origin/{default} angelegt; "
+                              f"vor der Arbeit wechseln")
+    ahead = git_out(repo, "rev-list", "--count", f"{tip}..{head}") or "?"
+    behind = git_out(repo, "rev-list", "--count", f"{head}..{tip}") or "?"
+    note = f"HEAD hat {ahead} eigene Commits" + (f" und liegt {behind} hinter origin/{default}" if behind not in ("0", "?") else "")
+    return "HEAD", head[:8], note + " - Basis bleibt HEAD"
+
+
+def reserve(repo: Path, branch: str):
+    """The reservation: the branch on the fresh base (fresh_base), pushed to origin. (exit code, short base sha); exit 1 when origin
+    already has it."""
     if branch in remote_branches(repo):
         print(f"Branch {branch} gibt es auf origin schon - Nummer vergeben, nächste nehmen.", file=sys.stderr)
-        return 1
-    for command in (["git", "branch", "--force", branch, "HEAD"], ["git", "push", "-u", "origin", branch]):
+        return 1, ""
+    start, base, note = fresh_base(repo)
+    for command in (["git", "branch", "--force", branch, start], ["git", "push", "-u", "origin", branch]):
         result = subprocess.run(command, cwd=repo, capture_output=True, text=True)
         if result.returncode:
             print(result.stderr.strip() or f"{' '.join(command)} fehlgeschlagen", file=sys.stderr)
-            return 1
-    print(f"Reserviert:   {branch} auf origin (git checkout {branch})")
-    print("Postfach:     Wächter startet beim Stopp von selbst (ce-shared 0.15); ohne Plugin: ./ce session mail im Hintergrund")
-    return 0
+            return 1, ""
+    print(f"Reserviert:   {branch} auf origin, Basis {base} (git checkout {branch})")
+    if note:
+        print(f"Basis:        {note}", file=sys.stderr)
+    print("Postfach:     Wächter startet beim Stopp von selbst, Post mitten in der Arbeit kommt als Hinweis (ce-shared 0.21); "
+          "ohne Plugin: ./ce session mail --follow im Hintergrund")
+    return 0, base
 
 
 if __name__ == "__main__":

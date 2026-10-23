@@ -1,5 +1,5 @@
 {
-  "description": "ce-shared: gemeinsame Regeln (rules/*.md), Subagent-Profile, Vor-Commit-Doku-Prüfung (warnt), SessionStart (Lehren, Sitzungsname, Werkzeugzeile) und Stop (ce_report, check-before-stop; warnt; 0.15: Postfach-Wächter startet von selbst, Erinnerung als Rückfall)",
+  "description": "ce-shared: gemeinsame Regeln (rules/*.md), Subagent-Profile, Vor-Commit-Doku-Prüfung (warnt), SessionStart (Lehren, Sitzungsname, Werkzeugzeile) und Stop (ce_report, check-before-stop; warnt; 0.15: Postfach-Wächter startet von selbst, Erinnerung als Rückfall; 0.21: PostToolUse gibt neue Post mitten in der Arbeit als Hinweis in die Sitzung)",
   "hooks": {
     "PreToolUse": [
       {
@@ -61,6 +61,17 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_watch.py\" remind",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_inbox.py\" hint",
+            "timeout": 5
           }
         ]
       }
