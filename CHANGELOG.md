@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.0 „Prismwake“ – unveröffentlicht
+
+- Vorbereitete Plugin-Nacharbeiten: semantische Referenzprüfung für `hold.reticle_socket`, Radius²-Flächenlicht und skalierte Clip-Grenzen; bestehende Vertragsformate bleiben erhalten, ungültige `reticle_socket`-Ziele werden nun abgewiesen. Turnaround-Baselines aus ≤0.18 müssen bei Vergleichen mit 0.19 für Radius ≠ 1 neu erzeugt werden.
+- Optionale lokale IDE-Panels für Ressourcen und Bildbelege sowie Blender-Sidebar für Preflight und Turnaround; vorhandene Kerne, eigene Prozessgruppen, begrenzte Ausgabe und Abbruchnachhalten. Gewählte Python-venv bleibt erhalten.
+- Mac-Nebenkorrektur: Postfachtest löst den Temp-Pfad wie Git auf (`/var` gegenüber `/private/var`). Client-Proben zu 0.15/0.16 und dritte Rollout-Beobachtung für 0.18 dokumentiert. [Version](docs/versions/0.19.md). Kein Rollout oder Sync mit diesem Abschluss.
+
 ## 0.18.0 „Sweepline“ – unveröffentlicht
 
 - `./ce tidy` (`ce_tidy.py`) setzt die Regel „Aufräumen nach dem Merge“ um: Probelauf-Tabelle der Reste fertiger Sitzungen aller Repos (Worktrees, repo-eigene Aufräumbefehle, Generator-Ausgaben, Belegablagen), `--apply` räumt über den Papierkorb bzw. `git worktree remove` ohne `--force`, `--json` für Maschinen. Schutz: gemergt, sauber, ohne Sitzung/Prozess, innerhalb der Wurzeln; nie Haupt-Checkouts und deren `Library`, `_rettung`, „NICHT LÖSCHEN“, Repos mit `hold`; aktuelle und vorige Belegversion bleiben.

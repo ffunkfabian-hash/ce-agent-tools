@@ -1,4 +1,6 @@
+import ast
 import contextlib
+import math
 import importlib.util
 import io
 import json
@@ -56,6 +58,28 @@ class TurnaroundTests(unittest.TestCase):
         self.assertIn('"turn_" + format(index + 1, "03d")', script)
         self.assertIn("frame_count = 8", script)
         self.assertIn("bpy.data.objects.remove(obj, do_unlink=True)", script)
+
+    def test_light_irradiance_and_camera_clipping_are_scale_independent(self):
+        script = turnaround.make_script(self.source, self.output, 1, 128, turnaround.example_profile())
+        assignments = {ast.unparse(node.targets[0]): node.value for node in ast.parse(script).body if isinstance(node, ast.Assign)}
+        def expression(name, radius):
+            return eval(compile(ast.Expression(assignments[name]), "generated", "eval"), {"radius": radius})
+        irradiances = []
+        for radius in (0.001, 1.0, 1000.0):
+            energy = expression("light_data.energy", radius)
+            # Light distance is sqrt(2²+3²+4²) radii; relative area is constant.
+            irradiances.append(energy / (29 * radius ** 2))
+            self.assertLess(expression("camera_data.clip_start", radius), radius * 5)
+            self.assertGreater(expression("camera_data.clip_end", radius), radius * 5)
+        self.assertAlmostEqual(irradiances[0], irradiances[1])
+        self.assertAlmostEqual(irradiances[1], irradiances[2])
+        self.assertEqual(expression("light_data.energy", 1), 1400)
+        class BoundsVector:
+            def __init__(self, values):
+                self.length = math.sqrt(sum(value ** 2 for value in values))
+        radius = eval(compile(ast.Expression(assignments["radius"]), "bounds", "eval"),
+                      {"Vector": BoundsVector, "minimum": [0, 0, 0], "maximum": [0.002] * 3})
+        self.assertAlmostEqual(radius, math.sqrt(3) * 0.001)
 
     def test_main_returns_blender_failure_without_running_media_on_script_exception(self):
         with patch.object(turnaround.subprocess, "run", return_value=SimpleNamespace(returncode=1)) as run:

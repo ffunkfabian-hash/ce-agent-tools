@@ -37,7 +37,7 @@ class Worktree(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
-        self.repo = Path(self.tmp.name)
+        self.repo = Path(self.tmp.name).resolve()
         env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
         subprocess.run(["git", "init", "-q", "-b", "claude/tg-0.24-salvo", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "--allow-empty", "-m", "init"], check=True, env=env)

@@ -273,7 +273,7 @@ def device_references(document: dict) -> list[str]:
         if part is not None and (not isinstance(part, str) or part not in parents):
             errors.append(f'$.colliders[{index}].part: unbekannter Knoten {part}')
     hold = document.get('hold', {})
-    for field in ('hand_socket', 'support_socket', 'muzzle_socket', 'sight_socket', 'eye_socket'):
+    for field in ('hand_socket', 'support_socket', 'muzzle_socket', 'sight_socket', 'eye_socket', 'reticle_socket'):
         target = hold.get(field)
         if target is not None and (not isinstance(target, str) or target not in parents):
             errors.append(f'$.hold.{field}: unbekannter Knoten {target}')

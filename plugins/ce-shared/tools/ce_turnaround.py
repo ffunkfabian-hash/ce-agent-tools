@@ -98,7 +98,7 @@ points = [obj.matrix_world @ Vector(corner) for obj in meshes for corner in obj.
 minimum = [min(point[axis] for point in points) for axis in range(3)]
 maximum = [max(point[axis] for point in points) for axis in range(3)]
 center = Vector(tuple((minimum[i] + maximum[i]) * 0.5 for i in range(3)))
-radius = max(Vector(tuple(maximum[i] - minimum[i] for i in range(3))).length * 0.5, 0.1)
+radius = max(Vector(tuple(maximum[i] - minimum[i] for i in range(3))).length * 0.5, 1e-6)
 margin = profile["camera"]["bounds_margin"]
 elevation = math.radians(profile["camera"]["elevation_degrees"])
 camera_data = bpy.data.cameras.new("CE_TurnaroundCamera")
@@ -107,11 +107,14 @@ scene.collection.objects.link(camera)
 scene.camera = camera
 camera_data.type = "ORTHO"
 camera_data.ortho_scale = radius * 2.0 * margin
+camera_data.clip_start = radius * 0.001
 camera_data.clip_end = radius * 10
 light_data = bpy.data.lights.new("CE_TurnaroundLight", "AREA")
 light = bpy.data.objects.new("CE_TurnaroundLight", light_data)
 scene.collection.objects.link(light)
-light_data.energy = 1400
+# Preserve irradiance as the bounds-relative distance and emitter area scale.
+# Reference: 1400 W at a bounds radius of one Blender unit.
+light_data.energy = 1400 * radius ** 2
 light_data.shape = "DISK"
 light_data.size = radius * 2
 scene.render.resolution_x = resolution
