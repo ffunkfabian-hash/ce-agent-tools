@@ -3,7 +3,8 @@
 
 0.5.0: runs `ce_check.py nightly` of every repo in turn (CE_REPOS = ':'-separated paths, else the standard checkouts under
 ~/Claude), each inside its own heavy locks, writes one report to ~/Library/Caches/CubeEscape/nightly/ce_nightly-<date>.log and
-sends a macOS notification. Repos without check.nightly are skipped with a note. Never a GitHub workflow (private repos pay minutes).
+sends a macOS notification. Repos without check.nightly are skipped with a note. 0.18: afterwards `ce_tidy.py --nightly` (removes
+only categories with nightly: true in .ce-repo.json › tidy, lists the rest; --dry-run: probe only). Never a GitHub workflow (private repos pay minutes).
 
     python3 ce_nightly.py --all                   run now, all repos
     python3 ce_nightly.py --repo ~/Claude/cubeescape-toolgen
@@ -115,6 +116,7 @@ def run(args) -> int:
         results.append((root.name, state, seconds))
         if state.startswith("red") and getattr(args, "report_issues", False) and not args.dry_run:
             report_issue(root, lines, log)
+    tidy(args, targets, log)
     # the search index follows the repos (ce_search.py): a few seconds, never a reason for a red night
     try:
         if args.dry_run:
@@ -135,6 +137,19 @@ def run(args) -> int:
         notify("CE Nachtlauf", ("rot: " + ", ".join(red)) if red else "alle grün" if executed else "keine Prüfungen ausgeführt")
     print(f"Bericht: {report}")
     return 1 if red else 0 if executed or args.dry_run else 2
+
+
+def tidy(args, targets: list[Path], log) -> None:
+    """0.18: ce_tidy.py --nightly (only categories with nightly: true remove, the rest is a probe in the report); never red."""
+    try:
+        import ce_tidy
+        command = ([] if args.dry_run else ["--nightly"]) + (["--repos", *map(str, targets)] if args.repo else [])
+        log(f"=== Aufräumen: ce_tidy {' '.join(command) or '(Probelauf)'}")
+        code = ce_tidy.run(command, out=log)
+        if code:
+            log("=== Aufräumen: mit Fehlern (siehe oben), Nachtlauf bleibt davon unberührt")
+    except Exception as error:  # noqa: BLE001
+        log(f"=== Aufräumen: übersprungen ({error})")
 
 
 def report_issue(root: Path, lines: list[str], log) -> None:
