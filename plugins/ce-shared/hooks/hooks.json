@@ -1,9 +1,9 @@
 {
-  "description": "ce-shared: gemeinsame Regeln (rules/*.md), Subagent-Profile, Vor-Commit-Doku-Prüfung (warnt), SessionStart (Lehren, Sitzungsname, Werkzeugzeile) und Stop (ce_report, check-before-stop; warnt; 0.15: Postfach-Wächter startet von selbst, Erinnerung als Rückfall; 0.21: PostToolUse gibt neue Post mitten in der Arbeit als Hinweis in die Sitzung)",
+  "description": "ce-shared: gemeinsame Regeln (0.22: merge-nur-sightline auch für die GitHub-MCP-Merge-Werkzeuge) (rules/*.md), Subagent-Profile, Vor-Commit-Doku-Prüfung (warnt), SessionStart (Lehren, Sitzungsname, Werkzeugzeile) und Stop (ce_report, check-before-stop; warnt; 0.15: Postfach-Wächter startet von selbst, Erinnerung als Rückfall; 0.21: PostToolUse gibt neue Post mitten in der Arbeit als Hinweis in die Sitzung)",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge",
         "hooks": [
           {
             "type": "command",

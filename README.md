@@ -30,11 +30,12 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | `commit-on-main` | blockiert | ein einfacher `git commit`, dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
 | `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` |
 | `heavy-unlocked`, `output-cap`, `judge-template` | warnt | schwerer Lauf ohne sichtbare Sperre; ganze JSON-/Log-Datei ausgeben; `codex exec` ohne Checkliste |
+| `merge-nur-sightline` | blockiert | 0.22: `gh pr merge` (auch `--auto`), `gh api … PUT …/pulls/N/merge`, GraphQL `mergePullRequest`/`enablePullRequestAutoMerge` (auch nach `NAME=wert`, `env`, `bash -c`, `eval`) und die GitHub-MCP-Werkzeuge `merge_pull_request`/`enable_pr_auto_merge` – außer in der Sitzung Sightline (reservierter Name `Sightline` in `<git-dir>/ce-session.json` oder `CE_ROLE=sightline`). `git merge origin/main` (main einholen), `gh pr view/create` und `gh pr merge --help` bleiben frei. Feld `merge_attempt`, Ereignis `all`, Logik nur in `guard.py`; ein Lesefehler lässt durch |
 | `actions-sparsam` | warnt | Bearbeiten eines GitHub-Workflows: globale Regel „GitHub Actions sparsam“ |
 
-Format wie hookify (`event: bash|file`, `conditions` mit `field` command/file_path/content/new_text/old_text, Operatoren
+Format wie hookify (`event: bash|file|mcp|all`, `conditions` mit `field` command/file_path/content/new_text/old_text, Operatoren
 `regex_match` (ohne Groß/klein), `contains`, `not_contains`, `equals`, `starts_with`, `ends_with`; `action: warn|block`).
-Zusätzlich `git_commit` (nur Bash), die **begrenzte Vorabprüfung** von `commit-on-main`: Beurteilt wird nur eine Zeile,
+Zusätzlich `merge_attempt` (Bash und `mcp__…`-Werkzeuge, siehe `merge-nur-sightline`) und `git_commit` (nur Bash), die **begrenzte Vorabprüfung** von `commit-on-main`: Beurteilt wird nur eine Zeile,
 die als Ganzes ein einziger einfacher Befehl `git [Optionen] commit …` aus festen Wörtern ist. Quotes, Backslashes,
 Zeilenfortsetzung und Kommentare werden wie in der Shell gelesen, auch innerhalb eines Worts (`'gi't commit`,
 `git 'c'ommit`, `g\it commit` zählen wie `git commit`); kein `$`, kein Backtick, keine Muster-/Klammererweiterung und
@@ -238,7 +239,7 @@ fehlt das Skript später oder startet es nicht (Syntax-/Importfehler), antwortet
 
 | Client | Eintrag | Eingang | Ausgabe |
 |---|---|---|---|
-| Codex (CLI 0.162.1 gemessen; App ungemessen) | `~/.codex/hooks.json`, `PreToolUse`, Matcher `^(Bash\|apply_patch)$`; läuft erst nach Vertrauen unter `/hooks` | `tool_input.command` (Shellzeile bzw. Patchtext; je Datei des Patches ein Datei-Ereignis); MCP-/Funktionswerkzeuge nicht | Block `hookSpecificOutput.permissionDecision: "deny"`, Warnung `additionalContext` + `systemMessage`, sonst keine Ausgabe |
+| Codex (CLI 0.162.1 gemessen; App ungemessen) | `~/.codex/hooks.json`, `PreToolUse`, Matcher `^(Bash\|apply_patch\|mcp__github__merge_pull_request\|mcp__github__enable_pr_auto_merge)$` (0.22; vorher `^(Bash\|apply_patch)$` reicht für alles außer die MCP-Merge-Werkzeuge); läuft erst nach Vertrauen unter `/hooks` | `tool_input.command` (Shellzeile bzw. Patchtext; je Datei des Patches ein Datei-Ereignis); `mcp__…`-Werkzeuge nur als Name für `merge-nur-sightline`, übrige Funktionswerkzeuge nicht | Block `hookSpecificOutput.permissionDecision: "deny"`, Warnung `additionalContext` + `systemMessage`, sonst keine Ausgabe |
 | Antigravity (IDE 2.5.5/CLI 1.4.5 gemessen; App ungemessen) | `~/.gemini/config/hooks.json`, Name `ce-shared-guard`, Matcher `run_command\|write_to_file\|replace_file_content\|multi_replace_file_content` | `toolCall.args.CommandLine` bzw. `TargetFile` (+ Inhalt), Ordner aus `Cwd`/`workspacePaths` | `{"decision": "deny", "reason"}`; sonst `allow` (laut Doku: an Folgehook/normale Freigabe weiterreichen), Warnung als `reason` |
 
 Claude-Subagent-Profile (`.claude/agent-guard.json`) gelten nur in Claude Code. `CE_HOOK_LOG=<Datei>` in der Umgebung des

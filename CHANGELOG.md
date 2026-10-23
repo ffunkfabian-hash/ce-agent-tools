@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.0 „Tollgate“ – unveröffentlicht
+
+- Neue Regel `merge-nur-sightline` (Entscheidung des Nutzers 23.10.2026, Entscheidung 38): Fachsitzungen mergen nie selbst. Blockiert `gh pr merge` (auch `--auto`), `gh api … PUT …/pulls/N/merge`, die GraphQL-Mutationen `mergePullRequest`/`enablePullRequestAutoMerge` und die GitHub-MCP-Werkzeuge `merge_pull_request`/`enable_pr_auto_merge` mit „Merge macht Sightline nach Prüfung – PR-Nummer und Head-SHA ins Postfach.“; Ausnahme nur die Sitzung Sightline (reservierter Name oder `CE_ROLE=sightline`). `git merge origin/main`, `gh pr view/create` und `--help` bleiben frei. Anlass: Formgen „Ungrafted“ mergte cubeescape-formgen#27 selbst.
+- Logik nur in `guard.py` (Feld `merge_attempt`, Ereignis `mcp`/`all`); Claude-Matcher in `hooks.json` und Codex-Adapter (`mcp__…` als Name durchgereicht) um die zwei MCP-Werkzeuge erweitert. Antigravity: nur Shell (MCP-Werkzeugnamen dort nicht gemessen). 7 + 1 neue Tests. [Version](docs/versions/0.22.md).
+
 ## 0.21.0 „Courier“ – unveröffentlicht
 
 - Postfach während der Arbeit: neuer PostToolUse-Hook `hooks/postfach_inbox.py` (Codex über `codex_guard.py`) gibt Post an eine reservierte Sitzung zwischen zwei Werkzeugaufrufen als `additionalContext` – bei leerem Postfach zwei Dateilesungen, kein Netz, kein Kontext; höchstens alle 3 min ein abgelöster Lesezugriff. Der Stop-Wächter überspringt Zugestelltes; ohne Nachweis im Transkript kommt es beim nächsten Stopp noch einmal.
