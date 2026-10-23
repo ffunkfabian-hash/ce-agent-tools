@@ -107,7 +107,7 @@ class SharedRuleTests(unittest.TestCase):
 
     def test_every_rule_blocks_what_it_should_and_nothing_else(self):
         self.assertEqual({rule["name"] for rule in RULES},
-                         set(self.CASES) | set(self.WARN_CASES) | {"actions-sparsam"}, "a new rule needs cases here")
+                         set(self.CASES) | set(self.WARN_CASES) | {"actions-sparsam", "merge-nur-sightline"}, "a new rule needs cases here")
         for name, (hits, misses) in self.CASES.items():
             for command in hits:
                 self.assertIn(name, names(bash(command)), command)
@@ -502,6 +502,99 @@ class AgentProfileTests(unittest.TestCase):
     def test_shared_rules_still_apply_inside_subagents(self):
         result = guard.decide(dict(bash("git stash"), agent_type="ce-test-runner", cwd=str(self.repo)), RULES)
         self.assertIn("git-stash-geteilt", result["systemMessage"])
+
+
+class MergeNurSightlineTests(unittest.TestCase):
+    """0.22: only Sightline merges. Hits are blocked for every other session; catching up with main stays free."""
+    HITS = ["gh pr merge 5", "gh pr merge 5 --squash --delete-branch", "gh pr merge --auto 5", "gh pr merge",
+            "gh pr merge 5 -R ffunkfabian-hash/ce-agent-tools", "gh api -X PUT repos/o/r/pulls/5/merge",
+            "gh api repos/o/r/pulls/5/merge --method PUT -f merge_method=squash",
+            "gh api --method=put /repos/o/r/pulls/5/merge", "gh api -XPUT repos/o/r/pulls/5/merge",
+            "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+            "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
+            "gh pr create --fill && gh pr merge --auto 4", "GH_TOKEN=x gh pr merge 3", "env GH_REPO=o/r gh pr merge 3",
+            "bash -c 'gh pr merge 3 --squash'", "eval 'gh pr merge 3'", "/opt/homebrew/bin/gh pr merge 3", "gh pr merge $PR"]
+    MISSES = ["git merge origin/main", "git merge --no-ff origin/main -m x", "git -C /x merge main", "gh pr view 5",
+              "gh pr create --fill", "gh pr list", "gh pr checks 5", "gh pr merge --help", "gh pr merge 5 -h",
+              "gh api repos/o/r/pulls/5/merge", "gh api -X GET repos/o/r/pulls/5/merge",
+              "gh api -X PUT repos/o/r/pulls/5/comments", "gh api repos/o/r/pulls/5", "echo 'gh pr merge 5'",
+              "grep -rn 'gh pr merge' docs/", "git log --grep 'pr merge'", "ls", "gh issue comment 16 -b 'nach merge'"]
+    MCP = ["mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_merge"]
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("CE_ROLE", None)
+
+    @staticmethod
+    def mcp(tool, cwd=OUTSIDE_GIT):
+        return {"hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd,
+                "tool_input": {"owner": "o", "repo": "r", "pullNumber": 5}}
+
+    @staticmethod
+    def session(name):
+        folder = tempfile.mkdtemp(prefix="ce-sightline-", dir=OUTSIDE_GIT)
+        subprocess.run(["git", "init", "-q", folder], check=True)
+        if name is not None:
+            (Path(folder) / ".git" / "ce-session.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+        return folder
+
+    def test_other_sessions_are_blocked_with_the_postfach_message(self):
+        for command in self.HITS:
+            result = guard.decide(bash(command), RULES)
+            self.assertTrue(denied(result), command)
+            self.assertIn("[merge-nur-sightline]", result["systemMessage"], command)
+            self.assertIn("Merge macht Sightline nach Prüfung – PR-Nummer und Head-SHA ins Postfach",
+                          result["systemMessage"])
+        for tool in self.MCP:
+            self.assertTrue(denied(guard.decide(self.mcp(tool), RULES)), tool)
+
+    def test_catching_up_with_main_and_harmless_commands_pass(self):
+        for command in self.MISSES:
+            self.assertNotIn("merge-nur-sightline", names(bash(command)), command)
+            self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
+        for tool in ("mcp__github__get_pull_request", "mcp__github__create_pull_request", "mcp__ce-search__ce_search"):
+            self.assertEqual(guard.decide(self.mcp(tool), RULES), {}, tool)
+
+    def test_the_reserved_name_sightline_may_merge(self):
+        for name in ("Sightline", "Sightline · Cloud", "sightline"):
+            folder = self.session(name)
+            for command in self.HITS:
+                self.assertEqual(guard.decide(bash(command, cwd=folder), RULES), {}, (name, command))
+            for tool in self.MCP:
+                self.assertEqual(guard.decide(self.mcp(tool, folder), RULES), {}, (name, tool))
+
+    def test_other_reservations_and_look_alikes_still_block(self):
+        for name in ("CE-AGENT-TOOLS 0.22 „Tollgate“ · Mac", "Sightlines-Prüfung", "NotSightline", "", None):
+            folder = self.session(name)
+            self.assertTrue(denied(guard.decide(bash("gh pr merge 5", cwd=folder), RULES)), name)
+            self.assertTrue(denied(guard.decide(self.mcp(self.MCP[0], folder), RULES)), name)
+
+    def test_the_role_variable_names_sightline_without_a_reservation(self):
+        os.environ["CE_ROLE"] = "Sightline"
+        self.assertEqual(guard.decide(bash("gh pr merge 5"), RULES), {})
+        self.assertEqual(guard.decide(self.mcp(self.MCP[1]), RULES), {})
+        os.environ["CE_ROLE"] = "fachsitzung"
+        self.assertTrue(denied(guard.decide(bash("gh pr merge 5"), RULES)))
+
+    def test_a_broken_reading_fails_open_and_keeps_the_other_rules(self):
+        with mock.patch.object(guard, "is_sightline", side_effect=OSError("kaputt")):
+            self.assertEqual(guard.decide(bash("gh pr merge 5"), RULES), {})
+            self.assertTrue(denied(guard.decide(bash("git push --" + "force"), RULES)))
+        with mock.patch.object(guard, "merge_line", side_effect=ValueError("kaputt")):
+            self.assertEqual(guard.decide(bash("gh pr merge 5"), RULES), {})
+        process = subprocess.run([sys.executable, str(PLUGIN / "hooks" / "guard.py")], text=True, capture_output=True,
+                                 input=json.dumps(bash("gh pr merge 5")), check=True,
+                                 env={"CLAUDE_PLUGIN_ROOT": str(PLUGIN), "PATH": "/usr/bin:/bin"})
+        self.assertTrue(denied(json.loads(process.stdout)))
+
+    def test_the_claude_hook_matcher_reaches_the_github_merge_tools(self):
+        hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
+        matcher = hooks["hooks"]["PreToolUse"][0]["matcher"]
+        for tool in self.MCP + ["Bash", "Edit"]:
+            self.assertRegex(tool, f"^({matcher})$")
+        self.assertNotRegex("mcp__github__get_pull_request", f"^({matcher})$")
 
 
 class HookProcessTests(unittest.TestCase):

@@ -5,13 +5,14 @@ Input (stdin, snake_case): tool_name "Bash" (shell and unified exec) with tool_i
 patch text in tool_input.command, "mcp__<server>__<tool>" or a local function name with its own arguments.
 - Bash -> one Claude Bash payload.
 - apply_patch -> one Write/Edit payload per file of the patch (Add/Update/Delete/Move to), so the file rules see each path.
-- Everything else (MCP, update_plan, ...) is neither a shell command nor a file edit for the rules: no output.
+- mcp__<server>__<tool> -> one payload with that tool name (0.22: only merge-nur-sightline looks at the GitHub merge tools).
+- Everything else (update_plan, ...) is neither a shell command nor a file edit for the rules: no output.
 
 Output (stdout): blocks as hookSpecificOutput.permissionDecision "deny" plus systemMessage, warnings as
 hookSpecificOutput.additionalContext (model) plus systemMessage (UI), nothing when no rule matches. Never "ask",
 "continue" or "stopReason" - Codex treats those as a failed hook and runs the tool anyway. Exit code always 0.
 
-Install as a user hook (~/.codex/hooks.json, matcher "^(Bash|apply_patch)$"); Codex runs it only after /hooks trust.
+Install as a user hook (~/.codex/hooks.json, matcher "^(Bash|apply_patch|mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge)$"); Codex runs it only after /hooks trust.
 0.21: Codex has no Stop hook, so new Postfach messages of a reserved worktree come along as additionalContext of this hook
 (postfach_inbox.pending_text: file reads only, a detached read at most every three minutes; nothing when there is no message).
 It is no rule and never blocks; a broken inbox only means no hint.
@@ -90,6 +91,8 @@ def normalize(payload):
                 payloads.append({"tool_name": "Edit", "tool_input": {"file_path": path, "old_string": old,
                                                                      "new_string": new}})
         return [dict(p, hook_event_name="PreToolUse", cwd=cwd) for p in payloads]
+    if tool.startswith("mcp__"):
+        return [{"hook_event_name": "PreToolUse", "tool_name": tool, "cwd": cwd, "tool_input": data}]
     return []
 
 

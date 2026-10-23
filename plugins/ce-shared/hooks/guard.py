@@ -67,6 +67,8 @@ def load_rules(folder=RULES_DIR):
 
 
 def field_value(field, tool, data, cwd=None, facts=None):
+    if field == "merge_attempt":
+        return merge_attempt(tool, data, cwd or os.getcwd())
     if tool == "Bash":
         if field == "git_commit":
             facts = facts or commit_facts(data.get("command", ""), cwd or os.getcwd())
@@ -106,7 +108,7 @@ def condition_holds(condition, tool, data, cwd=None, facts=None):
 
 
 def matching_rules(rules, tool, data, cwd=None, facts=None):
-    event = "bash" if tool == "Bash" else "file" if tool in FILE_TOOLS else None
+    event = "bash" if tool == "Bash" else "file" if tool in FILE_TOOLS else "mcp" if tool.startswith("mcp__") else None
     if event is None:
         return []
     return [rule for rule in rules if rule.get("event", "all") in (event, "all")
@@ -355,6 +357,92 @@ def commit_facts(command, cwd):
 def git_commits(command, cwd):
     """The git_commit field: one line per judged commit of the shell line (see CommitFacts)."""
     return "\n".join(commit_facts(command, cwd).lines)
+
+
+# -------------------------------------------------------------------------------------------- merge attempt field
+#
+# merge-nur-sightline (0.22): only Sightline merges. The field merge_attempt is "merge" when the call would merge a pull
+# request or switch on its auto-merge and the session is not Sightline, else "". Bash: a `gh pr merge` or `gh api` call
+# (PUT …/pulls/N/merge, GraphQL mergePullRequest / enablePullRequestAutoMerge) in any segment of the line, also behind
+# NAME=value, env/command/exec/time/nohup and `bash|sh|zsh -c '…'` / eval; the words come from shell_segments, so quotes
+# are read like the shell does. Other tools: the GitHub MCP merge tools. `git merge` is no PR merge and stays free
+# (catching up with main in a working branch). Sightline = CE_ROLE=sightline, or the name reserved in the git dir of the
+# session's folder (ce-session.json, written by `ce session reserve`). What cannot be read is not Sightline - except an
+# error while reading, which lets the call through (fail open).
+
+MERGE_TOOLS = ("mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_merge")
+MERGE_MUTATIONS = ("mergePullRequest", "enablePullRequestAutoMerge")
+SESSION_FILE = "ce-session.json"
+SIGHTLINE = re.compile(r"sightline(\s|·|$)", re.IGNORECASE)
+WRAPPERS = ("env", "command", "exec", "time", "nohup")
+SHELLS = ("bash", "sh", "zsh")
+
+
+def merge_words(words):
+    """True when the words of one segment run a PR merge (gh pr merge, gh api merge call or merge mutation)."""
+    words = [word for word, _ in words]
+    while words and (ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) in WRAPPERS):
+        words = words[1:]
+    if not words:
+        return False
+    program, args = os.path.basename(words[0]), words[1:]
+    if program in SHELLS or program == "eval":
+        script = args[args.index("-c") + 1:] if "-c" in args else args if program == "eval" else []
+        return any(merge_line(" ".join(script) if program == "eval" else script[0])) if script else False
+    if program != "gh" or len(args) < 2:
+        return False
+    if args[0] == "pr" and args[1] == "merge":
+        return not {"--help", "-h"} & set(args[2:])
+    if args[0] != "api":
+        return False
+    method = ""
+    for i, word in enumerate(args):
+        name, equals, value = word.partition("=")
+        if word in ("-X", "--method") and i + 1 < len(args):
+            method = args[i + 1]
+        elif equals and name == "--method":
+            method = value
+        elif word.startswith("-X") and len(word) > 2:
+            method = word[2:]
+    if any(mutation in word for word in args for mutation in MERGE_MUTATIONS):
+        return True
+    return method.upper() == "PUT" and any(re.search(r"/pulls/\d+/merge/?$", word) for word in args)
+
+
+def merge_line(command):
+    """[True] per merging segment of a shell line (a list, so a nested -c script can be passed on)."""
+    segments, _ = shell_segments(command)
+    return [True for words in segments if merge_words(words)]
+
+
+def is_sightline(cwd):
+    """True for the Sightline session. Raises on a failed read (the caller fails open)."""
+    if os.environ.get("CE_ROLE", "").strip().lower() == "sightline":
+        return True
+    git = trusted_git()
+    if git is None or not os.path.isdir(cwd):
+        return False
+    result = subprocess.run([git, "rev-parse", "--absolute-git-dir"], cwd=cwd, capture_output=True, text=True,
+                            timeout=3, env=git_environment(os.environ))
+    if result.returncode != 0:
+        return False
+    try:
+        name = json.loads((Path(result.stdout.strip()) / SESSION_FILE).read_text(encoding="utf-8")).get("name", "")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(name, str) and SIGHTLINE.match(name.strip()) is not None
+
+
+def merge_attempt(tool, data, cwd):
+    """"merge" for a PR merge by a session that is not Sightline, else ""."""
+    try:
+        if tool == "Bash":
+            attempt = bool(merge_line(data.get("command", "")))
+        else:
+            attempt = tool in MERGE_TOOLS
+        return "merge" if attempt and not is_sightline(cwd) else ""
+    except Exception:  # never lose a call over this field
+        return ""
 
 
 # ------------------------------------------------------------------------------------------------ agent profiles

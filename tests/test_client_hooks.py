@@ -152,6 +152,21 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertIsNone(self.codex("mcp__ce-search__ce_search", {"query": "git push --force origin main"}))
         self.assertIsNone(self.codex("update_plan", {"plan": [{"step": HEAVY, "status": "pending"}]}))
 
+    def test_codex_blocks_merges_by_other_sessions_and_lets_sightline_through(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CE_ROLE", None)
+            for command in ("gh pr merge 5 --squash", "gh api -X PUT repos/o/r/pulls/5/merge"):
+                self.assert_denied(self.codex("Bash", {"command": command}), "merge-nur-sightline")
+            self.assert_denied(self.codex("mcp__github__merge_pull_request", {"pullNumber": 5}), "merge-nur-sightline")
+            self.assert_denied(self.codex("mcp__github__enable_pr_auto_merge", {"pullNumber": 5}),
+                               "merge-nur-sightline")
+            self.assertIsNone(self.codex("Bash", {"command": "git merge origin/main"}))
+            self.assertIsNone(self.codex("Bash", {"command": "gh pr view 5"}))
+            self.assertIsNone(self.codex("mcp__github__get_pull_request", {"pullNumber": 5}))
+            os.environ["CE_ROLE"] = "sightline"
+            self.assertIsNone(self.codex("Bash", {"command": "gh pr merge 5"}))
+            self.assertIsNone(self.codex("mcp__github__merge_pull_request", {"pullNumber": 5}))
+
     def test_claude_subagent_profiles_do_not_apply_to_codex_agents(self):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / ".claude").mkdir()
