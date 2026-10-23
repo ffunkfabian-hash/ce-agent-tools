@@ -283,6 +283,28 @@ class Entry(LoaderCase):
         again = self.run_ce("search", "serve")
         self.assertEqual(again.stderr, "", "a cache hit says nothing (stdout may be an MCP channel)")
 
+    def test_python_tools_leave_the_cache_intact_even_when_writable(self):
+        """Cloud probe 23.10.2026: as root the read-only cache did not stop Python, each call wrote __pycache__ and the
+        next call fetched again. Writable cache = root; two runs importing modules, the second must be a cache hit."""
+        files = dict(plugin_files("0.20.0"), **{"tools/ce": '#!/bin/sh\nexec python3 "$(dirname "$0")/ce_check.py" "$@"\n',
+                                                "tools/ce_check.py": "import ce_helper\nprint('ran', ce_helper.X)\n",
+                                                "tools/ce_helper.py": "X = 1\n"})
+        make_tarball(self.base / f"{COMMIT}.tar.gz", COMMIT, files)
+        first = self.run_ce("check")
+        self.assertEqual(first.stdout.strip(), "ran 1", first.stderr)
+        tools = self.base / "cache" / f"0.20.0-{COMMIT[:12]}" / "tools"
+        ce_loader.make_writable(tools.parent)
+        self.offline()
+        self.env["PYTHONPYCACHEPREFIX"] = str(self.base / "inherited")  # the tools get the loader's prefix instead
+        for _ in range(2):
+            again = self.run_ce("check")
+            self.assertEqual(again.stdout.strip(), "ran 1", again.stderr)
+            self.assertNotIn("verändert", again.stderr)
+        self.assertFalse((tools / "__pycache__").exists())
+        self.assertTrue(list((self.base / "cache" / ".pycache").rglob("ce_helper*.pyc")), "bytecode lands in the prefix")
+        self.assertFalse(list((self.base / "inherited").rglob("ce_helper*.pyc")))
+        self.assertIn("(cache,", self.run_ce("tools", "where").stdout)
+
     def test_tools_where_fetch_and_offline_exit_code(self):
         fetch = self.run_ce("tools", "fetch")
         self.assertEqual(fetch.returncode, 0, fetch.stderr)

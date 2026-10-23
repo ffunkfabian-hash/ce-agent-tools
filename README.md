@@ -306,6 +306,7 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **Schreibschutz hält root nicht auf:** Cloud-Sitzungen laufen als root; Python legte trotz schreibgeschütztem Cache `__pycache__` an, die Manifestprüfung verwarf den Cache bei jedem Aufruf. Bytecode mit `PYTHONPYCACHEPREFIX` außerhalb umleiten ([0.20](docs/versions/0.20.md)).
 - **Python von python.org hat am Mac keine Zertifikate:** `urllib` scheitert an jedem HTTPS-Abruf (`CERTIFICATE_VERIFY_FAILED`),
   solange niemand „Install Certificates.command“ ausgeführt hat; `curl` und `git` gehen. Der Lader versucht deshalb danach das
   System-Bündel `/etc/ssl/cert.pem` und zuletzt `git fetch`. GitHubs Tarball trägt den Commit im Pax-Kopf (`comment`) – so lässt

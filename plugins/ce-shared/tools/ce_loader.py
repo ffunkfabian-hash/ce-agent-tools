@@ -10,7 +10,8 @@ the repo). `./ce <command>` runs `ce <command>` of exactly those tools, taken fr
   1. CE_TOOLS (a plugins/ce-shared/tools folder) - used as it is, another version is named on stderr;
   2. the installed Claude Code plugin ce-shared@ce-agent-tools, when installed_plugins.json records this commit;
   3. the cache ~/.cache/ce-agent-tools/<version>-<commit12> (CE_TOOLS_CACHE), read-only, every file (also __pycache__)
-     checked against its manifest;
+     checked against its manifest; tools run from it with PYTHONPYCACHEPREFIX=<cache>/.pycache, so Python never
+     writes or reads bytecode inside a checked version (read-only does not stop root in cloud sessions);
   4. a download of plugins/ce-shared from the public repo into that cache: GitHub's tarball (the commit must be the
      archive's pax comment), else `git fetch` of the commit. A changed cache is fetched again, never used.
 Standard library only, messages on stderr (stdout stays the tool's, e.g. the MCP server of `./ce search serve`).
@@ -133,7 +134,7 @@ def cache_dir(env, version: str, commit: str) -> Path:
 
 def tree_files(folder: Path) -> dict[str, str]:
     """{relative path: sha256} of every file below `folder` except the manifest; links count as changes. __pycache__ counts
-    too: the cache is read-only, so Python never writes one there - a .pyc in it was planted and would run unchecked."""
+    too: tools run from the cache with PYTHONPYCACHEPREFIX (run_env), so a .pyc in it did not come from the loader."""
     files = {}
     for path in sorted(folder.rglob("*")):
         rel = path.relative_to(folder)
@@ -364,6 +365,17 @@ def pin(root: Path, config: dict, commit: str, env) -> int:
     return 0
 
 
+def run_env(env, source: str) -> dict:
+    """Environment for the tools. From the cache, Python keeps its bytecode in a folder next to the checked versions
+    (PYTHONPYCACHEPREFIX): the read-only mode does not stop root (cloud sessions), and a __pycache__ inside the cache
+    would fail its check on the next call - with the prefix Python neither writes nor reads one there. Always ours: an
+    inherited prefix could point into the cache."""
+    env = dict(env)
+    if source in ("cache", "download"):
+        env["PYTHONPYCACHEPREFIX"] = str(cache_root(env) / ".pycache")
+    return env
+
+
 def main(argv: list[str], env=None) -> int:
     env = os.environ if env is None else env
     here = Path(__file__).resolve().parent
@@ -380,12 +392,12 @@ def main(argv: list[str], env=None) -> int:
             tools, source = fetch_cache(config, env) if sub == "fetch" else resolve(root, config, env)
             print(f"{tools} ({source}, ce-agent-tools {plugin_version(tools) or '?'})")
             return 0
-        tools, _source = resolve(root, config, env)
+        tools, source = resolve(root, config, env)
     except LoaderError as error:
         say(str(error))
         return error.code
     os.chdir(root)
-    os.execvp("sh", ["sh", str(tools / "ce"), *argv])
+    os.execvpe("sh", ["sh", str(tools / "ce"), *argv], run_env(env, source))
     return 0  # not reached
 
 
