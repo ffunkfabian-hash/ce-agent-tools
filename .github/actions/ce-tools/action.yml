@@ -1,0 +1,58 @@
+# Werkzeuge aus ce-agent-tools für einen PR-Check (0.20 "Lodestar"). Holt genau den Commit aus .ce-repo.json › tools_version
+# (git fetch des Commits, kein Branch, kein Tag), prüft Commit und Version und setzt CE_TOOLS für die folgenden Schritte;
+# ./ce (der Lader) nimmt dann diesen Stand ohne Download. Der Checkout liegt in $RUNNER_TEMP, nicht im Arbeitsverzeichnis,
+# damit Prüfungen über das ganze Repo (z. B. Link-Prüfer mit rglob) ihn nicht mitlesen. Nur Standardbibliothek und git.
+#
+#   - uses: ffunkfabian-hash/ce-agent-tools/.github/actions/ce-tools@<derselbe Commit wie tools_version>
+#   - run: ./ce check
+name: ce-agent-tools
+description: Werkzeuge am festen Stand aus .ce-repo.json › tools_version bereitstellen (setzt CE_TOOLS)
+inputs:
+  repo:
+    description: Ordner mit .ce-repo.json
+    default: "."
+outputs:
+  tools:
+    description: Pfad zu plugins/ce-shared/tools des geholten Stands
+    value: ${{ steps.fetch.outputs.tools }}
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      env:
+        CE_PIN_REPO: ${{ inputs.repo }}
+        CE_ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        read -r version commit < <(python3 - "$GITHUB_ACTION_PATH/../../../plugins/ce-shared/tools" "$CE_PIN_REPO" <<'PY'
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        import ce_loader
+        try:
+            root = ce_loader.find_root(Path(sys.argv[2]).resolve())
+            print(*ce_loader.parse_pin(ce_loader.load_config(root)))
+        except ce_loader.LoaderError as error:
+            print(f"::error::{error}", file=sys.stderr)
+            sys.exit(error.code)
+        PY
+        )
+        dest="$RUNNER_TEMP/ce-agent-tools"
+        git init -q "$dest"
+        git -C "$dest" fetch -q --depth 1 "${CE_TOOLS_GIT:-https://github.com/ffunkfabian-hash/ce-agent-tools.git}" "$commit"
+        git -C "$dest" -c advice.detachedHead=false checkout -q FETCH_HEAD
+        if [ "$(git -C "$dest" rev-parse HEAD)" != "$commit" ]; then
+          echo "::error::ce-agent-tools: Checkout ist nicht $commit"; exit 1
+        fi
+        tools="$dest/plugins/ce-shared/tools"
+        have="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$tools/../.claude-plugin/plugin.json")"
+        if [ "$have" != "$version" ]; then
+          echo "::error::ce-agent-tools $commit hat Version $have, tools_version nennt $version"; exit 1
+        fi
+        if [ -n "$CE_ACTION_REF" ] && [ "$CE_ACTION_REF" != "$commit" ]; then
+          echo "::notice::ce-tools-Schritt von $CE_ACTION_REF, Werkzeuge von $commit (tools_version)"
+        fi
+        echo "CE_TOOLS=$tools" >> "$GITHUB_ENV"
+        echo "tools=$tools" >> "$GITHUB_OUTPUT"
+        echo "ce-agent-tools $version ($commit) in $tools"

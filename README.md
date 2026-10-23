@@ -81,7 +81,7 @@ Die `tools`-Zeile der Agenten-Datei legt fest, *welche* Werkzeuge ein Subagent h
 ## Werkzeuge
 
 Alle mit `--repo <Pfad>` (Standard: aktuelles Verzeichnis, gesucht wird `.ce-repo.json` aufwärts). Die Repos rufen sie über
-dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/plugins/ce-shared/tools`).
+`./ce`: ab 0.20 der Lader (unten, „Repos ohne Kopie“), in noch nicht umgestellten Repos die eingebettete Kopie.
 
 | Aufruf | Wirkung |
 |---|---|
@@ -105,7 +105,8 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_check.py quick\|full\|nightly [--verbose] [--no-targeted]` | Befehle aus `.ce-repo.json › check` (löst nacktes `python3`/`python` bevorzugt auf `.venv/bin/python` bzw. `~/.local/share/ce-agent-tools/venv/bin/python` auf); Ergebnis zuerst; `full` wiederholt nach Fehlern einmal `check.rerun_failed`; `nightly` = gebündelte Bildstufen einmal täglich auf `main` (0.5.0) |
 | `ce_lint.py [--strict]` | Längen (`limits`), AGENTS.md-Abschnitte, keine Notiz-Dateien im Hauptordner, Versionsbericht/CHANGELOG |
 | `ce_release.py [--execute] [--no-push] [--remote R]` | Trockenlauf Standard: prüft Version, CHANGELOG, sauberen Baum, Tag `<tag_prefix><Version>`, Branch `<branch_prefix><Version>`, Remote; mit `--execute` Tag, Branch, Push (nie `--force`) |
-| `ce_sync.py [--repo P\|--all] [--check]` | schreibt die Werkzeuge als eingebettete Kopie nach `<repo>/<tools_dir>` (Standard `scripts/ce_tools`, Kopfzeile + Prüfsumme); respektiert `hold` in `repos.json` (Schreibsperre ohne `--check`); `--check` meldet abweichende/editierte Kopien (auch in `ce_lint.py`). Die Repos rufen nur diese Kopien, nie das Plugin |
+| `ce_sync.py [--repo P\|--all] [--check]` | schreibt die Werkzeuge als eingebettete Kopie nach `<repo>/<tools_dir>` (Standard `scripts/ce_tools`, Kopfzeile + Prüfsumme); respektiert `hold` in `repos.json` (Schreibsperre ohne `--check`); `--check` meldet abweichende/editierte Kopien (auch in `ce_lint.py`). Repos mit `tools_version` (0.20) bekommen nur den Lader als `./ce`; `--check` meldet dort fehlenden/editierten Lader und ungültige `tools_version` als Fehler, älteren Lader, andere Plugin-Version und übrig gebliebene Kopie als Warnung. Löscht nie |
+| `ce_loader.py` = `./ce` eines Repos ohne Kopie (0.20) | lädt genau `.ce-repo.json › tools_version` (`{"version", "commit"}`) und führt `ce <Befehl>` daraus im Repo-Ordner aus: `CE_TOOLS` → installiertes Plugin mit diesem Commit → Cache `~/.cache/ce-agent-tools/<version>-<commit12>` (Manifest geprüft) → Download aus dem öffentlichen Repo (Tarball mit Commit im Pax-Kopf, sonst `git fetch` des Commits). Nur Standardbibliothek, Meldungen auf stderr; ohne Werkzeuge und Netz Exit 3 mit Abhilfe, ungültige Angabe Exit 2. `./ce tools where\|fetch\|pin <commit>` |
 | `ce_worktrees.py [--repos P…] [--active-minutes N] [--list\|--json]` | Tabelle (Standard) der Worktrees aller acht Repos (`repos.json`, `CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, `~/.codex/sessions`, laufende Prozesse), „NICHT LÖSCHEN“ |
 | `ce_tidy.py [--apply\|--nightly] [--json] [--category worktree\|befehl\|ausgabe\|beleg]` (`./ce tidy`) | Reste fertiger Sitzungen in allen Repos (Nexogen › Aufräumen nach dem Merge, 0.18): Probelauf-Tabelle Kategorie · Pfad · Größe · Grund · löschbar. Worktrees aus `ce_worktrees.collect` nur gemergt, sauber, ohne Sitzung (24 h) oder Prozess im Ordner und unter einer Worktree-Wurzel (`.claude/worktrees`, `~/.codex/worktrees`, `tidy.worktree_roots`) – Entfernen mit `git worktree remove` ohne `--force` + `prune`; repo-eigene Aufräumskripte (nur Skripte im Haupt-Checkout), Generator-Ausgaben (`keep`, `older_than_days`) und Belegablagen (`~/Library/Caches/*/videos`, aktuelle + vorige Version bleiben) aus `.ce-repo.json › tidy`. `--apply` verschiebt in den Papierkorb, nie `rm`; nie Haupt-Checkouts und deren `Library`, `~/Claude/_rettung`, „NICHT LÖSCHEN“, Repos mit `hold`. Der Nachtlauf räumt nur Einträge mit `"nightly": true` |
 
@@ -201,6 +202,32 @@ Aktualisieren: `autoUpdate` holt neue Versionen beim Start (0.16; Drittanbieter-
 und bei Abweichung `./ce plugins fix --apply` ([0.16](docs/versions/0.16.md)). Ohne Plugin fehlen die gemeinsamen Regeln – Codex und
 Antigravity bekommen denselben Wächter als User-Hook (unten), sonst befolgen sie die Regeln aus dem Text der `AGENTS.md`.
 
+### Repos ohne Kopie (0.20 „Lodestar“)
+
+Ein Repo braucht weder Plugin noch eingebettete Kopie: In `.ce-repo.json` steht der geprüfte Stand,
+
+```json
+"tools_version": {"version": "0.20.0", "commit": "<voller Commit von ce-agent-tools>"}
+```
+
+und `./ce` ist der Lader (`ce_loader.py`, von `ce_sync.py` mit Kopfzeile und Prüfsumme geschrieben – die einzige Datei aus
+ce-agent-tools im Repo). Umstellen: `./ce tools pin <commit>` (holt den Stand, setzt `tools_version`, entfernt `tools_dir` und schreibt dessen Lader
+als `./ce`; Commits vor 0.20 lehnt es ab), Kopie mit `git rm -r` entfernen, tote `.claude/agents`-Links mit, `.mcp.json` auf `["ce", "search", "serve"]`. Woher die Werkzeuge kamen: `./ce tools where`.
+Der Lader nimmt der Reihe nach `CE_TOOLS` (Cloud-Setup, Entwicklung; andere Version nur gemeldet), das installierte Plugin, wenn
+`installed_plugins.json` genau diesen Commit führt, den Cache (jede Datei gegen sein Manifest; ein veränderter Cache wird neu
+geholt, nie benutzt) und sonst den Download. Ohne Netz und ohne Treffer endet er mit Exit 3 und nennt die Abhilfe.
+
+PR-Check (`check.yml`) mit dem wiederverwendbaren Schritt – er holt denselben Commit nach `$RUNNER_TEMP`, prüft Commit und
+Version und setzt `CE_TOOLS`:
+
+```yaml
+- uses: ffunkfabian-hash/ce-agent-tools/.github/actions/ce-tools@<derselbe Commit wie tools_version>
+- run: ./ce check
+```
+
+Cloud-Sitzungen ohne ausgewähltes ce-agent-tools laden über den Lader aus dem öffentlichen Repo; mit ausgewähltem Checkout gilt
+dessen `CE_TOOLS`. Neuer Stand für ein Repo: `./ce tools pin <commit>` mit dessen nächster Version (Sync nach Bedarf), derselbe Commit im `uses:` des PR-Checks.
+
 ### Andere Clients (Codex, Antigravity)
 
 Die Adapter übersetzen nur Ein- und Ausgabe; entschieden wird in `guard.decide` mit denselben `rules/*.md` (Gleichstand
@@ -262,8 +289,8 @@ Optionale Test- und Bildabhängigkeiten (`Pillow`, `numpy`) stehen in `requireme
 Änderungen an den gemeinsamen Werkzeugen und Regeln (dieses Plugin; die globalen Regeln im Repo `~/Claude/cubeescape-nexogen`,
 auf das `~/.claude/CLAUDE.md` und `~/.claude/templates/` verlinken) macht
 die Übersichts-Sitzung des Nutzers oder eine Sitzung mit ausdrücklichem Auftrag dafür; Repo-Sitzungen melden
-Änderungswünsche, statt selbst zu ändern. Nach jeder Änderung im Plugin: `python3 plugins/ce-shared/tools/ce_sync.py --all`
-und `--check`, damit die eingebetteten Kopien der Repos nachziehen.
+Änderungswünsche, statt selbst zu ändern. Eingebettete Kopien ziehen nach Bedarf mit der nächsten Version des Repos nach
+(`ce_sync.py --repo …`, Nexogen › Werkzeugstopp und Sync nach Bedarf); Repos mit `tools_version` wechseln den Stand mit `./ce tools pin`.
 
 ## Fortsetzung „Crosscurrent“ (21.10.2026)
 
@@ -279,6 +306,10 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **Python von python.org hat am Mac keine Zertifikate:** `urllib` scheitert an jedem HTTPS-Abruf (`CERTIFICATE_VERIFY_FAILED`),
+  solange niemand „Install Certificates.command“ ausgeführt hat; `curl` und `git` gehen. Der Lader versucht deshalb danach das
+  System-Bündel `/etc/ssl/cert.pem` und zuletzt `git fetch`. GitHubs Tarball trägt den Commit im Pax-Kopf (`comment`) – so lässt
+  sich der Stand ohne Git prüfen ([0.20](docs/versions/0.20.md)).
 - **Sauber und gemergt heißt nicht „Rest“:** Der Nachtlauf-Checkout von Cube Escape (`~/Library/Caches/CubeEscape/nightly/checkout`) ist ein Worktree ohne Branch, sauber, ohne Commit über `main` – nach Git-Zustand allein löschbar. Aufräumen wählt deshalb zusätzlich über Worktree-Wurzeln; und `git worktree remove` ohne `--force` löscht ignorierte Dateien (Unity-`Library`, Builds) mit, der Probelauf nennt sie ([0.18](docs/versions/0.18.md)).
 - **Argparse hält Zeilen mit führendem Bindestrich für Optionen:** Positional-Argumente (`nargs="*"`) brechen bei Eingaben wie `---` oder `-b` ab; Optionen vor dem Parsen von den Textzeilen trennen und `--` voranstellen ([0.17](docs/versions/0.17.md)).
 - **Ein Plugin-Update erreicht nicht jede Installation:** Claude Code hält je Ordner (Checkout, jeder Worktree, auch Codex-Worktrees) einen Projekt-Eintrag auf der Version seiner Anlage; `claude plugin update` bewegt den Nutzer-Eintrag, `--scope project` traf die Worktree-Einträge nicht (6 von 9 blieben auf 0.11/0.13). Versionen nach jedem Rollout mit `./ce plugins check` prüfen, die Sitzung warnt beim Start selbst ([0.16](docs/versions/0.16.md)).
