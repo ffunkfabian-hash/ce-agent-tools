@@ -10,14 +10,15 @@ the repo). `./ce <command>` runs `ce <command>` of exactly those tools, taken fr
   1. CE_TOOLS (a plugins/ce-shared/tools folder) - used as it is, another version is named on stderr;
   2. the installed Claude Code plugin ce-shared@ce-agent-tools, when installed_plugins.json records this commit;
   3. the cache ~/.cache/ce-agent-tools/<version>-<commit12> (CE_TOOLS_CACHE), read-only, every file (also __pycache__)
-     checked against its manifest; tools run from it with PYTHONPYCACHEPREFIX=<cache>/.pycache, so Python never
+     checked against its manifest; tools run from it with PYTHONPYCACHEPREFIX=~/.cache/ce-agent-tools/.pycache (beside
+     the version folders, not inside one), so Python never
      writes or reads bytecode inside a checked version (read-only does not stop root in cloud sessions);
   4. a download of plugins/ce-shared from the public repo into that cache: GitHub's tarball (the commit must be the
      archive's pax comment), else `git fetch` of the commit. A changed cache is fetched again, never used.
 Standard library only, messages on stderr (stdout stays the tool's, e.g. the MCP server of `./ce search serve`).
 Without tools and without network it stops with exit 3 and says what to do; a wrong tools_version is exit 2.
 
-    ./ce tools where          folder and source of the tools (CE_TOOLS, plugin, cache, download)
+    ./ce tools [where]        folder and source of the tools (CE_TOOLS, plugin, cache, download) and the pin
     ./ce tools fetch          fill the cache for tools_version, even when CE_TOOLS or the plugin would serve (setup scripts)
     ./ce tools pin <commit>   set tools_version to this ce-agent-tools commit and write its loader as ./ce
 """
@@ -386,11 +387,14 @@ def main(argv: list[str], env=None) -> int:
             sub = argv[1] if len(argv) > 1 else ""
             if sub == "pin" and len(argv) == 3:
                 return pin(root, config, argv[2], env)
-            if sub not in ("where", "fetch"):
-                print("ce tools where | fetch | pin <commit>")
+            if sub not in ("", "where", "fetch"):
+                print("ce tools [where] | fetch | pin <commit>")
                 return 2
             tools, source = fetch_cache(config, env) if sub == "fetch" else resolve(root, config, env)
             print(f"{tools} ({source}, ce-agent-tools {plugin_version(tools) or '?'})")
+            if sub == "" and "tools_version" in config:
+                version, commit = parse_pin(config)
+                print(f"tools_version: {version} @ {commit}")
             return 0
         tools, source = resolve(root, config, env)
     except LoaderError as error:

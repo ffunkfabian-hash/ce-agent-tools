@@ -271,6 +271,17 @@ class OutputAndEvidenceTests(TidyCase):
         self.assertFalse((self.main / "out" / "a").exists())
         self.assertTrue((self.home / ".Trash" / "a" / "a.bin").exists())
 
+    def test_missing_standard_repos_are_skipped_but_named_ones_are_errors(self):
+        """Cloud probe 23.10.2026 (Agent Tools 0.20): without --repos the fallback Mac paths gave exit 1 in the cloud."""
+        args = ["--projects", str(self.projects), "--no-size", "--json"]
+        with mock.patch.object(ce_worktrees, "default_repos", return_value=[self.main, self.home / "nowhere"]):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(ce_tidy.main(args), 0)
+            self.assertEqual(json.loads(out.getvalue())["errors"], [])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ce_tidy.main(["--repos", str(self.home / "nowhere"), *args]), 1)
+
     def test_missing_trash_refuses(self):
         self.outputs(["a"])
         self.config({"paths": [{"root": "out"}]})
