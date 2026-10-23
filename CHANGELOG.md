@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.17.0 „Dashline“ – unveröffentlicht
+## 0.17.0 „Dashline“ – 2026-10-23
 
 - `./ce session say`: Zeilen mit führendem Bindestrich (`---`, `- Punkt`, `-1 °C`) und unbekannte Optionen nach dem Thema brechen nicht mehr mit Argparse-Fehlern (`unrecognized arguments`) ab. Bekannte Optionen (`--to`, `--name`, `--model`, `--agent`, `--repo`, `--dry-run`, `-h`) bleiben vor und nach den Zeilen erlaubt; `--` trennt wie gewohnt. Höchstens 10 Zeilen. [Version](docs/versions/0.17.md).
 
