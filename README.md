@@ -265,6 +265,7 @@ Koordination und Repo-Verzeichnis: [Nexogen](https://github.com/ffunkfabian-hash
 
 ## Erfahrungen
 
+- **Argparse hält Zeilen mit führendem Bindestrich für Optionen:** Positional-Argumente (`nargs="*"`) brechen bei Eingaben wie `---` oder `-b` ab; Optionen vor dem Parsen von den Textzeilen trennen und `--` voranstellen ([0.17](docs/versions/0.17.md)).
 - **Ein Plugin-Update erreicht nicht jede Installation:** Claude Code hält je Ordner (Checkout, jeder Worktree, auch Codex-Worktrees) einen Projekt-Eintrag auf der Version seiner Anlage; `claude plugin update` bewegt den Nutzer-Eintrag, `--scope project` traf die Worktree-Einträge nicht (6 von 9 blieben auf 0.11/0.13). Versionen nach jedem Rollout mit `./ce plugins check` prüfen, die Sitzung warnt beim Start selbst ([0.16](docs/versions/0.16.md)).
 - **Tests mit fester Uhrzeit laufen ab:** Die Wächter-Tests der 0.15 nutzten `2026-10-22T18:10Z` als Kommentarzeit und wurden 30 min danach rot, weil der Wächter ab der Reservierung bzw. dem Rückblick liest. Zeiten in Tests relativ zu jetzt setzen ([0.16](docs/versions/0.16.md)).
 - **Einen Vorab-Wächter nicht zur Shell ausbauen:** Ein statischer Shell-Leser für `commit-on-main` wuchs auf ~860 Zeilen, und jede unabhängige Prüfung fand neue Gegenbeispiele (Variablen, Funktionsumgebung, parallele Pipelines, gescheiterte Wechsel). Vorabprüfung auf statisch eindeutige Formen begrenzen, den Rest mit Hinweis an eine Laufzeitschranke (Git-Hook) geben und diese mit echten Shellläufen testen ([0.12](docs/versions/0.12.md)).
