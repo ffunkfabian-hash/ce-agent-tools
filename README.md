@@ -109,6 +109,19 @@ dünne Wrapper (`CE_TOOLS` oder `~/.claude/plugins/marketplaces/ce-agent-tools/p
 | `ce_worktrees.py [--repos P…] [--active-minutes N] [--list\|--json]` | Tabelle (Standard) der Worktrees aller acht Repos (`repos.json`, `CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, `~/.codex/sessions`, laufende Prozesse), „NICHT LÖSCHEN“ |
 | `ce_tidy.py [--apply\|--nightly] [--json] [--category worktree\|befehl\|ausgabe\|beleg]` (`./ce tidy`) | Reste fertiger Sitzungen in allen Repos (Nexogen › Aufräumen nach dem Merge, 0.18): Probelauf-Tabelle Kategorie · Pfad · Größe · Grund · löschbar. Worktrees aus `ce_worktrees.collect` nur gemergt, sauber, ohne Sitzung (24 h) oder Prozess im Ordner und unter einer Worktree-Wurzel (`.claude/worktrees`, `~/.codex/worktrees`, `tidy.worktree_roots`) – Entfernen mit `git worktree remove` ohne `--force` + `prune`; repo-eigene Aufräumskripte (nur Skripte im Haupt-Checkout), Generator-Ausgaben (`keep`, `older_than_days`) und Belegablagen (`~/Library/Caches/*/videos`, aktuelle + vorige Version bleiben) aus `.ce-repo.json › tidy`. `--apply` verschiebt in den Papierkorb, nie `rm`; nie Haupt-Checkouts und deren `Library`, `~/Claude/_rettung`, „NICHT LÖSCHEN“, Repos mit `hold`. Der Nachtlauf räumt nur Einträge mit `"nightly": true` |
 
+## Native Oberflächen (0.19 „Prismwake“)
+
+Die [IDE-Erweiterung](integrations/vscode/README.md) öffnet Ressourcen, Sitzungen und Kontingent sowie den
+Bildvergleich als lokale Webview-Panels in VS Code und kompatiblen Hosts, auch neben Claude Code im Editor.
+Die [Blender-Seitenleiste](integrations/blender/README.md) startet Profilprüfung, Rig-/Asset-Preflight und
+Turnaround mit Status und Abbruch. Beide Adapter nutzen die bestehenden Werkzeuge; Installation und Pfadwahl
+stehen in ihren Anleitungen. CLI und Browser bleiben verfügbar.
+
+`hold.reticle_socket` wird wie die übrigen Socket-Referenzen semantisch aufgelöst. Das Vorschau-Licht skaliert
+quadratisch mit dem Bounds-Radius (1400 W bei Radius 1), damit geometrisch gleiche Modelle verschiedener Größe
+vergleichbar beleuchtet sind. Keine neue Vertragsversion. [Prüfungen und Grenzen](docs/versions/0.19.md).
+Die automatische Cloud-Anbindung ist bewusst eingestellt.
+
 ## Glasshouse-Erweiterungen (0.13)
 
 Analyse vor dem Bau: Die 13 praktischen Versuche im Cube-Escape-Ökosystem bestätigen fünf vorhandene Wege
