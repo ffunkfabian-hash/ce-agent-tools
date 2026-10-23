@@ -104,7 +104,8 @@ class Resolution(LoaderCase):
         self.assertIn("geladen nach", err)
         self.assertFalse((tools.parent / "README.md").exists(), "only plugins/ce-shared is cached")
         self.assertEqual((tools / "ce_check.py").read_text(), "# v1\n")
-        self.assertFalse(os.access(tools / "ce_check.py", os.W_OK), "cache files are read-only")
+        modes = [p.stat().st_mode & 0o222 for p in (tools.parent, tools, tools / "ce_check.py")]
+        self.assertEqual(modes, [0, 0, 0], "cache read-only by mode (root may still write; see the bytecode tests)")
         self.assertTrue(os.access(tools / "ce", os.X_OK))
         self.offline()
         self.assertEqual(self.resolve()[:2], (tools, "cache"))
@@ -151,10 +152,11 @@ class Resolution(LoaderCase):
 
     def test_planted_bytecode_counts_as_a_change_and_python_writes_none(self):
         tools = self.resolve()[0]
+        ce_loader.make_writable(tools.parent)  # as root: the mode does not stop Python, the loader's prefix must
         imported = subprocess.run([sys.executable, "-c", f"import sys; sys.path.insert(0, {str(tools)!r}); import ce_check"],
-                                  capture_output=True, text=True, env=dict(self.env, PYTHONDONTWRITEBYTECODE=""))
+                                  capture_output=True, text=True, env=ce_loader.run_env(self.env, "cache"))
         self.assertEqual(imported.returncode, 0, imported.stderr)
-        self.assertFalse((tools / "__pycache__").exists(), "read-only cache: Python writes no bytecode")
+        self.assertFalse((tools / "__pycache__").exists(), "with the loader's environment Python writes no bytecode here")
         self.assertEqual(self.resolve()[1], "cache")
         ce_loader.make_writable(tools.parent)
         (tools / "__pycache__").mkdir()
@@ -327,6 +329,25 @@ class Entry(LoaderCase):
                 if path.is_file() and "__pycache__" not in path.parts}
         make_tarball(self.base / f"{COMMIT}.tar.gz", COMMIT, real)
         return real, ce_sync.plugin_version(PLUGIN / "tools")
+
+    def run_as_root(self, *args):
+        """The loader in a process whose cache stays writable - what root sees (Sightline, cloud as root 23.10.2026)."""
+        code = (f"import os, sys; sys.path.insert(0, {str(PLUGIN / 'tools')!r}); import ce_loader; "
+                f"ce_loader.make_read_only = lambda folder: None; os.chdir({str(self.repo)!r}); "
+                f"sys.exit(ce_loader.main({list(args)!r}))")
+        return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=self.env)
+
+    def test_pin_as_root_leaves_no_bytecode_in_the_cache(self):
+        """pin imports ce_sync of the pinned commit in its own process - with the loader's prefix like every tool."""
+        _, version = self.real_tarball()
+        done = self.run_as_root("tools", "pin", COMMIT)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        folder = self.base / "cache" / f"{version}-{COMMIT[:12]}"
+        self.assertEqual(list(folder.rglob("*.pyc")), [])
+        self.assertIsNone(ce_loader.cache_problem(folder, version, COMMIT))
+        self.assertTrue(list((self.base / "cache" / ".pycache").rglob("ce_sync*.pyc")))
+        self.offline()
+        self.assertIn("(cache,", self.run_as_root("tools", "where").stdout)
 
     def test_fetch_fills_the_cache_even_when_the_plugin_matches(self):
         self.install_plugin("0.20.0", COMMIT)

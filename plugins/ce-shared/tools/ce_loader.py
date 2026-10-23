@@ -360,6 +360,7 @@ def pin(root: Path, config: dict, commit: str, env) -> int:
     config.pop("tools_dir", None)
     (root / CONFIG_NAME).write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     sys.path.insert(0, str(tools))  # ce_sync of the pinned commit writes its own loader as ./ce
+    sys.pycache_prefix = run_env(env, "cache")["PYTHONPYCACHEPREFIX"]  # as for the tools: no bytecode in the cache (root)
     import ce_sync
     ce_sync.sync(root, config, tools)
     print(f"tools_version: {version} ({commit[:12]}), ./ce = Lader dieses Stands")
