@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.0 „Lodestar“ – unveröffentlicht
+
+- Lader statt eingebetteter Kopie (Entscheidung des Nutzers 23.10.2026): Ein Repo nennt in `.ce-repo.json` `tools_version` (`{"version", "commit"}`), sein `./ce` ist `ce_loader.py` (von `ce_sync.py` mit Prüfsumme geschrieben). Der Lader nimmt `CE_TOOLS`, sonst das installierte Plugin mit genau diesem Commit (`installed_plugins.json`), sonst den Cache `~/.cache/ce-agent-tools/<version>-<commit12>` (jede Datei gegen das Manifest, schreibgeschützt), sonst lädt er `plugins/ce-shared` aus dem öffentlichen Repo (Tarball, Commit im Pax-Kopf geprüft; Rückfall System-Zertifikate, dann `git fetch`). Aus dem Cache laufen die Werkzeuge (und der `ce_sync`-Import von `tools pin`) mit `PYTHONPYCACHEPREFIX` daneben (Cloud-Probe: root schrieb sonst `__pycache__` in den Cache, jeder Aufruf lud neu). Ohne Netz Exit 3 mit Abhilfe. `./ce tools where|fetch|pin <commit>` (`pin` schreibt den Lader des gepinnten Stands, auch aus einem Repo mit Kopie).
+- PR-Check: wiederverwendbarer Schritt `.github/actions/ce-tools` holt denselben Commit nach `$RUNNER_TEMP`, prüft Commit und Version, setzt `CE_TOOLS`. `ce_sync`/`ce_lint` verstehen Repos ohne Kopie (fehlender/editierter Lader und ungültiger Pin = Fehler; älterer Lader, andere Plugin-Version, übrige Kopie, tote `.claude/agents`-Links = Warnung), `ce_nightly` ruft dort `./ce check --nightly`.
+- `./ce tidy` ohne `--repos` überspringt Standard-Repos, die es auf dem Rechner nicht gibt (Cloud: Exit 1 wegen fester Mac-Pfade); ausdrücklich genannte fehlende Repos bleiben ein Fehler.
+- Erstes Repo: Motiongen 0.13 „Lightfoot“. 28 neue Tests (Lader, auch unter simuliertem root, Tidy, CI-Schritt, Umstellung aus einer Kopie, Sync/Lint ohne Kopie). [Version](docs/versions/0.20.md).
+
 ## 0.19.0 „Prismwake“ – unveröffentlicht
 
 - Vorbereitete Plugin-Nacharbeiten: semantische Referenzprüfung für `hold.reticle_socket`, Radius²-Flächenlicht und skalierte Clip-Grenzen; bestehende Vertragsformate bleiben erhalten, ungültige `reticle_socket`-Ziele werden nun abgewiesen. Turnaround-Baselines aus ≤0.18 müssen bei Vergleichen mit 0.19 für Radius ≠ 1 neu erzeugt werden.

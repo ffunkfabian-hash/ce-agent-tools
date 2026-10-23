@@ -8,6 +8,7 @@
 - version report standard ("docs.versions" folder): a report whose file name contains the current version or is
   <major>.<minor>.md - warning when the folder exists without one (no folder: silent, CHANGELOG-only repo); CHANGELOG ("docs.changelog") mentions the current version - warning when not.
 - embedded tool copies (<tools_dir>, ce_sync.py): missing/edited = error, older than the plugin = warning.
+- repos without a copy (tools_version, 0.20): malformed pin or missing/edited ./ce loader = error, older = warning.
 Output: result line first, then one line per finding. Exit code 1 on errors (--strict: warnings too), 2 when the
 configuration is unusable.
 """
@@ -102,7 +103,7 @@ def check_versions(root: Path, config: dict) -> list[tuple[str, str]]:
 
 
 def check_embedded(root: Path, config: dict) -> list[tuple[str, str]]:
-    """Embedded tool copies (ce_sync.py): edited or missing = error, older than the plugin = warning."""
+    """Embedded tool copies or the ./ce loader (ce_sync.py): edited or missing = error, older than the plugin = warning."""
     import ce_sync
     return ce_sync.check(root, config, ce_sync.source_dir())
 

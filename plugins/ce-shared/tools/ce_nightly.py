@@ -55,6 +55,14 @@ def has_nightly(root: Path) -> bool:
         return False
 
 
+def uses_loader(root: Path) -> bool:
+    try:
+        import json
+        return "tools_version" in json.loads((root / ".ce-repo.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+
 def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
     tools = root / "Tools" / "ce_tools" / "ce_check.py"
     if not tools.is_file():
@@ -62,6 +70,8 @@ def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
     if not tools.is_file():
         tools = root / "tools" / "ce_tools" / "ce_check.py"
     command = [sys.executable, str(tools if tools.is_file() else HERE / "ce_check.py"), "nightly", "--repo", str(root)]
+    if uses_loader(root):  # 0.20: no copy - ./ce loads the pinned tools_version
+        command = [sys.executable, str(root / "ce"), "check", "--nightly"]
     log(f"=== {root.name}: {' '.join(command)}")
     if dry_run:
         return "dry-run", 0.0

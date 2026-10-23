@@ -561,7 +561,10 @@ def run(argv: list[str], out=print) -> int:
     parser.add_argument("--projects", default=str(Path.home() / ".claude" / "projects"), help="Claude Code session folder")
     parser.add_argument("--no-size", action="store_true", help="skip the sizes (faster)")
     args = parser.parse_args(argv)
-    repos = [Path(r).expanduser() for r in args.repos] if args.repos else default_repos()
+    if args.repos:
+        repos = [Path(r).expanduser() for r in args.repos]
+    else:  # standard repos missing on this machine (cloud: only the session's repo) are skipped, not errors
+        repos = [r for r in default_repos() if r.is_dir()]
     rows, errors, ctx = collect(repos, tuple(args.category or CATEGORIES), Path(args.projects), args.base,
                                 args.active_hours * 60, sizes=not args.no_size)
     if args.apply or args.nightly:
