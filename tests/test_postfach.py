@@ -269,8 +269,59 @@ class ReserveAnnounces(unittest.TestCase):
                          ["cube-escape", "cube-escape", "nexogen", "toolgen", "ce-agent-tools"])
 
 
+class SayDashlineTests(unittest.TestCase):
+    """0.17.0 Dashline: lines starting with '-' (e.g. '---', '- Punkt', '-1 °C') are text lines, not options."""
+
+    def run_say(self, *args, dry_run=True):
+        cmd = [sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--name", "Tester · Mac"]
+        if dry_run:
+            cmd.append("--dry-run")
+        cmd.extend(args)
+        env = dict(os.environ, CE_MAILBOX="0")
+        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    def test_triple_dash_as_line(self):
+        res = self.run_say("Thema", "---")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("\n---\n", res.stdout)
+
+    def test_dash_punkt_as_line(self):
+        res = self.run_say("Thema", "- Punkt")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("\n- Punkt\n", res.stdout)
+        res_dash_b = self.run_say("Thema", "-b")
+        self.assertEqual(res_dash_b.returncode, 0, res_dash_b.stderr)
+        self.assertIn("\n-b\n", res_dash_b.stdout)
+
+    def test_mixed_options_and_dash_line(self):
+        # Options allowed before and after lines; dry-run after lines as specified
+        res = subprocess.run([sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--name", "Tester · Mac",
+                              "T", "a", "- b", "--to", "alle", "--dry-run"],
+                             capture_output=True, text=True, env=dict(os.environ, CE_MAILBOX="0"))
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Tester · Mac → alle: T\n", res.stdout)
+        self.assertIn("\na\n- b\n", res.stdout)
+
+    def test_double_dash_before_lines(self):
+        res = self.run_say("Thema", "--", "---")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("\n---\n", res.stdout)
+
+    def test_unknown_option_remains_line_not_option(self):
+        res = self.run_say("Thema", "--xyz")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("\n--xyz\n", res.stdout)
+
+    def test_eleventh_line_rejected_as_before(self):
+        eleven = [f"line {i}" for i in range(1, 12)]
+        res = self.run_say("Thema", *eleven)
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("höchstens 10 Zeilen", res.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 class SyncCompleteness(unittest.TestCase):

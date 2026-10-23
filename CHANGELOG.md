@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.16.0 „Tidemark“ – unveröffentlicht
+## 0.17.0 „Dashline“ – unveröffentlicht
+
+- `./ce session say`: Zeilen mit führendem Bindestrich (`---`, `- Punkt`, `-1 °C`) und unbekannte Optionen nach dem Thema brechen nicht mehr mit Argparse-Fehlern (`unrecognized arguments`) ab. Bekannte Optionen (`--to`, `--name`, `--model`, `--agent`, `--repo`, `--dry-run`, `-h`) bleiben vor und nach den Zeilen erlaubt; `--` trennt wie gewohnt. Höchstens 10 Zeilen. [Version](docs/versions/0.17.md).
+
+## 0.16.0 „Tidemark“ – 2026-10-23
 
 - `./ce plugins check|fix` (`ce_plugins.py`): hält die Claude-Code-Installationen von ce-shared auf einer Version. `check` listet die Einträge aus `installed_plugins.json` (Exit 1 bei Abweichung), `fix` setzt veraltete Einträge (jeder Bereich) auf die neueste Installation mit vorhandenen Dateien und entfernt Einträge verschwundener Worktrees – Probelauf, mit `--apply` Sicherung und atomares Schreiben, `--user-only` lässt nur die Nutzer-Installation.
 - Der SessionStart-Hook vergleicht das geladene ce-shared mit der neuesten Version auf dem Rechner (Marketplace-Klon, alle Installationen) und warnt sichtbar (`systemMessage`). Einbinden mit `"autoUpdate": true` am Marketplace-Eintrag.

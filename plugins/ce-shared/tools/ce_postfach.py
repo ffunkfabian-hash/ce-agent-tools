@@ -164,6 +164,56 @@ def own_name(repo_dir: Path, agent: str = "auto") -> str:
     return sender_from_branch(sn_git(repo_dir, "branch", "--show-current"), abbrev, place)
 
 
+KNOWN_SAY_VALUED = {"--to", "--name", "--model", "--agent", "--repo"}
+KNOWN_SAY_FLAGS = {"--dry-run", "-h", "--help"}
+
+
+def normalize_say_argv(argv: list[str]) -> list[str]:
+    """Splits arguments for `say` into known options and positional topic/lines.
+
+    Everything after the topic that is not a known option (--to, --name, --model,
+    --agent, --repo, --dry-run, -h) becomes a message line, even '---', '- Punkt',
+    or unknown options like '--xyz'. Options are allowed before and after lines.
+    '--' stops option parsing so everything following is positional.
+    """
+    if "say" not in argv:
+        return argv
+    idx = argv.index("say")
+    prefix = argv[:idx + 1]
+    say_args = argv[idx + 1:]
+    opts = []
+    positionals = []
+    in_post_double_dash = False
+    i = 0
+    while i < len(say_args):
+        arg = say_args[i]
+        if in_post_double_dash:
+            positionals.append(arg)
+            i += 1
+        elif arg == "--":
+            in_post_double_dash = True
+            i += 1
+        elif arg in KNOWN_SAY_FLAGS:
+            opts.append(arg)
+            i += 1
+        elif arg in KNOWN_SAY_VALUED:
+            opts.append(arg)
+            if i + 1 < len(say_args):
+                opts.append(say_args[i + 1])
+                i += 2
+            else:
+                i += 1
+        elif any(arg.startswith(f"{kv}=") for kv in KNOWN_SAY_VALUED):
+            opts.append(arg)
+            i += 1
+        else:
+            positionals.append(arg)
+            i += 1
+    if positionals:
+        return prefix + opts + ["--"] + positionals
+    return prefix + opts
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -178,6 +228,9 @@ def main(argv=None) -> int:
     say.add_argument("--dry-run", action="store_true", help="nur anzeigen, nicht senden")
     who = sub.add_parser("who", help="angemeldete Sitzungen der letzten Tage")
     who.add_argument("--days", type=float, default=3)
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = normalize_say_argv(list(argv))
     args = parser.parse_args(argv)
 
     if args.command == "who":
