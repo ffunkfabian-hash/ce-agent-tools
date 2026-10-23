@@ -101,6 +101,19 @@ class DeviceGraphTests(unittest.TestCase):
             doc = device(); doc['colliders'][0]['part'] = bad
             self.assertTrue(ce_contract.device_references(doc))
 
+    def test_reticle_socket_resolves_in_existing_graph_for_both_device_formats(self):
+        for version in (4, 5):
+            for target in (None, 'Socket_Hand', 'Bolt', 'Missing', False, 42, [], {}):
+                with self.subTest(version=version, target=target):
+                    doc = device()
+                    doc['format'] = version
+                    doc['hold']['reticle_socket'] = target
+                    errors = self.check(doc)
+                    if target is None or target in ('Socket_Hand', 'Bolt'):
+                        self.assertEqual(errors, [])
+                    else:
+                        self.assertTrue(any('$.hold.reticle_socket' in error for error in errors), errors)
+
     def test_long_graph_does_not_depend_on_python_recursion_depth(self):
         doc = device()
         doc['nodes'].extend({'name': f'N{i}', 'parent': 'Device' if i == 0 else f'N{i - 1}'} for i in range(1500))

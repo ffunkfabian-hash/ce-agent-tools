@@ -1,0 +1,39 @@
+{
+  "name": "ce-prism",
+  "displayName": "Cube Escape Prism",
+  "description": "Lokale Evidence- und Ressourcen-Panels mit den bestehenden ce-shared-Werkzeugen.",
+  "version": "0.19.0",
+  "publisher": "cubeescape",
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "extensionKind": ["ui"],
+  "capabilities": {
+    "virtualWorkspaces": false,
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Panels öffnen sich erst nach Workspace Trust; vorher wird kein Backend ausgeführt.",
+      "restrictedConfigurations": ["cePrism.toolsPath", "cePrism.pythonPath"]
+    }
+  },
+  "contributes": {
+    "commands": [
+      { "command": "cePrism.dashboard", "title": "CE Prism: Ressourcen, Sitzungen und Kontingent" },
+      { "command": "cePrism.evidence", "title": "CE Prism: Bilder vergleichen" }
+    ],
+    "configuration": {
+      "title": "CE Prism",
+      "properties": {
+        "cePrism.toolsPath": {
+          "type": "string", "default": "", "scope": "machine",
+          "description": "Absoluter Pfad zu plugins/ce-shared/tools. Leer: Quellbaum dieser Extension. Nur lokal vertrauenswürdigen Backend-Code verwenden."
+        },
+        "cePrism.pythonPath": {
+          "type": "string", "default": "python3", "scope": "machine",
+          "description": "Lokaler Python-Interpreter als Programmname oder absoluter Pfad, ohne Argumente; für Bildvergleiche mit Pillow und NumPy."
+        }
+      }
+    }
+  }
+}
