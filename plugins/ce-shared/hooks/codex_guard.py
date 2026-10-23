@@ -12,6 +12,9 @@ hookSpecificOutput.additionalContext (model) plus systemMessage (UI), nothing wh
 "continue" or "stopReason" - Codex treats those as a failed hook and runs the tool anyway. Exit code always 0.
 
 Install as a user hook (~/.codex/hooks.json, matcher "^(Bash|apply_patch)$"); Codex runs it only after /hooks trust.
+0.21: Codex has no Stop hook, so new Postfach messages of a reserved worktree come along as additionalContext of this hook
+(postfach_inbox.pending_text: file reads only, a detached read at most every three minutes; nothing when there is no message).
+It is no rule and never blocks; a broken inbox only means no hint.
 """
 import json
 import os
@@ -24,6 +27,11 @@ try:
     import client_adapter  # noqa: E402
 except Exception as error:  # a runner that does not load must still answer the client (fail open)
     client_adapter, LOAD_ERROR = None, error
+try:
+    import postfach_inbox  # noqa: E402
+except Exception:  # noqa: BLE001 - no inbox, no hint
+    postfach_inbox = None
+MAIL = {"cwd": ""}
 
 PATCH_MARKERS = {"*** Add File: ": "add", "*** Update File: ": "update", "*** Delete File: ": "delete",
                  "*** Move to: ": "move"}
@@ -69,6 +77,7 @@ def normalize(payload):
     tool, data = payload.get("tool_name", ""), payload.get("tool_input")
     data = data if isinstance(data, dict) else {}
     cwd = data.get("workdir") or payload.get("cwd") or os.getcwd()
+    MAIL["cwd"] = cwd
     if tool == "Bash":
         return [{"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": cwd,
                  "tool_input": {"command": shell_text(data.get("command"))}}]
@@ -84,7 +93,19 @@ def normalize(payload):
     return []
 
 
+def mail_hint(cwd):
+    if postfach_inbox is None or not cwd:
+        return ""
+    try:
+        return postfach_inbox.pending_text(cwd)
+    except Exception:  # noqa: BLE001 - the guard answer must not depend on the Postfach
+        return ""
+
+
 def render(blocks, warnings):
+    note = "" if blocks else mail_hint(MAIL["cwd"])
+    if note:
+        warnings = [*warnings, note]
     if blocks:
         message = "\n\n".join(blocks)
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
