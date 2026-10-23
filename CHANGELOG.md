@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0 „Sweepline“ – unveröffentlicht
+
+- `./ce tidy` (`ce_tidy.py`) setzt die Regel „Aufräumen nach dem Merge“ um: Probelauf-Tabelle der Reste fertiger Sitzungen aller Repos (Worktrees, repo-eigene Aufräumbefehle, Generator-Ausgaben, Belegablagen), `--apply` räumt über den Papierkorb bzw. `git worktree remove` ohne `--force`, `--json` für Maschinen. Schutz: gemergt, sauber, ohne Sitzung/Prozess, innerhalb der Wurzeln; nie Haupt-Checkouts und deren `Library`, `_rettung`, „NICHT LÖSCHEN“, Repos mit `hold`; aktuelle und vorige Belegversion bleiben.
+- `ce_nightly.py` ruft danach `ce_tidy --nightly`: entfernt nur Kategorien mit `"nightly": true` in `.ce-repo.json › tidy`, der Rest steht als Probelauf im Bericht; ein Fehler macht die Nacht nicht rot. Ohne `tidy`-Eintrag nur Worktrees und Belege.
+- Anlass: am Mac 41 → 180 GiB frei nach Handaufräumen. 35 neue Tests, jede Schutzregel mit Gegenbeweis (32 Mutationen, alle erkannt). [Version](docs/versions/0.18.md).
+
 ## 0.17.0 „Dashline“ – 2026-10-23
 
 - `./ce session say`: Zeilen mit führendem Bindestrich (`---`, `- Punkt`, `-1 °C`) und unbekannte Optionen nach dem Thema brechen nicht mehr mit Argparse-Fehlern (`unrecognized arguments`) ab. Bekannte Optionen (`--to`, `--name`, `--model`, `--agent`, `--repo`, `--dry-run`, `-h`) bleiben vor und nach den Zeilen erlaubt; `--` trennt wie gewohnt. Höchstens 10 Zeilen. [Version](docs/versions/0.17.md).
