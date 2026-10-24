@@ -371,3 +371,93 @@ class Resources(LockCase):
             self.assertIsNotNone(heavy.skipped(resource="unity"))  # same resource: inside the parent
             with self.assertRaisesRegex(ValueError, "legacy shared lock"):
                 heavy.skipped()  # a global step cannot upgrade a resource lock
+
+
+class Nametag(LockCase):
+    """0.24 "Nametag": status names who holds a lock (session, branch, client, running time, command) and who waits -
+    read at status time, so holder lines of older tool versions are named too."""
+
+    def repo(self, name=None, model=None, reserved_at=None):
+        """A git checkout on branch claude/ref-0.14-eyebox, with a reservation when `name` is given."""
+        path = self.base / "wt"
+        path.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q", "-b", "claude/ref-0.14-eyebox", str(path)], check=True)
+        if name:
+            record = {"name": name, "branch": "claude/ref-0.14-eyebox", "reserved_at": reserved_at or time.time()}
+            if model:
+                record["model"] = model
+            (path / ".git" / "ce-session.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        return str(path)
+
+    def test_process_table_parses_ps_and_survives_failures(self):
+        fake = mock.Mock(return_value=mock.Mock(stdout="  1     0 /sbin/launchd\n 42     1 node /usr/local/bin/claude\n"
+                                                       "garbage\n 43    42\n"))
+        self.assertEqual(heavy.process_table(fake), {1: (0, "/sbin/launchd"), 42: (1, "node /usr/local/bin/claude"),
+                                                     43: (42, "")})
+        self.assertEqual(heavy.process_table(mock.Mock(side_effect=OSError("no ps"))), {})
+
+    def test_client_is_the_first_known_ancestor(self):
+        table = {10: (1, "/Applications/Antigravity.app/Contents/MacOS/Antigravity"), 20: (10, "zsh -l"),
+                 30: (20, "node /opt/homebrew/bin/codex exec"), 40: (30, "python3 heavy_lock.py run")}
+        self.assertEqual(heavy.client_of(40, table), "Codex")
+        self.assertEqual(heavy.client_of(20, table), "Antigravity")
+        self.assertIsNone(heavy.client_of(99, table))
+        self.assertIsNone(heavy.client_of(5, {5: (6, "a"), 6: (5, "b")}), "a cycle ends")
+
+    def test_children_nearest_first(self):
+        table = {7: (1, "heavy_lock run"), 8: (7, "sh -c blender"), 9: (8, "blender -b scene.blend"), 11: (9, "worker")}
+        self.assertEqual(heavy.children_of(7, table), ["sh -c blender", "blender -b scene.blend"])
+        self.assertEqual(heavy.children_of(11, table), [])
+
+    def test_session_from_the_reservation_else_the_branch(self):
+        self.assertEqual(heavy.session_of(None), {})
+        self.assertEqual(heavy.session_of(self.repo()), {"branch": "claude/ref-0.14-eyebox"})
+        found = heavy.session_of(self.repo("REF 0.14 „Eyebox“", "Opus 5.5 high"))
+        self.assertEqual(found, {"branch": "claude/ref-0.14-eyebox", "name": "REF 0.14 „Eyebox“", "model": "Opus 5.5 high"})
+        old = heavy.session_of(self.repo("Old", reserved_at=time.time() - 4 * 24 * 3600))
+        self.assertTrue(old["stale"])
+        self.assertEqual(heavy.session_of(str(self.base / "missing")), {})
+
+    def test_status_names_session_branch_command_and_children(self):
+        checkout = self.repo("REF 0.14 „Eyebox“", "Opus 5.5 high")
+        me = os.getpid()
+        table = {me: (1, "python3 heavy_lock.py run --resource gpu -- blender -b"), me + 1: (me, "blender -b ref.blend")}
+        self.assertEqual(heavy.status_lines(table), ["shared   free", "unity    free", "blender  free", "gpu      free"])
+        with heavy.held("Blender", checkout, resource="gpu"):
+            lines = heavy.status_lines(table)
+        text = "\n".join(lines)
+        self.assertTrue(lines[0].startswith("shared   barrier, held exclusively by the gpu run"), lines[0])
+        self.assertIn("gpu      Blender (PID %d, %s" % (me, checkout), text)
+        self.assertIn("session: REF 0.14 „Eyebox“ (Opus 5.5 high) · branch claude/ref-0.14-eyebox; running 0 min", text)
+        self.assertIn("command: python3 heavy_lock.py run --resource gpu -- blender -b", text)
+        self.assertIn("runs:    blender -b ref.blend", text)
+
+    def test_older_holder_lines_and_unknown_pids(self):
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        path = Path(heavy.lock_path("unity"))
+        with path.open("a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            handle.write(json.dumps({"pid": 999999, "what": "regression", "checkout": "/nowhere", "since": "2026-10-24 21:23:26"}))
+            handle.flush()
+            text = "\n".join(heavy.status_lines({1: (0, "init")}))
+            self.assertIn("unity    regression (PID 999999, /nowhere, since 2026-10-24 21:23:26)", text)
+            self.assertIn("no reserved session", text)
+            self.assertIn("PID 999999 is not in the process table", text)
+            handle.seek(0); handle.truncate(); handle.write("legacy holder"); handle.flush()
+            self.assertEqual(heavy.details("unity", {}), [], "a foreign line names no details")
+            self.assertIn("unity    legacy holder", heavy.status_lines({}))
+
+    def test_waiting_runs_are_listed_under_their_resource(self):
+        import ce_lock_status
+        checkout = self.repo("DS Patch release", "Opus 5.5 high")
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        record = ce_lock_status.announce(heavy.lock_path("blender"), "blender", "build_all.py --release", checkout,
+                                         heavy.lock_path())
+        self.assertIsNotNone(record, "telemetry needs ps to read the start time of this process")
+        self.addCleanup(ce_lock_status.forget, record)
+        lines = heavy.status_lines({})
+        index = lines.index("blender  free")
+        self.assertTrue(lines[index + 1].strip().startswith("waiting: build_all.py --release – session: DS Patch release "
+                                                            "(Opus 5.5 high) · branch claude/ref-0.14-eyebox, since "), lines)
+        self.assertTrue(lines[index + 1].endswith(" UTC"))
+        self.assertNotIn("waiting", "\n".join(lines[:index]), "only under its own resource")

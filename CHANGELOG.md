@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.24.0 „Nametag“ – unveröffentlicht
+
+- `heavy_lock.py status` (`./ce lock status`) sagt, **wer** eine Sperre hält, für `shared`, `unity`, `blender` und `gpu`: Sitzung mit Modell aus der Reservierung des Checkouts (`<git-dir>/ce-session.json`, ältere als 3 Tage markiert), sonst „no reserved session“ mit Branch; Client aus der Kette der Elternprozesse (Claude Code, Codex, Antigravity, Gemini, Cursor, Terminal); Laufzeit; Befehl des Halters und seine Kindprozesse; darunter die Wartenden mit Telemetrie. `shared` heißt bei einem `gpu`-Lauf „barrier, held exclusively by the gpu run“ statt „unknown“. Alles zur Abfragezeit gelesen: auch Halterzeilen älterer Werkzeugstände werden benannt, Schreiber und Sperrvertrag unverändert; Fehler lassen nur den Teil weg. Anlass: `gpu Blender (PID 65733, …/cubeescape-nexogen)` ohne Hinweis auf die Sitzung. 7 neue Tests. [Version](docs/versions/0.24.md).
+
 ## 0.23.0 „Modelline“ – unveröffentlicht
 
 - `say` ohne `--model` findet die Modellzeile jetzt auch, wenn die Reservierung älter als 3 Tage ist (die Sitzungsdatei zählt dann nicht mehr als aktuell, ihr Modell galt bisher nicht mehr), und fällt sonst auf die Modellzeile der eigenen Anmeldung im Postfach zurück (Reservierung eines älteren eingebetteten Werkzeugstands speicherte kein Modell). Ohne Fund bleibt der Hinweis „ohne Modellzeile“. `remember` behält Modell und Auftrag, wenn derselbe Name ohne `--model` erneut geschrieben wird. Anlass: Meldungen mit „Modell und Aufwand: nicht angegeben“ trotz Anmeldung mit Modell (CE 0.115, TG 0.26, TG-Patches). 5 neue Tests (`tests/test_postfach_modelline.py`). [Version](docs/versions/0.23.md).
