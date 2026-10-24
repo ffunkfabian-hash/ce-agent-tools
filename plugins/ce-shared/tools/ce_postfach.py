@@ -181,10 +181,36 @@ def fetch(since: str, repo: str = REPO, issue: int = MAILBOX) -> list:
     return json.loads(result.stdout.replace("][", ",") or "[]")
 
 
-def own_model(repo_dir: Path) -> str:
-    """The model the reservation named (0.21), so later messages keep the model line without `--model`."""
+def own_model(repo_dir: Path, sender: str = "", fetcher=None) -> str:
+    """The model of this session for messages without `--model`: the fresh reservation (0.21); 0.23: else the worktree's session file
+    of the same name whatever its age, else the model line of the session's own announcement in the Postfach (reservations by an
+    older embedded tool copy stored none; after three days the reservation no longer counts as current). Empty if none is known."""
     _folder, saved = am.reservation(str(repo_dir), switch=False)
-    return str(saved.get("model") or "")
+    if saved.get("model"):
+        return str(saved["model"])
+    folder = am.git_dir(str(repo_dir))[0]
+    old = am.read_json(folder / sn.SESSION_FILE) if folder else {}
+    if old.get("model") and (not sender or old.get("name") == sender):
+        return str(old["model"])
+    if sender and on_github(repo_dir):
+        return announced_model(sender, fetcher or fetch)
+    return ""
+
+
+def announced_model(sender: str, fetcher=fetch, days: float = 30) -> str:
+    """The model line of `sender`'s latest announcement ("angemeldet"); empty if unreadable or the announcement had none."""
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        comments = fetcher(since)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError):
+        return ""
+    key, model = am.normalize(recipient_name(sender)), ""
+    for item in sorted(comments, key=lambda c: c["id"]):
+        head = head_of(item.get("body", ""))
+        lines = item.get("body", "").splitlines()
+        if head and am.normalize(recipient_name(head[0])) == key and head[2].lower().startswith(ANNOUNCED) and len(lines) > 1:
+            model = "" if lines[1].strip().startswith("Modell und Aufwand: nicht angegeben") else lines[1].strip()
+    return model
 
 
 def own_name(repo_dir: Path, agent: str = "auto") -> str:
@@ -289,7 +315,7 @@ def main(argv=None) -> int:
     if not sender:
         print("Sitzungsname unbekannt (Branch ohne Version/Patch): --name \"<Repo> <Version> „<Name>“ · <Ort>\" angeben", file=sys.stderr)
         return 2
-    model = args.model or own_model(args.repo)
+    model = args.model or own_model(args.repo, sender)
     lines = list(args.lines)
     text = "\n".join([args.topic, *lines])
     to = args.to or [am.COORDINATOR]
