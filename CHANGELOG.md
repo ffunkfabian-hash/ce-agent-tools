@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.0 „Modelline“ – unveröffentlicht
+
+- `say` ohne `--model` findet die Modellzeile jetzt auch, wenn die Reservierung älter als 3 Tage ist (die Sitzungsdatei zählt dann nicht mehr als aktuell, ihr Modell galt bisher nicht mehr), und fällt sonst auf die Modellzeile der eigenen Anmeldung im Postfach zurück (Reservierung eines älteren eingebetteten Werkzeugstands speicherte kein Modell). Ohne Fund bleibt der Hinweis „ohne Modellzeile“. `remember` behält Modell und Auftrag, wenn derselbe Name ohne `--model` erneut geschrieben wird. Anlass: Meldungen mit „Modell und Aufwand: nicht angegeben“ trotz Anmeldung mit Modell (CE 0.115, TG 0.26, TG-Patches). 5 neue Tests (`tests/test_postfach_modelline.py`). [Version](docs/versions/0.23.md).
+
 ## 0.22.0 „Tollgate“ – unveröffentlicht
 
 - Neue Regel `merge-nur-sightline` (Entscheidung des Nutzers 23.10.2026, Entscheidung 38): Fachsitzungen mergen nie selbst. Blockiert `gh pr merge` (auch `--auto`), `gh api … PUT …/pulls/N/merge`, die GraphQL-Mutationen `mergePullRequest`/`enablePullRequestAutoMerge` und die GitHub-MCP-Werkzeuge `merge_pull_request`/`enable_pr_auto_merge` mit „Merge macht Sightline nach Prüfung – PR-Nummer und Head-SHA ins Postfach.“; Ausnahme nur die Sitzung Sightline (reservierter Name oder `CE_ROLE=sightline`). `git merge origin/main`, `gh pr view/create` und `--help` bleiben frei. Anlass: Formgen „Ungrafted“ mergte cubeescape-formgen#27 selbst.

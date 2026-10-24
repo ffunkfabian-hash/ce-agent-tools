@@ -188,9 +188,12 @@ def remember(repo: Path, name: str, branch: str, model: str = "", about: str = "
             return
         folder = Path(git_dir)
         try:
-            previous = json.loads((folder / SESSION_FILE).read_text(encoding="utf-8")).get("name")
+            earlier = json.loads((folder / SESSION_FILE).read_text(encoding="utf-8"))
+            previous = earlier.get("name")
         except (OSError, ValueError, AttributeError):
-            previous = None
+            earlier, previous = {}, None
+        if previous == name:  # 0.23: reserving again under the same name keeps what the first reservation said
+            model, about = model or earlier.get("model", ""), about or earlier.get("about", "")
         record = {"name": name, "branch": branch, "reserved_at": time.time()}
         record.update({key: value for key, value in (("model", model), ("about", about)) if value})
         (folder / SESSION_FILE).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
