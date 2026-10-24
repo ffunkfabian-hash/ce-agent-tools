@@ -13,7 +13,8 @@ Unity and Blender may run at once after memory/load validation; GPU is exclusive
 Contact sheets and docs are light; render/bake load still needs coordination regardless of the tier name.
 
     python3 heavy_lock.py run --resource unity|blender|gpu [--what LABEL] [--checkout PATH] -- <command ...>
-    python3 heavy_lock.py status                            who holds which resource right now
+    python3 heavy_lock.py status                            who holds which resource right now: session, branch,
+                                                            client, running time, command, waiting runs (0.24)
 
 Contract (this file is the one copy; the repositories call it through CE_TOOLS and keep only thin wrappers):
 - an exclusive flock(2) on ~/Library/Caches/CubeEscape/heavy-<resource>.lock, held by the waiting process for the
@@ -150,6 +151,164 @@ def holder_pid(wait: float = 1.0, resource: str | None = None) -> int | None:
                 return None
             time.sleep(0.05)
     return None
+
+
+# Who holds a lock, in words (0.24 "Nametag"): read from the holder line, the process table and the checkout's
+# reservation at status time, so it also names holders written by older tool versions. Best effort: any failure
+# leaves the part out, never the status.
+CLIENTS = (("claude", "Claude Code"), ("codex", "Codex"), ("antigravity", "Antigravity"), ("gemini", "Gemini"),
+           ("cursor", "Cursor"), ("terminal", "Terminal"), ("iterm", "iTerm"))
+STALE_RESERVATION_S = 3 * 24 * 3600  # like ce_postfach: an older reservation may belong to an earlier session
+COMMAND_CHARS = 160
+
+
+def process_table(runner=subprocess.run) -> dict:
+    """pid -> (parent pid, command line) of every process (ps -A); empty when ps is missing or fails."""
+    try:
+        out = runner(["ps", "-A", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+    table = {}
+    for line in (out or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), parts[2] if len(parts) > 2 else "")
+    return table
+
+
+def client_of(pid: int, table: dict) -> str | None:
+    """The agent or terminal the holder runs under: the first ancestor whose program name (or app bundle) is known."""
+    seen = set()
+    while pid in table and pid not in seen and pid > 1:
+        seen.add(pid)
+        ppid, command = table[pid]
+        programs = [os.path.basename(token).lower() for token in command.split()[:2]]  # "node …/claude" counts too
+        for key, name in CLIENTS:
+            if any(program.startswith(key) for program in programs) or "/%s.app/" % key in command.lower():
+                return name
+        pid = ppid
+    return None
+
+
+def children_of(pid: int, table: dict, limit: int = 2) -> list:
+    """Command lines of the holder's descendants, nearest first (what actually runs under the lock)."""
+    found, level = [], [pid]
+    for _depth in range(4):
+        level = [child for child, (ppid, _cmd) in sorted(table.items()) if ppid in level]
+        found += [table[child][1] for child in level if table[child][1]]
+        if len(found) >= limit or not level:
+            break
+    return found[:limit]
+
+
+def session_of(checkout: str | None, now: float | None = None) -> dict:
+    """Reserved session name, model and branch of a checkout (<git-dir>/ce-session.json, else just the branch)."""
+    if not checkout:
+        return {}
+    git = lambda *args: subprocess.run(["git", "-C", checkout, *args], capture_output=True, text=True,
+                                       timeout=5).stdout.strip()
+    try:
+        git_dir, branch = git("rev-parse", "--absolute-git-dir"), git("branch", "--show-current")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+    found = {"branch": branch} if branch else {}
+    try:
+        with open(os.path.join(git_dir, "ce-session.json"), encoding="utf-8") as handle:
+            saved = json.load(handle)
+        if isinstance(saved, dict) and saved.get("name"):
+            found["name"] = str(saved["name"])
+            if saved.get("model"):
+                found["model"] = str(saved["model"])
+            age = (now or time.time()) - float(saved.get("reserved_at") or 0)
+            if age > STALE_RESERVATION_S:
+                found["stale"] = True
+    except (OSError, ValueError, TypeError):
+        pass
+    return found
+
+
+def who(checkout: str | None, pid=None, table: dict | None = None) -> str:
+    """'session: X (model) · branch b · client C' for a holder or waiter."""
+    found = session_of(checkout)
+    parts = []
+    if found.get("name"):
+        model = " (%s)" % found["model"] if found.get("model") else ""
+        old = ", older reservation – may be an earlier session" if found.get("stale") else ""
+        parts.append("session: %s%s%s" % (found["name"], model, old))
+    else:
+        parts.append("no reserved session")
+    if found.get("branch"):
+        parts.append("branch %s" % found["branch"])
+    client = client_of(int(pid), table) if table and str(pid).isdigit() else None
+    if client:
+        parts.append("client %s" % client)
+    return " · ".join(parts)
+
+
+def running_for(since: str | None, now: float | None = None) -> str:
+    try:
+        minutes = ((now or time.time()) - time.mktime(time.strptime(since, "%Y-%m-%d %H:%M:%S"))) / 60
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    return "running %d min" % minutes if minutes >= 0 else ""
+
+
+def details(resource: str | None = None, table: dict | None = None) -> list:
+    """Lines under the holder of `resource`: who (session, branch, client, running time) and what runs."""
+    try:
+        with open(lock_path(resource), encoding="utf-8") as handle:
+            info = json.loads(handle.read())
+        if not isinstance(info, dict):
+            return []
+    except (OSError, ValueError):
+        return []
+    table = process_table() if table is None else table
+    lines = ["; ".join(filter(None, (who(info.get("checkout"), info.get("pid"), table), running_for(info.get("since")))))]
+    pid = info.get("pid")
+    if isinstance(pid, int) and pid in table:
+        lines.append("command: " + table[pid][1][:COMMAND_CHARS])
+        lines += ["runs:    " + child[:COMMAND_CHARS] for child in children_of(pid, table)]
+    elif isinstance(pid, int) and table:
+        lines.append("PID %d is not in the process table (holder line may be stale)" % pid)
+    return [line for line in lines if line]
+
+
+def waiters(resource: str | None = None, table: dict | None = None) -> list:
+    """'waiting: what (session …) since …' for every run with telemetry that waits for `resource`."""
+    try:
+        import ce_lock_status
+        rows = ce_lock_status.waiting(lock_path(resource))
+    except Exception:
+        return []
+    name = resource or "shared"
+    return ["waiting: %s – %s, since %s UTC" % (row.get("what", "?"), who(row.get("checkout"), row.get("pid"), table),
+                                                str(row.get("since", "?"))[:16].replace("T", " "))
+            for row in rows if row.get("resource") == name]
+
+
+def status_lines(table: dict | None = None) -> list:
+    """`status`: one line per resource ('free' or the holder), then who and what for held ones and the waiters.
+    shared is the old global lock: callers without a resource use it, resource runs pass it as a barrier (gpu
+    exclusively), so while a gpu run holds it there is no name in the file."""
+    lines = []
+    for resource in (None,) + RESOURCES:
+        name = resource or "shared"
+        text = holder(resource)
+        if text is None:
+            lines.append("%-8s free" % name)
+        else:
+            if table is None:
+                table = process_table()
+            if resource is None and text == "unknown":
+                gpu = holder("gpu")
+                text = ("barrier, held exclusively by the gpu run below (old callers without a resource wait)" if gpu
+                        else "barrier, held by a run that wrote no name")
+                lines.append("%-8s %s" % (name, text))
+            else:
+                lines.append("%-8s %s" % (name, text))
+                lines += ["%-8s %s" % ("", line) for line in details(resource, table)]
+        lines += ["%-8s %s" % ("", line) for line in waiters(resource, table)]
+    return lines
 
 
 class HeavyLock:
@@ -442,8 +601,7 @@ def main(argv: list[str]) -> int:
     sub.add_parser("status")
     args = parser.parse_args(argv)
     if args.command == "status":
-        for resource in (None,) + RESOURCES:
-            print("%-8s %s" % (resource or "shared", holder(resource) or "free"))
+        print("\n".join(status_lines()))
         return 0
     command = args.rest[1:] if args.rest[:1] == ["--"] else args.rest
     if not command:
