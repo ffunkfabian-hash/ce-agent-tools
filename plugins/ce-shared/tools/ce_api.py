@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Explicit, text-only Claude API calls with isolated OAuth, reservations and cache usage."""
+"""Explicit Claude API calls (text, optional PNG/JPEG images) with isolated OAuth, reservations and cache usage."""
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import date
 from decimal import Decimal
 import json
@@ -24,6 +25,8 @@ AUTH_DIR = Path.home() / '.config/nexogen/anthropic'
 LEDGER = Path.home() / '.local/state/nexogen/api-budget.json'
 API = 'https://api.anthropic.com/v1/'
 MODEL_IDS = {'haiku': 'claude-haiku-5-5', 'sonnet': 'claude-sonnet-5-5', 'opus': 'claude-opus-5-5'}
+IMAGE_TYPES = {b'\x89PNG\r\n\x1a\n': 'image/png', b'\xff\xd8\xff': 'image/jpeg'}
+MAX_IMAGE_EDGE = 8000          # API limit per side
 FIELDS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens')
 
 
@@ -76,6 +79,11 @@ def load_policy(path, require_current=True):
         amount(policy['monthly_usd']); amount(policy['request_usd'])
         positive_int(policy['max_input_tokens'], 50_000)
         positive_int(policy['max_output_tokens'], 8192)
+        images = policy.get('max_images', 0)
+        if type(images) is not int or not 0 <= images <= 8:
+            raise ApiError('max_images muss 0–8 sein')
+        if images:
+            positive_int(policy.get('max_image_bytes'), 3_750_000)
         if policy['default_model'] not in MODEL_IDS:
             raise ApiError('Unbekanntes Standardmodell')
         if not isinstance(policy['system_file'], str) or not policy['system_file'].strip():
@@ -170,6 +178,51 @@ def read_text(path):
     return text
 
 
+def image_size(data, media_type):
+    """(width, height) from the PNG IHDR or the first JPEG SOF marker; None if not found."""
+    if media_type == 'image/png':
+        return (int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big')) if len(data) >= 24 else None
+    i = 2
+    while i + 9 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker, length = data[i + 1], int.from_bytes(data[i + 2:i + 4], 'big')
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            return int.from_bytes(data[i + 7:i + 9], 'big'), int.from_bytes(data[i + 5:i + 7], 'big')
+        if length < 2:
+            return None
+        i += 2 + length
+    return None
+
+
+def read_images(paths, policy):
+    """Image blocks for the user turn; disabled unless the policy sets max_images."""
+    if not paths:
+        return []
+    allowed = policy.get('max_images', 0)
+    if not allowed:
+        raise ApiError('Bilder sind in der API-Richtlinie nicht freigegeben (max_images fehlt)')
+    if len(paths) > allowed:
+        raise ApiError(f'Zu viele Bilder (höchstens {allowed})')
+    blocks = []
+    for path in paths:
+        try:
+            if path.stat().st_size > policy['max_image_bytes']:
+                raise ApiError(f"Bild zu groß (höchstens {policy['max_image_bytes']} Bytes): {path.name}")
+            data = path.read_bytes()
+        except OSError as error:
+            raise ApiError(f'Bild nicht lesbar: {path.name}') from error
+        media_type = next((kind for magic, kind in IMAGE_TYPES.items() if data.startswith(magic)), None)
+        if media_type is None:
+            raise ApiError(f'Nur PNG oder JPEG: {path.name}')
+        size = image_size(data, media_type)
+        if size is None or not all(0 < edge <= MAX_IMAGE_EDGE for edge in size):
+            raise ApiError(f'Bildmaße ungültig oder über {MAX_IMAGE_EDGE} px: {path.name}')
+        blocks.append({'type': 'image', 'source': {'type': 'base64', 'media_type': media_type,
+                                                   'data': base64.b64encode(data).decode('ascii')}})
+    return blocks
+
+
 def validated_usage(response):
     usage = response.get('usage') if isinstance(response, dict) else None
     if not isinstance(usage, dict):
@@ -188,16 +241,18 @@ def usage_cost(usage, prices):
     return sum((Decimal(usage[field]) * amount(prices[rate]) for field, rate in zip(FIELDS, rates)), Decimal(0)) / Decimal(1_000_000)
 
 
-def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry_run=False):
+def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry_run=False, image_paths=()):
     system = read_text(system_path or policy_path.parent / policy['system_file'])
     prompt = read_text(prompt_path)
+    images = read_images(list(image_paths), policy)
+    content = images + [{'type': 'text', 'text': prompt}] if images else prompt
     maximum = positive_int(policy['max_output_tokens'] if output_tokens is None else output_tokens,
                            policy['max_output_tokens'])
     name = model or policy['default_model']
     prices = policy['prices_per_million'][name]
     payload = {'model': MODEL_IDS[name], 'max_tokens': maximum,
                'system': [{'type': 'text', 'text': system, 'cache_control': {'type': 'ephemeral', 'ttl': '5m'}}],
-               'messages': [{'role': 'user', 'content': prompt}]}
+               'messages': [{'role': 'user', 'content': content}]}
     token = access_token()
     count_payload = {key: value for key, value in payload.items() if key != 'max_tokens'}
     counted = post('messages/count_tokens', count_payload, token)
@@ -211,7 +266,7 @@ def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry
     if ceiling > amount(policy['request_usd']):
         raise ApiError('Vorsichtige Kostenschätzung überschreitet das Anfragelimit')
     if dry_run:
-        return {'dry_run': True, 'model': MODEL_IDS[name], 'counted_input_tokens': count,
+        return {'dry_run': True, 'model': MODEL_IDS[name], 'images': len(images), 'counted_input_tokens': count,
                 'reserved_input_tokens': reserved_input, 'maximum_estimated_usd': str(ceiling),
                 'budget': ledger.snapshot()}
     reservation = ledger.reserve(ceiling)
@@ -241,6 +296,8 @@ def main(argv=None):
     call.add_argument('--system-file', type=Path)
     call.add_argument('--model', choices=MODEL_IDS)
     call.add_argument('--max-output-tokens', type=int)
+    call.add_argument('--image', type=Path, action='append', default=[],
+                      help='PNG/JPEG vor dem Text anhängen (mehrfach; nur mit max_images in der Richtlinie)')
     call.add_argument('--dry-run', action='store_true', help='Kostenlos zählen, keine Modellantwort erzeugen')
     call.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
@@ -257,7 +314,7 @@ def main(argv=None):
             print(json.dumps(BudgetLedger(LEDGER, policy['monthly_usd'], policy['request_usd']).snapshot()))
         else:
             result = ask(args.config, policy, args.prompt_file, args.system_file, args.model,
-                         args.max_output_tokens, args.dry_run)
+                         args.max_output_tokens, args.dry_run, args.image)
             if args.json or args.dry_run:
                 print(json.dumps(result, ensure_ascii=False))
             else:
