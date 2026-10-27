@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.0 „Spyglass“ – unveröffentlicht
+
+- `ce_api.py ask --image <PNG/JPEG>` (mehrfach) hängt Bilder vor den Text, für Zählung und Antwort gleich. Aus, solange die Richtlinie (Nexogens `.ce-api.json`) kein `max_images` (1–8) mit `max_image_bytes` (≤ 3,75 MB) setzt; Typ (Kopfbytes), Größe und Kantenlänge (≤ 8000 px) werden vor Anmeldung und Netz geprüft. Textanfragen unverändert. Anlass: Kritiker-Schleife im neuen Nebenprojekt `cubeescape-critic` (Nutzer 27.10.2026: „Nur API wie Gemini“). 6 neue Tests (`tests/test_api.py` › `ImageTests`). [Version](docs/versions/0.25.md).
+
 ## 0.24.0 „Nametag“ – unveröffentlicht
 
 - `heavy_lock.py status` (`./ce lock status`) sagt, **wer** eine Sperre hält, für `shared`, `unity`, `blender` und `gpu`: Sitzung mit Modell aus der Reservierung des Checkouts (`<git-dir>/ce-session.json`, ältere als 3 Tage markiert), sonst „no reserved session“ mit Branch; Client aus der Kette der Elternprozesse (Claude Code, Codex, Antigravity, Gemini, Cursor, Terminal); Laufzeit; Befehl des Halters und seine Kindprozesse; darunter die Wartenden mit Telemetrie. `shared` heißt bei einem `gpu`-Lauf „barrier, held exclusively by the gpu run“ statt „unknown“. Alles zur Abfragezeit gelesen: auch Halterzeilen älterer Werkzeugstände werden benannt, Schreiber und Sperrvertrag unverändert; Fehler lassen nur den Teil weg. Anlass: `gpu Blender (PID 65733, …/cubeescape-nexogen)` ohne Hinweis auf die Sitzung. 7 neue Tests. [Version](docs/versions/0.24.md).

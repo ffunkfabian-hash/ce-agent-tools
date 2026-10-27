@@ -331,3 +331,87 @@ class ApiTests(unittest.TestCase):
             self.ask(output_tokens=0)
         self.token.assert_not_called()
         self.network.assert_not_called()
+
+
+def png_bytes(width, height):
+    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big") + b"\x08\x02\x00\x00\x00"
+
+
+def jpeg_bytes(width, height):
+    app0 = b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    sof0 = b"\xff\xc0\x00\x11\x08" + height.to_bytes(2, "big") + width.to_bytes(2, "big") + b"\x03" + b"\x00" * 9
+    return b"\xff\xd8" + app0 + sof0 + b"\xff\xd9"
+
+
+class ImageTests(ApiTests):
+    """Image attachments (0.25): off unless the policy allows them, validated before authentication."""
+
+    def setUp(self):
+        super().setUp()
+        self.png = self.root / "render.png"
+        self.png.write_bytes(png_bytes(1024, 768))
+        self.jpg = self.root / "concept.jpg"
+        self.jpg.write_bytes(jpeg_bytes(1280, 720))
+
+    def allow(self, images=2, size=3_750_000):
+        self.policy["max_images"], self.policy["max_image_bytes"] = images, size
+        self.write_policy()
+
+    def test_images_are_refused_without_policy_permission_before_any_call(self):
+        with mock.patch.object(ce_api, "post", side_effect=self.transport):
+            with self.assertRaisesRegex(ce_api.ApiError, "nicht freigegeben"):
+                self.ask(image_paths=[self.png])
+        self.assertEqual(self.calls, [])
+        self.token.assert_not_called()
+
+    def test_png_and_jpeg_go_before_the_text_in_count_and_generation(self):
+        self.allow()
+        with mock.patch.object(ce_api, "post", side_effect=self.transport):
+            result = self.ask(image_paths=[self.jpg, self.png])
+        self.assertEqual([call[0] for call in self.calls], ["messages/count_tokens", "messages"])
+        for _, payload, _ in self.calls:
+            content = payload["messages"][0]["content"]
+            self.assertEqual([block["type"] for block in content], ["image", "image", "text"])
+            self.assertEqual([block["source"]["media_type"] for block in content[:2]], ["image/jpeg", "image/png"])
+            self.assertEqual(ce_api.base64.b64decode(content[1]["source"]["data"]), self.png.read_bytes())
+            self.assertEqual(content[2]["text"], "A synthetic test question")
+        self.assertEqual(result["text"], "One\nTwo")
+
+    def test_dry_run_reports_image_count(self):
+        self.allow()
+        with mock.patch.object(ce_api, "post", side_effect=self.transport):
+            code, stdout, _ = self.run_main("--dry-run", "--image", str(self.png))
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["images"], 1)
+        self.assertEqual([call[0] for call in self.calls], ["messages/count_tokens"])
+
+    def test_text_only_payload_is_unchanged(self):
+        self.allow()
+        with mock.patch.object(ce_api, "post", side_effect=self.transport):
+            self.ask()
+        self.assertEqual(self.calls[0][1]["messages"][0]["content"], "A synthetic test question")
+
+    def test_bad_images_fail_before_authentication(self):
+        self.allow(images=1, size=200)
+        text = self.root / "notes.png"
+        text.write_text("not an image", encoding="utf-8")
+        huge = self.root / "huge.png"
+        huge.write_bytes(png_bytes(9000, 10))
+        big = self.root / "big.jpg"
+        big.write_bytes(jpeg_bytes(100, 100) + b"\x00" * 300)
+        cases = [([self.png, self.jpg], "Zu viele Bilder"), ([text], "Nur PNG oder JPEG"),
+                 ([huge], "über 8000 px"), ([big], "Bild zu groß"), ([self.root / "missing.png"], "nicht lesbar")]
+        with mock.patch.object(ce_api, "post", side_effect=self.transport):
+            for paths, message in cases:
+                with self.subTest(message=message), self.assertRaisesRegex(ce_api.ApiError, message):
+                    self.ask(image_paths=paths)
+        self.assertEqual(self.calls, [])
+        self.token.assert_not_called()
+
+    def test_invalid_image_policy_fails_closed(self):
+        for images, size in ((9, 1000), ("2", 1000), (True, 1000), (-1, 1000), (2, None), (2, 4_000_000)):
+            with self.subTest(images=images, size=size):
+                self.policy["max_images"], self.policy["max_image_bytes"] = images, size
+                self.write_policy()
+                with self.assertRaises(ce_api.ApiError):
+                    ce_api.load_policy(self.policy_path)
