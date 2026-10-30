@@ -436,6 +436,29 @@ class RealBranchTests(unittest.TestCase):
         _, output = answer(vibe_guard, dict(workflow, cwd=str(self.base / "work")))
         self.assertIn("[actions-sparsam]", output["hook_specific_output"]["additional_context"])
 
+    def test_a_leading_cd_gets_the_same_verdict_in_every_client(self):
+        """Gangway: Vibe's commit form `cd <path> && git commit …` (measured line of the 30.10.2026 probe, repository
+        swapped) is judged in the cd target by all four clients; other cd lines keep the note for the Git net."""
+        inputs = json.loads(VIBE_MEASURED.read_text())["inputs"]
+        commit = next(i for i in inputs if "git commit" in i["tool_input"].get("command", ""))
+        main, work = self.base / "main repo", self.base / "work"
+        cases = [(f"cd '{main}' && git commit --allow-empty -m probe-on-main", work, "deny"),
+                 ("cd '../main repo' && git commit -m x", work, "deny"),
+                 (f"cd '{work}' && git commit --allow-empty -m probe-on-main", main, "none"),
+                 (f"cd '{main}'; git commit -m x", work, "warn"), (f"cd '{main}' && git add . && git commit", work, "warn")]
+        for command, cwd, expected in cases:
+            claude = guard.decide({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}, RULES)
+            claude_kind = "deny" if "hookSpecificOutput" in claude else "warn" if claude else "none"
+            _, codex = answer(codex_guard, codex_input("Bash", {"command": command}, cwd=str(cwd)))
+            codex_kind = ("none" if codex is None else
+                          "deny" if codex["hookSpecificOutput"].get("permissionDecision") == "deny" else "warn")
+            _, agy = answer(antigravity_guard,
+                            antigravity_input("run_command", {"CommandLine": command, "Cwd": str(cwd)}))
+            agy_kind = "deny" if agy["decision"] == "deny" else "warn" if "reason" in agy else "none"
+            _, vibe = answer(vibe_guard, dict(commit, cwd=str(cwd), tool_input=dict(commit["tool_input"], command=command)))
+            vibe_kind = "none" if vibe is None else "deny" if vibe.get("decision") == "deny" else "warn"
+            self.assertEqual((claude_kind, codex_kind, agy_kind, vibe_kind), (expected,) * 4, command)
+
 
 class ParityTests(unittest.TestCase):
     """The adapters add no rule and lose none: every shell case of the Claude tests gets the same verdict."""

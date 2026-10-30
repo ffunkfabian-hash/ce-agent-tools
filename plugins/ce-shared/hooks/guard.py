@@ -126,6 +126,13 @@ def matching_rules(rules, tool, data, cwd=None, facts=None):
 # functions, wrappers, scripts, redirections, pipelines) is not simulated: it passes with a note and the Git net
 # (githooks/: pre-commit sees the real HEAD) decides when it runs. --allow-empty-message is blocked in every literal
 # `git … commit` segment of the line.
+#
+# Gangway (0.28) judges exactly one compound form as well, because Mistral Vibe sends it for commits: `cd <path> &&`
+# followed by one such simple `git … commit`, with `&&` the only construct of the line. The commit's folder is the cd
+# target relative to the hook folder; the builtin `cd` with one literal path only (no option, no `-` or `+N`), a bare
+# relative name only while CDPATH is unset (cd searches it first), and only a target where `cd -L` and `cd -P` agree:
+# an existing folder, every `..` after a folder, no link undone by `..` (cd_target). Every other line - a missing
+# target included, where the shells try the physical path - stays with the net.
 
 GIT_CANDIDATES = ("/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git")
 GIT_REPOSITORY_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
@@ -139,6 +146,7 @@ INERT = ("echo", "printf", "grep", "egrep", "rg", "cat", "head", "tail", "less",
 ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
 MENTIONS_COMMIT = re.compile(r"\bgit\b[\s\S]*\bcommit\b", re.IGNORECASE)  # only decides whether a note is due
 OPERATORS = ("&&", "||", ";;", "<<<", "<<", ">>", "&>", "|&", "&", "|", ";", "<", ">", "(", ")", "\n")
+AND = "Operator `&&`"  # the one construct of the judged `cd <path> && git … commit`
 NET = ("das Git-Netz (pre-commit) prüft den tatsächlichen Branch beim Ausführen; ob es in diesem Repo aktiv ist, "
        "zeigt `ce_githooks.py status`")
 
@@ -152,11 +160,12 @@ class CommitFacts:
 
 
 def shell_segments(text):
-    """The words of a shell line, split into segments at unquoted operator characters, and the first construct that
-    makes the line more than one simple command of literal words (None if there is none). A word is (text, literal):
-    quotes and backslashes removed; literal False when it holds an expansion ($, `, glob or brace characters, ~user).
+    """The words of a shell line, split into segments at unquoted operator characters, and every construct (in order)
+    that makes the line more than one simple command of literal words (empty if there is none). A word is
+    (text, literal): quotes and backslashes removed; literal False when it holds an expansion ($, `, glob or brace
+    characters, ~user).
     A heredoc ends the reading - its body is no command line."""
-    segments, words, chars, why = [], [], [], None
+    segments, words, chars, constructs = [], [], [], []
     literal, started, i, n = True, False, 0, len(text)
 
     def end_word():
@@ -174,7 +183,8 @@ def shell_segments(text):
             i += 2
         elif c == "'":
             end = text.find("'", i + 1)
-            why = why or ("offenes Anführungszeichen" if end < 0 else None)
+            if end < 0:
+                constructs.append("offenes Anführungszeichen")
             end = n if end < 0 else end
             chars.append(text[i + 1:end])
             started, i = True, end + 1
@@ -186,10 +196,12 @@ def shell_segments(text):
                     i += 2
                     continue
                 if text[i] in "$`":
-                    literal, why = False, why or "Variable oder Befehlsersetzung"
+                    literal = False
+                    constructs.append("Variable oder Befehlsersetzung")
                 chars.append(text[i])
                 i += 1
-            why = why or ("offenes Anführungszeichen" if i >= n else None)
+            if i >= n:
+                constructs.append("offenes Anführungszeichen")
             started, i = True, i + 1
         elif c == "#" and not started:  # a comment up to the end of the line
             end = text.find("\n", i)
@@ -201,7 +213,7 @@ def shell_segments(text):
             break  # trailing whitespace
         elif any(text.startswith(op, i) for op in OPERATORS):
             op = next(op for op in OPERATORS if text.startswith(op, i))
-            why = why or ("Zeilenumbruch" if op == "\n" else f"Operator `{op}`")
+            constructs.append("Zeilenumbruch" if op == "\n" else f"Operator `{op}`")
             end_word()
             segments.append(words)
             words = []
@@ -210,10 +222,10 @@ def shell_segments(text):
             i += len(op)
         else:
             if c in "$`":
-                why = why or "Variable oder Befehlsersetzung"
+                constructs.append("Variable oder Befehlsersetzung")
                 literal = False
             elif c in "*?[" or (c == "{" and brace_expansion(text, i, started)):
-                why = why or "Muster, Klammererweiterung oder Gruppe"
+                constructs.append("Muster, Klammererweiterung oder Gruppe")
                 literal = False
             elif c == "~" and not started:
                 home, rest = os.environ.get("HOME"), text[i + 1:i + 2]
@@ -221,12 +233,13 @@ def shell_segments(text):
                     chars.append(home)
                     started, i = True, i + 1
                     continue
-                why, literal = why or "Tilde-Erweiterung", False
+                constructs.append("Tilde-Erweiterung")
+                literal = False
             chars.append(c)
             started, i = True, i + 1
     end_word()
     segments.append(words)
-    return [words for words in segments if words], why
+    return [words for words in segments if words], constructs
 
 
 def brace_expansion(text, i, started):
@@ -275,6 +288,29 @@ def commit_call(words):
     if not literal:
         return "Git-Unterbefehl erst beim Ausführen bekannt" if MENTIONS_COMMIT.search(text) else None
     return (context, [word for word, _ in words[i + 1:]]) if subcommand == "commit" else None
+
+
+def cd_target(words, cwd):
+    """The folder a leading `cd <path>` segment moves to, or None when it is not that clear form or the shell may land
+    elsewhere: bash and zsh let `x/..` fail unless x is a folder and fall back to the physical path when the logical
+    one is missing, and `set -P`/chase_dots move physically - so every `..` must follow a folder, the target must
+    exist and its logical path (cd -L) must be its physical one (cd -P)."""
+    if len(words) != 2 or words[0] != ("cd", True) or not words[1][1]:
+        return None
+    path = words[1][0]
+    if not path or path.startswith(("-", "+")):
+        return None
+    if os.environ.get("CDPATH") and not (path.startswith(("/", "./", "../")) or path in (".", "..")):
+        return None
+    folder = "/" if path.startswith("/") else os.path.normpath(cwd)
+    for part in path.split("/"):
+        if part == ".." and not os.path.isdir(folder):
+            return None
+        if part not in ("", "."):
+            folder = os.path.dirname(folder) if part == ".." else os.path.join(folder, part)
+    if not os.path.isdir(folder) or os.path.realpath(folder) != os.path.realpath(os.path.join(cwd, path)):
+        return None
+    return folder
 
 
 def allows_empty_message(args):
@@ -332,13 +368,20 @@ def read_branch(cwd, context):
 def commit_facts(command, cwd):
     """CommitFacts of a shell line. Never raises: an internal error becomes a note, the other rules still run."""
     try:
-        segments, why = shell_segments(command)
+        segments, constructs = shell_segments(command)
+        why = constructs[0] if constructs else None
         calls = [commit_call(words) for words in segments]
         lines = ["? git commit --allow-empty-message" for call in calls
                  if isinstance(call, tuple) and allows_empty_message(call[1])]
+        judged = None
         if why is None and len(calls) == 1 and isinstance(calls[0], tuple):
-            context, args = calls[0]
-            branch, problem = read_branch(cwd, context)
+            judged = cwd, calls[0]
+        elif constructs == [AND] and len(calls) == 2 and isinstance(calls[1], tuple):
+            target = cd_target(segments[0], cwd)
+            judged = (target, calls[1]) if target else None
+        if judged:
+            folder, (context, args) = judged
+            branch, problem = read_branch(folder, context)
             line = f"{branch or '-'} git commit" + (" --allow-empty-message" if allows_empty_message(args) else "")
             return CommitFacts([line], [f"Vorabprüfung: {problem}; nicht gesperrt, {NET}."] if problem else [])
         reasons = [call for call in calls if isinstance(call, str)]

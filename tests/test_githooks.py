@@ -425,7 +425,7 @@ class PrecheckBoundaryTests(GitHookTestCase):
     def sha(self, ref, repo=None):
         return (repo or self.repo).run("rev-parse", "-q", "--verify", ref, check=False).stdout.strip() or None
 
-    def line(self, text, start="main", repo=None, env=None):
+    def line(self, text, start="main", repo=None, env=None, shell=("/bin/bash", "-c")):
         """Pre-check verdict of the line in the start state, then the line run by bash: (verdict, completed run)."""
         repo = repo or self.repo
         repo.run("switch", "-q", start)
@@ -433,7 +433,7 @@ class PrecheckBoundaryTests(GitHookTestCase):
         message = result.get("systemMessage", "")
         verdict = ("block" if "hookSpecificOutput" in result else
                    "net" if "[commit-on-main]" in message and "Git-Netz (pre-commit)" in message else "pass")
-        run = subprocess.run(["/bin/bash", "-c", text], cwd=repo.path, capture_output=True, text=True, timeout=60,
+        run = subprocess.run([*shell, text], cwd=repo.path, capture_output=True, text=True, timeout=60,
                              env=dict(repo.env, **(env or {})))
         return verdict, run
 
@@ -480,6 +480,36 @@ class PrecheckBoundaryTests(GitHookTestCase):
         before = self.sha("topic")
         verdict, run = self.line("bash -c 'exit 0; git commit --allow-empty -m x'", "topic")  # 7e: not blocked
         self.assertEqual((verdict, run.returncode, self.sha("topic")), ("net", 0, before))
+
+    def test_a_judged_leading_cd_lands_where_the_pre_check_looked(self):
+        """Gangway: the one compound form the pre-check judges, `cd <path> && git commit`, run by bash and zsh (without
+        startup files): a blocked line would have committed on main (the net rejects it here), a passed one commits on
+        the working branch. Where the shells may land elsewhere (judge 7a/7b: `x/..` fails unless x is a folder, a
+        missing logical target falls back to the physical path, a link undone by `..`) the line keeps the net's note."""
+        (self.repo.path / "sub").mkdir()
+        (self.second.path / "jump").symlink_to(self.repo.path / "sub")
+        to_main, to_second = os.path.relpath(self.repo.path, self.second.path), os.path.relpath(self.second.path, self.repo.path)
+        cases = [  # (repo of the hook folder, line, verdict, the shell tried to commit on main)
+            (self.second, f"cd {to_main} && git commit --allow-empty -m x", "block", True),
+            (self.second, f"cd '{self.repo.path}' && git commit --allow-empty -m x", "block", True),
+            (self.second, "cd jump && git commit --allow-empty -m x", "block", True),
+            (self.repo, "cd sub && git commit --allow-empty -m x", "block", True),
+            (self.repo, f"cd {to_second} && git commit --allow-empty -m x", "pass", False),
+            (self.second, f"cd missing/../{to_main} && git commit --allow-empty -m x", "net", False),  # cd fails
+            (self.second, f"cd f.txt/../{to_main} && git commit --allow-empty -m x", "net", False),  # cd fails
+            (self.second, "cd jump/../sub && git commit --allow-empty -m x", "net", True),  # physically main/sub
+            (self.second, "cd jump/.. && git commit --allow-empty -m x", "net", False),  # cd -L: work; cd -P: main
+            (self.repo, "cd ../missing && git commit --allow-empty -m x", "net", False)]
+        for shell in (("/bin/bash", "-c"), ("/bin/zsh", "-f", "-c")):
+            for repo, text, expected, on_main in cases:
+                main, work = self.sha("main"), self.sha("work", self.second)
+                verdict, run = self.line(text, "main" if repo is self.repo else "work", repo=repo, shell=shell)
+                case = (shell[0], text, run.stderr)
+                self.assertEqual(verdict, expected, case)
+                self.assertEqual(self.sha("main"), main, case)
+                self.assertEqual("ce-shared pre-commit: abgelehnt" in run.stderr, on_main, case)
+                if expected == "pass":
+                    self.assertNotEqual(self.sha("work", self.second), work, case)
 
     def test_a_function_with_a_prefix_git_dir_is_judged_where_it_lands(self):  # 7b
         main, work = self.sha("main"), self.sha("work", self.second)
