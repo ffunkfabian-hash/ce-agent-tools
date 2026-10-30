@@ -90,6 +90,7 @@ Alle mit `--repo <Pfad>` (Standard: aktuelles Verzeichnis, gesucht wird `.ce-rep
 | `ce` | ein Einstieg für alles unten (`./ce check`, `./ce reserve <Name>`, `./ce search <q>`, `./ce judge`, `./ce diff A B`, `./ce clip <frames> --out x.mp4`, `./ce lock unity -- <cmd>`) |
 | `ce_report.py [transcript]` | misst eine Sitzung aus dem Transcript (Modelle, Prüfläufe, Suchen, Ausgaben, Wartezeit); Claude-Usage zusätzlich dedupliziert als frischen Input, Cache-Schreiben/-Lesen, Output und absolute Inputmenge mit Messabdeckung; der Stop-Hook hängt die Zeile an `report.md` |
 | `ce_api.py login\|status\|budget\|ask [--image PNG/JPEG …]` / `./ce api …` | explizite Claude-Anfrage (Text, ab 0.25 optional Bilder, nur mit `max_images` in der Richtlinie) mit isoliertem Browser-Login, lokalem Monats-/Anfragelimit, Vorabzählung und 5-Minuten-Präfixcache; Richtlinie in Nexogens `.ce-api.json`, keine Zugangsdaten im Repo ([Ablauf](https://github.com/ffunkfabian-hash/cubeescape-nexogen#lokale-claude-api)) |
+| `ce_vibe.py run --prompt-file F [--json] \| status \| clean [--apply]` / `./ce vibe …` | gibt eine Coding-Aufgabe an Mistral Vibe (headless) in einen Wegwerf-Worktree und liefert `changes.patch`, Antwort, Kosten und Abbruchgrund zurück (0.26, [Abschnitt](#mistral-vibe-als-coding-assistent-026)) |
 | `ce_imagediff.py A B [--out D] [--kind ui\|world\|bake]` | SSIM/PSNR/Pixelanteil/Bereich und Diffbild – Zahlen für den Richter statt zwei Bilder |
 | `ce_media.py sheet\|clip\|still` | Kontaktbogen, MP4 (480p, ≤ 8 s), Standbild (≤ 1280 px) – die Belege der Regel › Belege |
 | `ce_judge.py [--model luna\|sol] [--opus]` | Codex-Richter mit der Checkliste `pruefung.md`; Modell nach Diffgröße und Kern-/Vertrags-/Infrastrukturrisiko, Grund im CLI; warnt ab 1.500 Diff-Zeilen / 100 KB zur aufgeteilten Prüfung mit `--files` (ohne pauschales Kürzen von JSON); `--opus` erzeugt den Prompt für einen Opus-Unteragenten |
@@ -111,6 +112,39 @@ Alle mit `--repo <Pfad>` (Standard: aktuelles Verzeichnis, gesucht wird `.ce-rep
 | `ce_loader.py` = `./ce` eines Repos ohne Kopie (0.20) | lädt genau `.ce-repo.json › tools_version` (`{"version", "commit"}`) und führt `ce <Befehl>` daraus im Repo-Ordner aus: `CE_TOOLS` → installiertes Plugin mit diesem Commit → Cache `~/.cache/ce-agent-tools/<version>-<commit12>` (Manifest geprüft) → Download aus dem öffentlichen Repo (Tarball mit Commit im Pax-Kopf, sonst `git fetch` des Commits). Nur Standardbibliothek, Meldungen auf stderr; ohne Werkzeuge und Netz Exit 3 mit Abhilfe, ungültige Angabe Exit 2. `./ce tools where\|fetch\|pin <commit>` |
 | `ce_worktrees.py [--repos P…] [--active-minutes N] [--list\|--json]` | Tabelle (Standard) der Worktrees aller acht Repos (`repos.json`, `CE_REPOS` überschreibt): Branch, sauber, ahead/behind, Sitzung (`~/.claude/projects`, `~/.codex/sessions`, laufende Prozesse), „NICHT LÖSCHEN“ |
 | `ce_tidy.py [--apply\|--nightly] [--json] [--category worktree\|befehl\|ausgabe\|beleg]` (`./ce tidy`) | Reste fertiger Sitzungen in allen Repos (Nexogen › Aufräumen nach dem Merge, 0.18): Probelauf-Tabelle Kategorie · Pfad · Größe · Grund · löschbar. Worktrees aus `ce_worktrees.collect` nur gemergt, sauber, ohne Sitzung (24 h) oder Prozess im Ordner und unter einer Worktree-Wurzel (`.claude/worktrees`, `~/.codex/worktrees`, `tidy.worktree_roots`) – Entfernen mit `git worktree remove` ohne `--force` + `prune`; repo-eigene Aufräumskripte (nur Skripte im Haupt-Checkout), Generator-Ausgaben (`keep`, `older_than_days`) und Belegablagen (`~/Library/Caches/*/videos`, aktuelle + vorige Version bleiben) aus `.ce-repo.json › tidy`. `--apply` verschiebt in den Papierkorb, nie `rm`; nie Haupt-Checkouts und deren `Library`, `~/Claude/_rettung`, „NICHT LÖSCHEN“, Repos mit `hold`. Der Nachtlauf räumt nur Einträge mit `"nightly": true` |
+
+## Mistral Vibe als Coding-Assistent (0.26)
+
+Claude Code, Codex und Antigravity können eine abgegrenzte Coding-Aufgabe an Mistral Vibe geben und bleiben selbst
+verantwortlich: Auftrag in eine Datei (Ziel, Pfade, Grenzen, erwartete Tests), dann
+
+```sh
+./ce vibe run --prompt-file /absoluter/pfad/auftrag.txt            # Standard: 40 Runden, 1,00 USD, 1200 s
+./ce vibe run --prompt-file … --model devstral --max-turns 20 --json
+./ce vibe run --prompt-file … --base origin/main --keep   # anderer Startstand (ohne eigene Änderungen), Worktree behalten
+```
+
+- **Ablauf:** losgelöster Worktree unter `~/.local/state/nexogen/vibe/runs/<Zeit>-<Auftrag>/worktree` vom aktuellen `HEAD`
+  plus den eigenen ungesicherten Änderungen und neuen, nicht ignorierten Dateien (`--clean-base` lässt beides weg). Vibe
+  läuft mit `--agent auto-approve`, `--trust` und den Grenzen; Vorspann im Auftrag: nur im Worktree, kein Commit/Push/gh,
+  keine Installationen, keine Unity-/Blender-/GPU-Läufe, `AGENTS.md` beachten, schnelle Tests ausführen.
+- **Ergebnis:** `changes.patch` (nur Vibes Änderungen), `answer.txt`, `summary.json`, `vibe.log`, `export/` (Vibe-Export mit
+  Tokens, Kosten zum Listenpreis, Ergebnis). Der Worktree wird danach entfernt (`--keep` behält ihn). Exit 0 = fertig,
+  3 = Vibe-Grenze erreicht (Patch trotzdem gespeichert), 1 = abgelehnt oder Fehler. **Keine automatische Wiederholung.**
+- **Übernehmen:** Patch selbst lesen, `git apply <patch>` im eigenen Worktree, gezielt testen. Der Patch ist ein Vorschlag;
+  Prüfung, Commit und Bericht bleiben beim Aufrufer.
+- **Sperren:** Repos mit `hold` (Lockstep) und private Repos werden abgelehnt; die Sichtbarkeit fragt `gh api repos/<origin>`
+  ab, unbekannt zählt wie privat. `--allow-private` nur nach ausdrücklichem Ja des Nutzers (Code geht an Mistral).
+- **Hürden, kein Sandkasten:** im Lauf ist `remote.origin.pushurl` ungültig, `gh` hat ein leeres
+  Konfigurationsverzeichnis und keine Tokens; Vibe kann trotzdem Shellbefehle ausführen (`git push <url>` mit
+  SSH-Schlüssel ginge). Nach dem Lauf und beim harten Zeitabbruch endet die ganze Prozessgruppe; neue oder geänderte
+  Branches/Tags meldet `summary.json` als Warnung. Committet es im Worktree, meldet `summary.json` eine Warnung, der
+  Patch enthält den Stand trotzdem.
+- **Aufräumen:** `./ce vibe clean` zeigt Läufe älter als 14 Tage außer den jüngsten 10 und solchen mit behaltenem Worktree;
+  `--apply` verschiebt sie in den Papierkorb (`CE_TRASH`, sonst `~/.Trash`), nie `rm`.
+- Abrechnung über das Vibe-Konto (Pro, ohne PAYG); `cost_usd` ist der Listenpreis aus Vibes Export. Kontingentgrenze → Lauf
+  endet mit Fehler, kein Retry. Das Trainings-Opt-out ist ein Schalter im Mistral-Konto des Nutzers.
+- Ab Agent Tools 0.26; Regeln, wann delegiert wird: Nexogen › Automatische API-Delegation.
 
 ## Native Oberflächen (0.19 „Prismwake“)
 

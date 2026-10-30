@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.26.0 „Understudy“ – unveröffentlicht
+
+- Neu `ce_vibe.py` / `./ce vibe run|status`: Claude Code, Codex und Antigravity geben eine abgegrenzte Coding-Aufgabe an Mistral Vibe (headless, `auto-approve`) in einen Wegwerf-Worktree des aktuellen Stands (inkl. eigener ungesicherter und neuer Dateien) und erhalten `changes.patch`, Antwort, Kosten und Abbruchgrund; Worktree wird danach entfernt. Lehnt Repos mit `hold` und private/unbekannte Repos ab (`--allow-private` nur nach Ja des Nutzers); Push zu `origin` und `gh` im Lauf erschwert (Hürden, kein Sandkasten); Grenzen für Runden, Preis, Zeit; Exit 3 bei Vibe-Grenze, kein Retry. `./ce vibe clean [--apply]` verschiebt alte Läufe in den Papierkorb. Anlass: Nutzer 30.10.2026 „Vibe soll als Coding-Assistent für Claude Code und Codex dienen“. 23 neue Tests (`tests/test_vibe.py`), Probelauf mit echtem Vibe. [Version](docs/versions/0.26.md).
+
 ## 0.25.0 „Spyglass“ – unveröffentlicht
 
 - `ce_api.py ask --image <PNG/JPEG>` (mehrfach) hängt Bilder vor den Text, für Zählung und Antwort gleich. Aus, solange die Richtlinie (Nexogens `.ce-api.json`) kein `max_images` (1–8) mit `max_image_bytes` (≤ 3,75 MB) setzt; Typ (Kopfbytes), Größe und Kantenlänge (≤ 8000 px) werden vor Anmeldung und Netz geprüft. Textanfragen unverändert. Anlass: Kritiker-Schleife im neuen Nebenprojekt `cubeescape-critic` (Nutzer 27.10.2026: „Nur API wie Gemini“). 6 neue Tests (`tests/test_api.py` › `ImageTests`). [Version](docs/versions/0.25.md).
