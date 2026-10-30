@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.27.0 „Breakwater“ – unveröffentlicht
+
+- Neu `hooks/vibe_guard.py`: derselbe Wächter (`guard.decide`, `rules/*.md`) als Mistral-Vibe-Hook (`~/.vibe/hooks.toml`, `pre_tool` + `post_tool`, auch für Subagenten). Format an Vibe 3.0.4 gemessen: qualifizierte Werkzeugnamen (`file_system.bash`, `process.start`, `mcp_<server>.<tool>`), Dateipfade relativ zu `cwd`. Sperre als `{"decision": "deny", "reason"}` vor dem Freigabe-Prompt (auch bei `auto-approve`), Warnung als `system_message` und nach dem Lauf als `additional_context` für das Modell; Fehler offen mit Meldung. `./ce vibe run` verweigert ohne eingetragenen Wächter (Nutzerentscheid 30.10.2026: kein `auto-approve` ohne Hook), `./ce vibe status` nennt den Eintrag. Echte Vibe-Läufe: Commit auf `main` und Force-Push gesperrt, harmlose Befehle durch – als Projekt-Hook, als User-Hook und über `./ce vibe run`. 13 neue Tests (`tests/test_client_hooks.py` › `VibeAdapterTests`, Gleichstand, Messfixture; `tests/test_vibe.py`). [Version](docs/versions/0.27.md).
+
 ## 0.26.0 „Understudy“ – unveröffentlicht
 
 - Neu `ce_vibe.py` / `./ce vibe run|status`: Claude Code, Codex und Antigravity geben eine abgegrenzte Coding-Aufgabe an Mistral Vibe (headless, `auto-approve`) in einen Wegwerf-Worktree des aktuellen Stands (inkl. eigener ungesicherter und neuer Dateien) und erhalten `changes.patch`, Antwort, Kosten und Abbruchgrund; Worktree wird danach entfernt. Lehnt Repos mit `hold` und private/unbekannte Repos ab (`--allow-private` nur nach Ja des Nutzers); Push zu `origin` und `gh` im Lauf erschwert (Hürden, kein Sandkasten); Grenzen für Runden, Preis, Zeit; Exit 3 bei Vibe-Grenze, kein Retry. `./ce vibe clean [--apply]` verschiebt alte Läufe in den Papierkorb. Anlass: Nutzer 30.10.2026 „Vibe soll als Coding-Assistent für Claude Code und Codex dienen“. 23 neue Tests (`tests/test_vibe.py`), Probelauf mit echtem Vibe. [Version](docs/versions/0.26.md).

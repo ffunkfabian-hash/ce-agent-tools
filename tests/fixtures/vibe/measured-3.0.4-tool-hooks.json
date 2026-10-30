@@ -1,0 +1,117 @@
+{
+ "source": "vibe 3.0.4 headless (vibe --trust --auto-approve -p), project .vibe/hooks.toml, 2026-10-30; probe logs in ~/Library/Caches/CubeEscape/vibe-guard-20261030",
+ "inputs": [
+  {
+   "session_id": "c6b65d40-8c7f-4c13-2d40-bcdc76bdb8d1",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "pre_tool",
+   "tool_name": "file_system.bash",
+   "tool_call_id": "QNLC7SgwB",
+   "tool_input": {
+    "timeout": 120,
+    "command": "ls -la"
+   }
+  },
+  {
+   "session_id": "c6b65d40-8c7f-4c13-2d40-bcdc76bdb8d1",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "pre_tool",
+   "tool_name": "file_system.write_file",
+   "tool_call_id": "wzQa5VCxy",
+   "tool_input": {
+    "file_path": "notes.txt",
+    "content": "hello"
+   }
+  },
+  {
+   "session_id": "c6b65d40-8c7f-4c13-2d40-bcdc76bdb8d1",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "pre_tool",
+   "tool_name": "file_system.edit",
+   "tool_call_id": "jmoFgieYp",
+   "tool_input": {
+    "file_path": "notes.txt",
+    "old_string": "hello",
+    "new_string": "world"
+   }
+  },
+  {
+   "session_id": "c6b65d40-8c7f-4c13-2d40-bcdc76bdb8d1",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "pre_tool",
+   "tool_name": "process.start",
+   "tool_call_id": "typescript:3:euAFNNtLp:0:tool:0",
+   "tool_input": {
+    "command": "sleep 1"
+   }
+  },
+  {
+   "session_id": "c6b65d40-8c7f-4c13-2d40-bcdc76bdb8d1",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "pre_tool",
+   "tool_name": "file_system.read_file",
+   "tool_call_id": "djPlN45cL",
+   "tool_input": {
+    "file_path": "notes.txt"
+   }
+  },
+  {
+   "session_id": "726550b5-6040-a747-3b68-a4cf5dc5e81f",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "pre_tool",
+   "tool_name": "file_system.bash",
+   "tool_call_id": "4Rq1jTw94",
+   "tool_input": {
+    "timeout": 120,
+    "command": "git commit --allow-empty -m probe-on-main"
+   }
+  },
+  {
+   "session_id": "child-698e3af822ab8ad841d8e5b9",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": "726550b5-6040-a747-3b68-a4cf5dc5e81f",
+   "hook_event_name": "pre_tool",
+   "tool_name": "file_system.bash",
+   "tool_call_id": "OcVOXwMUn",
+   "tool_input": {
+    "timeout": 120,
+    "command": "git log --oneline -1"
+   }
+  },
+  {
+   "session_id": "726550b5-6040-a747-3b68-a4cf5dc5e81f",
+   "transcript_path": "<transcript>",
+   "cwd": "<workspace>",
+   "parent_session_id": null,
+   "hook_event_name": "post_tool",
+   "tool_name": "file_system.write_file",
+   "tool_call_id": "9jWVfRm5y",
+   "tool_input": {
+    "file_path": ".github/workflows/ci.yml",
+    "content": "on: push"
+   },
+   "tool_status": "success",
+   "tool_output": {
+    "bytes_written": 8,
+    "file_existed": false,
+    "path": "<workspace>/.github/workflows/ci.yml"
+   },
+   "tool_output_text": "bytes_written: 8\nfile_existed: False\npath: <workspace>/.github/workflows/ci.yml",
+   "tool_error": null,
+   "duration_ms": 0
+  }
+ ]
+}

@@ -20,9 +20,10 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
 
 ## Plugins und Hooks
 
-- **Eine Entscheidung, drei Clients:** `hooks/guard.py` (`decide`) mit `rules/*.md` ist die einzige Regel-Logik. Claude Code
-  ruft sie über das Plugin auf, Codex über `hooks/codex_guard.py`, Antigravity über `hooks/antigravity_guard.py`; Adapter
-  übersetzen nur Ein-/Ausgabe, nie eigene Regeln. Korrekturen gehören in `guard.py` und gelten damit überall.
+- **Eine Entscheidung, vier Clients:** `hooks/guard.py` (`decide`) mit `rules/*.md` ist die einzige Regel-Logik. Claude Code
+  ruft sie über das Plugin auf, Codex über `hooks/codex_guard.py`, Antigravity über `hooks/antigravity_guard.py`, Mistral
+  Vibe über `hooks/vibe_guard.py`; Adapter übersetzen nur Ein-/Ausgabe, nie eigene Regeln. Korrekturen gehören in
+  `guard.py` und gelten damit überall.
 - **Git-Netz:** `githooks/ce_githooks.py` (pre-commit/pre-push) unabhängig vom Client; Grenzen (Optionen, `--no-verify`)
   stehen im README › Git-Netz.
 - **Vorabprüfung begrenzt:** `commit-on-main` beurteilt vor dem Lauf nur einen einzelnen einfachen `git … commit` aus

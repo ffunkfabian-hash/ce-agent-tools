@@ -9,21 +9,27 @@ The calling agent (Claude Code, Codex, Antigravity) stays responsible: Vibe edit
 (with the caller's uncommitted changes and new, not ignored files carried over), the tool saves the result as `changes.patch` and removes the
 worktree. The caller reads the patch, applies it with `git apply` (`--3way` only on a clean index) and runs the targeted
 tests itself.
+0.27: a run needs the ce-shared guard as Vibe user hook (a pre_tool entry naming vibe_guard.py in $VIBE_HOME/hooks.toml,
+written by Nexogen's ./install.sh --client-hooks); without it the run is refused before any worktree - user decision of
+30.10.2026: no auto-approve without the guard hook.
 Exit codes: 0 finished, 3 a Vibe limit stopped the run (patch is still saved), 1 refused or failed.
 """
 from __future__ import annotations
 
 import argparse
+import fnmatch
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 from ce_common import repo_hold
 
@@ -92,6 +98,59 @@ def check_repo(root, allow_private):
                         'Code geht an Mistral – nur mit --allow-private nach Ja des Nutzers')
     if private:
         raise VibeError('privates Repo: Code geht an Mistral – nur mit --allow-private nach Ja des Nutzers')
+
+
+def hooks_file():
+    return Path(os.environ.get('VIBE_HOME') or Path.home() / '.vibe') / 'hooks.toml'
+
+
+def read_hooks(path):
+    """[[hooks]] tables of a Vibe hooks.toml; [] when it is missing or broken."""
+    try:
+        hooks = tomllib.loads(path.read_text(encoding='utf-8')).get('hooks', [])
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return []
+    return [hook for hook in hooks if isinstance(hook, dict)] if isinstance(hooks, list) else []
+
+
+def matches(pattern, names):
+    """Vibe's tool matcher: fnmatch glob, or a full regex match with re:, case-insensitive, short or qualified name."""
+    pattern = str(pattern or '*')
+    if pattern.startswith('re:'):
+        try:
+            return any(re.fullmatch(pattern[3:], name, re.IGNORECASE) for name in names)
+        except re.error:
+            return False
+    return any(fnmatch.fnmatch(name.lower(), pattern.lower()) for name in names)
+
+
+def guard_hook():
+    """Name of the pre_tool hook in the user's hooks.toml that runs an existing vibe_guard.py for the shell tools
+    (bash and process_start), else None - a moved checkout or a match without the shell is no guard."""
+    for hook in read_hooks(hooks_file()):
+        try:
+            words = shlex.split(str(hook.get('command', '')))
+        except ValueError:
+            continue
+        script = any(word.endswith('vibe_guard.py') and Path(word).is_file() for word in words)
+        shells = all(matches(hook.get('match'), names) for names in (('bash', 'file_system.bash'),
+                                                                      ('process_start', 'process.start')))
+        if hook.get('type') == 'pre_tool' and hook.get('name') and script and shells:
+            return str(hook['name'])
+    return None
+
+
+def check_guard():
+    if guard_hook() is None:
+        raise VibeError(f'Vibe-Wächter fehlt: kein pre_tool-Hook mit vorhandenem vibe_guard.py für bash/process_start in '
+                        f'{hooks_file()} – in Nexogen ./install.sh --client-hooks=vibe (ab Nexogen-Patch vibe-guard-hook; '
+                        'kein auto-approve ohne Wächter, Nutzer 30.10.2026)')
+
+
+def check_project_hooks(worktree, name):
+    """--trust loads the worktree's .vibe/hooks.toml first, and a project hook of the same name replaces the user's."""
+    if any(hook.get('name') == name for hook in read_hooks(worktree / '.vibe' / 'hooks.toml')):
+        raise VibeError(f'.vibe/hooks.toml des Repos überschreibt den Vibe-Wächter ({name}) – Lauf abgelehnt')
 
 
 def run_dir_for(prompt):
@@ -167,6 +226,8 @@ def run(args):
         raise VibeError('Auftrag ist leer')
     root = Path(git(args.repo, 'rev-parse', '--show-toplevel'))
     check_repo(root, args.allow_private)
+    check_guard()
+    guard_name = guard_hook()
     base = git(root, 'rev-parse', '--verify', f'{args.base}^{{commit}}')
     own = not args.clean_base and args.base == 'HEAD'
     carry = git(root, *DIFF, '--binary', 'HEAD', binary=True) if own else b''
@@ -192,6 +253,7 @@ def run(args):
                 continue
             (worktree / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / name, worktree / name, follow_symlinks=False)
+        check_project_hooks(worktree, guard_name)
         base_tree = snapshot_tree(worktree)
         (run_dir / 'prompt.txt').write_text(PREAMBLE + prompt + '\n', encoding='utf-8')
         command = [binary, '--prompt-file', str(run_dir / 'prompt.txt'), '--workdir', str(worktree), '--trust',
@@ -271,7 +333,8 @@ def status():
     binary = vibe_bin()
     version = subprocess.run([binary, '--version'], capture_output=True, text=True).stdout.strip()
     runs = sorted((STATE / 'runs').glob('*')) if (STATE / 'runs').is_dir() else []
-    print(json.dumps({'vibe': binary, 'version': version, 'state': str(STATE), 'runs': len(runs),
+    print(json.dumps({'vibe': binary, 'version': version, 'guard_hook': guard_hook(), 'hooks': str(hooks_file()),
+                      'state': str(STATE), 'runs': len(runs),
                       'last_run': str(runs[-1]) if runs else None}, ensure_ascii=False))
 
 

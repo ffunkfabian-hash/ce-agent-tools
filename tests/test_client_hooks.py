@@ -1,6 +1,7 @@
-"""Codex and Antigravity adapters of the guard: real-shaped inputs and outputs of both clients, parity with Claude's
+"""Codex, Antigravity and Vibe adapters of the guard: real-shaped inputs and outputs of the clients, parity with Claude's
 decide(), fail-open. Codex shapes: tests/fixtures/codex-hooks-0.162.1 (generated schemas of openai/codex at tag
-rust-v0.162.1, codex-rs/hooks/schema/generated). Antigravity shapes: docs/hooks?tab=ide (Antigravity 2.x).
+rust-v0.162.1, codex-rs/hooks/schema/generated). Antigravity shapes: docs/hooks?tab=ide (Antigravity 2.x). Vibe shapes:
+tests/fixtures/vibe (logged from vibe 3.0.4 tool hooks) and the hook section of Vibe's bundled vibe skill.
 These are adapter tests with client-shaped stdin - not a measurement of a running client."""
 import contextlib
 import io
@@ -21,6 +22,7 @@ import antigravity_guard  # noqa: E402
 import client_adapter  # noqa: E402
 import codex_guard  # noqa: E402
 import guard  # noqa: E402
+import vibe_guard  # noqa: E402
 from test_guard import OUTSIDE_GIT, RULES, SharedRuleTests  # noqa: E402
 
 HEAVY = "python3 Tools/heavy_lock" + ".py run -- ./verify.sh run"  # split: the session's own guard reads this file too
@@ -73,6 +75,15 @@ def antigravity_input(name, args, **extra):
                  "transcriptPath": "~/.gemini/antigravity-ide/brain/ec33/.system_generated/logs/transcript.jsonl",
                  "artifactDirectoryPath": "~/.gemini/antigravity-ide/brain/ec33", "modelName": "gemini-3.6-flash-medium"},
                 **extra)
+
+
+def vibe_input(tool, tool_input, event="pre_tool", **extra):
+    return dict({"session_id": "c6b65d40-8c7f", "cwd": "/Users/x/repo", "parent_session_id": None,
+                 "hook_event_name": event, "transcript_path": "/Users/x/.vibe/logs/session/s.json", "tool_name": tool,
+                 "tool_call_id": "QNLC7SgwB", "tool_input": tool_input}, **extra)
+
+
+VIBE_MEASURED = Path(__file__).resolve().parent / "fixtures" / "vibe" / "measured-3.0.4-tool-hooks.json"
 
 
 def answer(module, payload):
@@ -260,6 +271,99 @@ class AntigravityAdapterTests(unittest.TestCase):
         self.assertEqual(output, {"decision": "allow", "reason": "ce-shared guard error (antigravity): kaputt"})
 
 
+class VibeAdapterTests(unittest.TestCase):
+    """Vibe's structured response: decision allow|deny, reason, system_message, hook_specific_output.{tool_input,
+    additional_context}. Anything else on stdout is Vibe's failure path (fail open with a UI warning)."""
+    KEYS = {"decision", "reason", "system_message", "hook_specific_output"}
+
+    def vibe(self, tool, tool_input, event="pre_tool", **extra):
+        text, output = answer(vibe_guard, vibe_input(tool, tool_input, event, **extra))
+        if output is not None:
+            self.assertLessEqual(set(output), self.KEYS, text)
+            self.assertIn(output.get("decision", "allow"), {"allow", "deny"}, text)
+            if output.get("decision") == "deny":
+                self.assertTrue(output["reason"], "Vibe requires a reason with deny")
+            self.assertNotIn("tool_input", output.get("hook_specific_output") or {}, "the guard never rewrites")
+        return output
+
+    def test_blocking_rules_deny_every_shell_tool(self):
+        for tool in ("file_system.bash", "process.start", "bash", "file_system.git_bash", "file_system.powershell"):
+            for rule, command in BLOCK_CASES.items():
+                output = self.vibe(tool, {"timeout": 120, "command": command})
+                self.assertEqual(output["decision"], "deny", (tool, command))
+                self.assertIn(f"[{rule}]", output["reason"])
+
+    def test_warnings_reach_the_ui_before_and_the_model_after_the_call(self):
+        for rule, command in WARN_CASES.items():
+            output = self.vibe("file_system.bash", {"command": command})
+            self.assertEqual(set(output), {"system_message"}, command)
+            self.assertIn(f"[{rule}]", output["system_message"])
+            output = self.vibe("file_system.bash", {"command": command}, "post_tool", tool_status="success")
+            self.assertIn(f"[{rule}]", output["hook_specific_output"]["additional_context"])
+            self.assertNotIn("decision", output, "a post_tool deny would replace the tool output")
+
+    def test_a_block_after_the_call_only_informs_the_model(self):
+        output = self.vibe("file_system.bash", {"command": BLOCK_CASES["heavy-resource"]}, "post_tool")
+        self.assertEqual(set(output), {"hook_specific_output"})
+        self.assertIn("[heavy-resource]", output["hook_specific_output"]["additional_context"])
+
+    def test_quiet_commands_and_other_tools_print_nothing(self):
+        for command in QUIET:
+            self.assertIsNone(self.vibe("file_system.bash", {"timeout": 120, "command": command}), command)
+            self.assertIsNone(self.vibe("file_system.bash", {"command": command}, "post_tool"), command)
+        for tool, args in [("file_system.read_file", {"file_path": ".github/workflows/ci.yml"}),
+                           ("file_system.grep", {"pattern": BLOCK_CASES["git-kein-force-push"], "path": "."}),
+                           ("agents.spawn", {"task": HEAVY, "config_name": "explore"}),
+                           ("web_search", {"query": HEAVY}),
+                           ("mcp_ce_search.ce_search", {"query": BLOCK_CASES["git-kein-force-push"]}),
+                           ("file_system.bash", {"timeout": 120})]:
+            self.assertIsNone(self.vibe(tool, args), tool)
+
+    def test_file_tools_are_file_events_with_paths_relative_to_cwd(self):
+        for tool, args in [("file_system.write_file", {"file_path": ".github/workflows/ci.yml", "content": "on: push"}),
+                           ("file_system.edit", {"file_path": "/w/.github/workflows/ci.yaml", "old_string": "a",
+                                                 "new_string": "b", "replace_all": False})]:
+            self.assertIn("[actions-sparsam]", self.vibe(tool, args)["system_message"], tool)
+        self.assertIsNone(self.vibe("file_system.write_file", {"file_path": "notes.txt", "content": "hello"}))
+        payloads = vibe_guard.normalize(vibe_input("file_system.edit", {"file_path": "a.md", "old_string": "x",
+                                                                        "new_string": "y"}))
+        self.assertEqual(payloads, [{"hook_event_name": "PreToolUse", "cwd": "/Users/x/repo", "tool_name": "Edit",
+                                     "tool_input": {"file_path": "/Users/x/repo/a.md", "old_string": "x",
+                                                    "new_string": "y"}}])
+
+    def test_a_shell_cwd_argument_wins_over_the_session_folder(self):
+        payloads = vibe_guard.normalize(vibe_input("process.start", {"command": "ls", "cwd": "sub"}))
+        self.assertEqual(payloads[0]["cwd"], "/Users/x/repo/sub")
+        payloads = vibe_guard.normalize(vibe_input("file_system.bash", {"command": "ls", "cwd": "/abs"}))
+        self.assertEqual(payloads[0]["cwd"], "/abs")
+
+    def test_vibe_blocks_merges_by_other_sessions_and_lets_sightline_through(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CE_ROLE", None)
+            self.assertEqual(self.vibe("file_system.bash", {"command": "gh pr merge 5 --squash"})["decision"], "deny")
+            for tool in ("mcp_github.merge_pull_request", "mcp_github.enable_pr_auto_merge"):
+                output = self.vibe(tool, {"pullNumber": 5})
+                self.assertEqual(output["decision"], "deny", tool)
+                self.assertIn("[merge-nur-sightline]", output["reason"])
+            self.assertIsNone(self.vibe("mcp_github.get_pull_request", {"pullNumber": 5}))
+            os.environ["CE_ROLE"] = "sightline"
+            self.assertIsNone(self.vibe("mcp_github.merge_pull_request", {"pullNumber": 5}))
+
+    def test_subagent_calls_get_the_same_verdict(self):
+        output = self.vibe("file_system.bash", {"command": BLOCK_CASES["heavy-resource"]},
+                           parent_session_id="726550b5-6040")
+        self.assertEqual(output["decision"], "deny")
+
+    def test_errors_fail_open_with_a_message(self):
+        for raw in ["not json", "[1]", ""]:
+            text, output = answer(vibe_guard, raw)
+            self.assertEqual(set(output), {"system_message"})
+            self.assertIn("guard error (vibe)", output["system_message"])
+        with mock.patch.object(guard, "decide", side_effect=RuntimeError("kaputt")):
+            text, output = answer(vibe_guard, vibe_input("file_system.bash", {"command": BLOCK_CASES["heavy-resource"]}))
+        self.assertEqual(output, {"system_message": "ce-shared guard error (vibe): kaputt"})
+
+
 class RealBranchTests(unittest.TestCase):
     """The measured client inputs of a commit on main (it passed the lexical rule). Their line is compound
     (`printf … > file; git commit …`): the bounded pre-check passes it with a note in both clients and the Git net
@@ -317,11 +421,26 @@ class RealBranchTests(unittest.TestCase):
                 _, output = answer(antigravity_guard, payload)
                 self.assertEqual(output["decision"], decision, (name, repo))
 
+    def test_the_measured_vibe_inputs_deny_the_commit_on_main_only(self):
+        inputs = json.loads(VIBE_MEASURED.read_text())["inputs"]
+        commit = next(i for i in inputs if "git commit" in i["tool_input"].get("command", ""))
+        for repo, decision in (("main repo", "deny"), ("work", None)):
+            _, output = answer(vibe_guard, dict(commit, cwd=str(self.base / repo)))
+            self.assertEqual((output or {}).get("decision"), decision, repo)
+        quiet = [i for i in inputs if i["hook_event_name"] == "pre_tool" and "git commit" not in json.dumps(i)]
+        self.assertEqual({i["tool_name"] for i in quiet}, {"file_system.bash", "file_system.write_file",
+                                                           "file_system.edit", "process.start", "file_system.read_file"})
+        for payload in quiet:
+            self.assertIsNone(answer(vibe_guard, dict(payload, cwd=str(self.base / "main repo")))[1], payload)
+        workflow = next(i for i in inputs if i["hook_event_name"] == "post_tool")
+        _, output = answer(vibe_guard, dict(workflow, cwd=str(self.base / "work")))
+        self.assertIn("[actions-sparsam]", output["hook_specific_output"]["additional_context"])
+
 
 class ParityTests(unittest.TestCase):
     """The adapters add no rule and lose none: every shell case of the Claude tests gets the same verdict."""
 
-    def test_every_shared_shell_case_has_the_claude_verdict_in_both_clients(self):
+    def test_every_shared_shell_case_has_the_claude_verdict_in_every_client(self):
         corpus = [c for hits, misses in list(SharedRuleTests.CASES.values()) + list(SharedRuleTests.WARN_CASES.values())
                   for c in hits + misses] + SharedRuleTests.DELEGATED
         for command in corpus:
@@ -333,7 +452,9 @@ class ParityTests(unittest.TestCase):
             _, agy = answer(antigravity_guard,
                             antigravity_input("run_command", {"CommandLine": command, "Cwd": OUTSIDE_GIT}))
             agy_kind = "deny" if agy["decision"] == "deny" else "warn" if "reason" in agy else "none"
-            self.assertEqual((codex_kind, agy_kind), (claude_kind, claude_kind), command)
+            _, vibe = answer(vibe_guard, vibe_input("file_system.bash", {"command": command}, cwd=OUTSIDE_GIT))
+            vibe_kind = "none" if vibe is None else "deny" if vibe.get("decision") == "deny" else "warn"
+            self.assertEqual((codex_kind, agy_kind, vibe_kind), (claude_kind,) * 3, command)
 
 
 class AdapterProcessTests(unittest.TestCase):
@@ -353,8 +474,11 @@ class AdapterProcessTests(unittest.TestCase):
                                   antigravity_input("run_command", {"CommandLine": "git status"}),
                                   {"CE_HOOK_LOG": str(log)})
             self.assertEqual(json.loads(out), {"decision": "allow"})
+            out = self.run_script("vibe_guard.py", vibe_input("file_system.bash", {"command": HEAVY}),
+                                  {"CE_HOOK_LOG": str(log)})
+            self.assertEqual(json.loads(out)["decision"], "deny")
             entries = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual([e["client"] for e in entries], ["codex", "antigravity"])
+            self.assertEqual([e["client"] for e in entries], ["codex", "antigravity", "vibe"])
             self.assertEqual(json.loads(entries[0]["input"])["tool_name"], "Bash")
             self.assertEqual(entries[1]["output"], {"decision": "allow"})
 
@@ -368,16 +492,18 @@ class AdapterProcessTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as folder:
                 hooks = Path(folder) / "hooks"
                 hooks.mkdir()
-                for name in ("client_adapter.py", "codex_guard.py", "antigravity_guard.py"):
+                for name in ("client_adapter.py", "codex_guard.py", "antigravity_guard.py", "vibe_guard.py"):
                     (hooks / name).write_text((HOOKS / name).read_text())
                 (hooks / "guard.py").write_text(broken)
                 for name, payload in (("codex_guard.py", codex_input("Bash", {"command": "git status"})),
-                                      ("antigravity_guard.py", antigravity_input("run_command", {"CommandLine": "ls"}))):
+                                      ("antigravity_guard.py", antigravity_input("run_command", {"CommandLine": "ls"})),
+                                      ("vibe_guard.py", vibe_input("file_system.bash", {"command": "ls"}))):
                     result = subprocess.run([sys.executable, str(hooks / name)], input=json.dumps(payload), text=True,
                                             capture_output=True, env={"PATH": "/usr/bin:/bin"})
                     answer = json.loads(result.stdout)
                     self.assertEqual(result.returncode, 0, (name, broken))
-                    self.assertIn("guard.py lädt nicht", answer.get("systemMessage") or answer.get("reason"))
+                    self.assertIn("guard.py lädt nicht", answer.get("systemMessage") or answer.get("reason")
+                                  or answer.get("system_message"))
                     self.assertEqual(answer.get("decision", "allow"), "allow")
 
     def test_each_client_entry_answers_open_in_its_format_when_a_shared_module_does_not_load(self):
@@ -388,21 +514,27 @@ class AdapterProcessTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as folder:
                     hooks = Path(folder) / "hooks"
                     hooks.mkdir()
-                    for name in ("client_adapter.py", "codex_guard.py", "antigravity_guard.py", "guard.py"):
+                    for name in ("client_adapter.py", "codex_guard.py", "antigravity_guard.py", "vibe_guard.py",
+                                 "guard.py"):
                         (hooks / name).write_text((HOOKS / name).read_text())
                     (hooks / module).write_text(broken)
                     for name, payload in (("codex_guard.py", codex_input("Bash", {"command": "git commit -m x"})),
                                           ("antigravity_guard.py",
-                                           antigravity_input("run_command", {"CommandLine": "git commit -m x"}))):
+                                           antigravity_input("run_command", {"CommandLine": "git commit -m x"})),
+                                          ("vibe_guard.py", vibe_input("file_system.bash",
+                                                                       {"command": "git commit -m x"}))):
                         result = subprocess.run([sys.executable, str(hooks / name)], input=json.dumps(payload),
                                                 text=True, capture_output=True, env={"PATH": "/usr/bin:/bin"})
                         answer = json.loads(result.stdout)
                         case = (module, broken, name)
                         self.assertEqual(result.returncode, 0, case)
-                        self.assertIn("lädt nicht", answer.get("systemMessage") or answer.get("reason"), case)
+                        self.assertIn("lädt nicht", answer.get("systemMessage") or answer.get("reason")
+                                      or answer.get("system_message"), case)
                         if name == "codex_guard.py":
                             self.assertEqual(validate(answer, OUTPUT_SCHEMA), [], case)
                             self.assertNotIn("hookSpecificOutput", answer, case)
+                        elif name == "vibe_guard.py":
+                            self.assertEqual(set(answer), {"system_message"}, case)
                         else:
                             self.assertEqual(answer["decision"], "allow", case)
 
