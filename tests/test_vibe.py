@@ -61,6 +61,15 @@ FAKE_VIBE = textwrap.dedent('''\
 ''')
 
 
+GUARD_HOOKS = textwrap.dedent('''\
+    [[hooks]]
+    name = "ce-shared-guard"
+    type = "pre_tool"
+    match = "re:bash|process_start|git_bash|powershell|write_file|edit|mcp_.*"
+    command = "if [ -f '<guard>' ]; then exec python3 '<guard>'; fi"
+    ''')
+
+
 def sh(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
 
@@ -90,8 +99,16 @@ class VibeTests(unittest.TestCase):
         mock.patch.object(ce_vibe, "STATE", self.tmp / "state").start()
         mock.patch.object(ce_vibe, "repo_hold", return_value=None).start()
         self.private = mock.patch.object(ce_vibe, "is_private", return_value=False).start()
+        self.vibe_home = self.tmp / "vibe-home"
+        self.vibe_home.mkdir()
+        guard = self.tmp / "ce tools/hooks/vibe_guard.py"
+        guard.parent.mkdir(parents=True)
+        guard.write_text("pass\n")
+        self.guard_hooks = GUARD_HOOKS.replace("<guard>", str(guard))
+        (self.vibe_home / "hooks.toml").write_text(self.guard_hooks)
         mock.patch.dict(os.environ, {"CE_VIBE_BIN": str(fake), "FAKE_VIBE_RECORD": str(self.record),
-                                     "FAKE_VIBE_MODE": "edit", "GH_TOKEN": "secret"}).start()
+                                     "FAKE_VIBE_MODE": "edit", "GH_TOKEN": "secret",
+                                     "VIBE_HOME": str(self.vibe_home)}).start()
 
     def call(self, *extra):
         out, err = io.StringIO(), io.StringIO()
@@ -273,6 +290,43 @@ class VibeTests(unittest.TestCase):
         self.private.return_value = True
         code, _, _ = self.call("--allow-private")
         self.assertEqual(code, 0)
+
+    def test_run_without_the_guard_hook_is_refused_before_any_worktree(self):
+        hooks = self.guard_hooks
+        for text in ("", "[[hooks]]\nname = 'lint'\ntype = 'post_agent'\ncommand = 'make check'\n",
+                     hooks.replace("pre_tool", "post_tool"), "not toml [", hooks.replace("vibe_guard.py", "moved/vibe_guard.py"),
+                     hooks.replace("re:bash|process_start|git_bash|powershell|write_file|edit|mcp_.*", "write_file"),
+                     hooks.replace("re:bash|process_start|git_bash|powershell|write_file|edit|mcp_.*", "bash")):
+            (self.vibe_home / "hooks.toml").write_text(text)
+            code, summary, err = self.call()
+            self.assertEqual((code, summary), (1, None), text)
+            self.assertIn("Vibe-Wächter fehlt", err)
+            self.assertIn("--client-hooks=vibe", err)
+        (self.vibe_home / "hooks.toml").unlink()
+        self.assertEqual(self.call()[0], 1)
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.worktrees(), 1)
+        (self.vibe_home / "hooks.toml").write_text(hooks.replace("re:bash|process_start|git_bash|powershell|write_file|edit|mcp_.*",
+                                                                 "*"))
+        self.assertEqual(self.call()[0], 0)
+
+    def test_a_project_hook_that_would_replace_the_guard_is_refused(self):
+        (self.repo / ".vibe").mkdir()
+        (self.repo / ".vibe" / "hooks.toml").write_text('[[hooks]]\nname = "ce-shared-guard"\ntype = "pre_tool"\ncommand = "true"\n')
+        code, summary, err = self.call()
+        self.assertEqual((code, summary), (1, None))
+        self.assertIn("überschreibt den Vibe-Wächter", err)
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.worktrees(), 1)
+        (self.repo / ".vibe" / "hooks.toml").write_text('[[hooks]]\nname = "lint"\ntype = "post_agent"\ncommand = "true"\n')
+        self.assertEqual(self.call()[0], 0)
+
+    def test_status_names_the_guard_hook(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            ce_vibe.status()
+        report = json.loads(out.getvalue())
+        self.assertEqual((report["guard_hook"], report["hooks"]), ("ce-shared-guard", str(self.vibe_home / "hooks.toml")))
 
     def test_hold_repo_is_refused(self):
         with mock.patch.object(ce_vibe, "repo_hold", return_value="Lockstep läuft"):

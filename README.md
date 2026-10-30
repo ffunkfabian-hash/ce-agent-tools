@@ -10,7 +10,7 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 |---|---|
 | `plugins/ce-shared/rules/*.md` | gemeinsame Regeln im hookify-Format (siehe unten), ausgewertet bei jedem Bash-/Datei-Werkzeug |
 | `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents |
-| `plugins/ce-shared/hooks/codex_guard.py`, `antigravity_guard.py` | derselbe Wächter als Codex-/Antigravity-User-Hook (dünne Adapter über `client_adapter.py`, siehe „Andere Clients“) |
+| `plugins/ce-shared/hooks/codex_guard.py`, `antigravity_guard.py`, `vibe_guard.py` | derselbe Wächter als Codex-/Antigravity-/Vibe-User-Hook (dünne Adapter über `client_adapter.py`, siehe „Andere Clients“; Vibe ab 0.27) |
 | `plugins/ce-shared/githooks/ce_githooks.py` | Git-Netz pre-commit/pre-push je Repo, umkehrbar (siehe „Git-Netz“) |
 | `plugins/ce-shared/hooks/postfach_watch.py` | zwei Stop-Hooks (0.15): `watch` (async + asyncRewake) startet für eine reservierte Sitzung den Postfach-Wächter und weckt sie bei einer Nachricht; `remind` hält als Rückfall das Anhalten einmal an (höchstens alle 2 h, nie ohne `gh`) |
 | `plugins/ce-shared/hooks/postfach_inbox.py` | PostToolUse-Hook (0.21): Post an eine reservierte Sitzung kommt mitten in der Arbeit als `additionalContext` (Codex über `codex_guard.py`). Bei leerem Postfach nur zwei Dateilesungen, kein Netz, kein Kontext; höchstens alle 3 min (`CE_INBOX_EVERY`) ein abgelöster Lesezugriff, dessen Ergebnis der nächste Werkzeugaufruf zustellt; zählt als `pending` wie ein Wecken des Stop-Wächters, der das Zugestellte überspringt. `CE_INBOX=0` schaltet ab, Fehler geben nichts aus |
@@ -135,6 +135,12 @@ verantwortlich: Auftrag in eine Datei (Ziel, Pfade, Grenzen, erwartete Tests), d
   Prüfung, Commit und Bericht bleiben beim Aufrufer.
 - **Sperren:** Repos mit `hold` (Lockstep) und private Repos werden abgelehnt; die Sichtbarkeit fragt `gh api repos/<origin>`
   ab, unbekannt zählt wie privat. `--allow-private` nur nach ausdrücklichem Ja des Nutzers (Code geht an Mistral).
+- **Wächter Pflicht (0.27):** ohne `pre_tool`-Hook mit `vibe_guard.py` in `$VIBE_HOME/hooks.toml` (Standard `~/.vibe`)
+  bricht `run` vor dem Worktree ab (Nutzerentscheid 30.10.2026: kein `auto-approve` ohne Wächter); verlangt werden ein
+  vorhandenes Skript und ein `match`, der `bash` und `process_start` trifft. Ein `.vibe/hooks.toml` des Repos mit demselben
+  Namen (würde ihn ersetzen) lehnt `run` ebenfalls ab. Eintragen mit Nexogens `./install.sh --client-hooks=vibe` (ab
+  Nexogen-Patch „vibe-guard-hook“), `./ce vibe status` nennt den gefundenen Eintrag. Der Hook sperrt dieselben Regeln wie
+  in Claude Code, auch in Vibes Subagenten ([Andere Clients](#andere-clients-codex-antigravity-vibe)).
 - **Hürden, kein Sandkasten:** im Lauf ist `remote.origin.pushurl` ungültig, `gh` hat ein leeres
   Konfigurationsverzeichnis und keine Tokens; Vibe kann trotzdem Shellbefehle ausführen (`git push <url>` mit
   SSH-Schlüssel ginge). Nach dem Lauf und beim harten Zeitabbruch endet die ganze Prozessgruppe; neue oder geänderte
@@ -264,7 +270,7 @@ Version und setzt `CE_TOOLS`:
 Cloud-Sitzungen ohne ausgewähltes ce-agent-tools laden über den Lader aus dem öffentlichen Repo; mit ausgewähltem Checkout gilt
 dessen `CE_TOOLS`. Neuer Stand für ein Repo: `./ce tools pin <commit>` mit dessen nächster Version (Sync nach Bedarf), derselbe Commit im `uses:` des PR-Checks.
 
-### Andere Clients (Codex, Antigravity)
+### Andere Clients (Codex, Antigravity, Vibe)
 
 Die Adapter übersetzen nur Ein- und Ausgabe; entschieden wird in `guard.decide` mit denselben `rules/*.md` (Gleichstand
 prüft `tests/test_client_hooks.py`). Eingetragen werden sie von Nexogens `./install.sh --client-hooks` (`--dry-run`,
@@ -275,12 +281,20 @@ fehlt das Skript später oder startet es nicht (Syntax-/Importfehler), antwortet
 |---|---|---|---|
 | Codex (CLI 0.162.1 gemessen; App ungemessen) | `~/.codex/hooks.json`, `PreToolUse`, Matcher `^(Bash\|apply_patch\|mcp__github__merge_pull_request\|mcp__github__enable_pr_auto_merge)$` (0.22; vorher `^(Bash\|apply_patch)$` reicht für alles außer die MCP-Merge-Werkzeuge); läuft erst nach Vertrauen unter `/hooks` | `tool_input.command` (Shellzeile bzw. Patchtext; je Datei des Patches ein Datei-Ereignis); `mcp__…`-Werkzeuge nur als Name für `merge-nur-sightline`, übrige Funktionswerkzeuge nicht | Block `hookSpecificOutput.permissionDecision: "deny"`, Warnung `additionalContext` + `systemMessage`, sonst keine Ausgabe |
 | Antigravity (IDE 2.5.5/CLI 1.4.5 gemessen; App ungemessen) | `~/.gemini/config/hooks.json`, Name `ce-shared-guard`, Matcher `run_command\|write_to_file\|replace_file_content\|multi_replace_file_content` | `toolCall.args.CommandLine` bzw. `TargetFile` (+ Inhalt), Ordner aus `Cwd`/`workspacePaths` | `{"decision": "deny", "reason"}`; sonst `allow` (laut Doku: an Folgehook/normale Freigabe weiterreichen), Warnung als `reason` |
+| Mistral Vibe (CLI 3.0.4 gemessen, headless und über `./ce vibe`; Extension ungemessen) | `~/.vibe/hooks.toml` (bzw. `$VIBE_HOME`), zwei Einträge `ce-shared-guard` (`pre_tool`) und `ce-shared-guard-context` (`post_tool`), `match = "re:bash\|process_start\|git_bash\|powershell\|write_file\|edit\|mcp_.*"`, nie `strict`; gilt auch für Subagenten | `tool_input.command` der Shell-Werkzeuge (`file_system.bash`, `process.start`; eigenes `cwd` gewinnt), `file_path` + `content` bzw. `old_string`/`new_string` relativ zu `cwd`; `mcp_github.merge_pull_request` als `mcp__github__…` | `pre_tool`: `{"decision": "deny", "reason"}` vor dem Freigabe-Prompt (auch bei `auto-approve`), Warnung nur als `system_message` (Oberfläche); `post_tool`: Warnung als `hook_specific_output.additional_context` im Werkzeugergebnis für das Modell; sonst keine Ausgabe |
 
 Claude-Subagent-Profile (`.claude/agent-guard.json`) gelten nur in Claude Code. `CE_HOOK_LOG=<Datei>` in der Umgebung des
 Clients schreibt jede Ein-/Ausgabe als JSON-Zeile – das ist die Messung eines echten Clientlaufs; Adaptertests mit
 nachgebauter Eingabe sind keine. Was in welchem Client tatsächlich feuert, steht im [Versionsbericht 0.12](docs/versions/0.12.md). Antigravity hat in den
 gemessenen CLI-/IDE-Proben `allow.reason` bei Warnungen und Fehlern nicht sichtbar an den Agenten weitergegeben;
 Sperren über `deny` greifen. Eine sichtbare Warnung ist dort derzeit nicht belegt.
+
+Vibe hat bei `pre_tool` keinen Modellkontext; deshalb der zweite Eintrag: `post_tool` läuft nur, wenn das Werkzeug
+tatsächlich lief, und hängt die Warnung an dessen Ergebnis (gemessen: das Modell sieht sie als eigenen Textblock).
+Ein Fehler im Hook (Exit ≠ 0, ungültige Ausgabe, Zeitüberschreitung) ist in Vibe von sich aus offen mit Warnung;
+der Wrapper des Installers antwortet bei fehlendem oder kaputtem Skript trotzdem mit `system_message`. Lücken:
+Eingaben an eine laufende Shell (`process.write`, `git_bash_stdin`, `powershell_stdin`) und Connector-Werkzeuge sieht der Wächter nicht; das Git-Netz bleibt das
+Netz darunter. `./ce vibe run` verweigert den Lauf ohne `pre_tool`-Eintrag mit `vibe_guard.py` ([0.27](docs/versions/0.27.md)).
 
 Mehrere Workspace-Ordner: Antigravity CLI 1.4.5 liefert kein `Cwd`; der erste `workspacePaths`-Eintrag ist dann nur ein Kontext-Fallback. Gemessen sind Einordner-Workspaces. Bei mehreren Roots kann die Commit-Vorabprüfung falsch zuordnen; einen einzelnen Workspace oder absolutes `git -C` verwenden. Das Git-Netz arbeitet am tatsächlichen Aufruf ([Gatehouse](docs/versions/0.12.md)).
 
@@ -365,6 +379,7 @@ Vereinbarung, kein kryptografischer Beweis.
 
 ## Erfahrungen
 
+- **Vibe meldet Pfade relativ und Werkzeuge qualifiziert:** `tool_name` ist immer `file_system.bash`, `process.start`, `mcp_<server>.<tool>`, `file_path` kommt so, wie das Modell es schrieb (meist relativ zu `cwd`). Hintergrundbefehle laufen über `process.start`, das `match = "bash"` nicht trifft ([0.27](docs/versions/0.27.md)).
 - **Schreibschutz hält root nicht auf:** Cloud-Sitzungen laufen als root; Python legte trotz schreibgeschütztem Cache `__pycache__` an, die Manifestprüfung verwarf den Cache bei jedem Aufruf. Bytecode mit `PYTHONPYCACHEPREFIX` außerhalb umleiten ([0.20](docs/versions/0.20.md)).
 - **Python von python.org hat am Mac keine Zertifikate:** `urllib` scheitert an jedem HTTPS-Abruf (`CERTIFICATE_VERIFY_FAILED`),
   solange niemand „Install Certificates.command“ ausgeführt hat; `curl` und `git` gehen. Der Lader versucht deshalb danach das

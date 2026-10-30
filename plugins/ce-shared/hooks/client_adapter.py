@@ -1,11 +1,11 @@
-"""Shared runner of the Codex and Antigravity adapters around guard.decide.
+"""Shared runner of the Codex, Antigravity and Vibe adapters around guard.decide.
 
 An adapter turns the client's PreToolUse input into zero or more Claude-shaped payloads (tool_name Bash/Edit/Write/
 MultiEdit, tool_input with Claude's field names), lets guard.decide judge each one with this plugin's rules and renders
 the combined verdict in the client's own output format. The decision logic stays in guard.py alone.
 
 Claude subagent profiles (.claude/agent-guard.json) are not applied here: the payloads never carry agent_type, because
-those profiles describe Claude Code subagents, not Codex or Antigravity agents of the same name.
+those profiles describe Claude Code subagents, not Codex, Antigravity or Vibe agents of the same name.
 
 Any internal error lets the call through with a message (fail open). With CE_HOOK_LOG=<file> in the client's
 environment every input and output is appended as a JSON line - the measurement of a real client run.
