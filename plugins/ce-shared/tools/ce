@@ -5,6 +5,7 @@
 #   plugins check|fix [--apply] [--user-only]   (0.16: Claude-Code-Installationen von ce-shared auf einer Version)
 #   tidy [--apply|--nightly] [--json] [--category K]   (0.18: Reste fertiger Sitzungen, Probelauf ohne --apply)
 #   tools where|fetch|pin <commit>   (0.20: Repos mit tools_version; ihr ./ce ist der Lader ce_loader.py)
+#   vibe run --prompt-file F [--json] | status | clean [--apply]   (0.26: Aufgabe an Mistral Vibe im Wegwerf-Worktree, Ergebnis als Patch)
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
@@ -59,12 +60,13 @@ case "$cmd" in
     esac;;
   report)   exec python3 "$tools/ce_report.py" "$@";;
   api)      exec python3 "$tools/ce_api.py" "$@";;
+  vibe)     exec python3 "$tools/ce_vibe.py" "$@";;
   sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
   tidy)     exec python3 "$tools/ce_tidy.py" "$@";;
   tools)    exec python3 "$tools/ce_loader.py" tools "$@";;  # 0.20: also in repos that still have a copy (tools pin)
   plugins)  exec python3 "$tools/ce_plugins.py" "$@";;
   mail)     case "${1:-}" in ""|-*) exec python3 "$tools/ce_await_mail.py" "$@";; esac; exec python3 "$tools/ce_await_mail.py" --name "$@";;
   say|who)  exec python3 "$tools/ce_postfach.py" "$cmd" "$@";;
-  help|--help|-h) sed -n 2,7p "$0";;
-  *)        sed -n 2,7p "$0"; exit 2;;
+  help|--help|-h) sed -n 2,8p "$0";;
+  *)        sed -n 2,8p "$0"; exit 2;;
 esac

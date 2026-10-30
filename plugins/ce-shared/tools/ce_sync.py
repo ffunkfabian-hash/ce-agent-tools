@@ -35,7 +35,7 @@ import ce_common  # noqa: E402
 SYNC_FILES = ["heavy_lock.py", "ce_common.py", "ce_check.py", "ce_lint.py", "ce_release.py", "ce_worktrees.py",
               "ce_sync.py", "ce_docs.py", "ce_nightly.py", "ce_session_name.py", "ce_await_mail.py",
               "ce_codex_quota.py", "ce_codex_cloud.py", "ce_contract.py", "ce_interfaces.py", "ce_search.py", "ce_report.py", "ce_imagediff.py", "ce_media.py",
-              "ce_judge.py", "ce_api.py", "ce_api_budget.py", "ce"]
+              "ce_judge.py", "ce_api.py", "ce_api_budget.py", "ce_vibe.py", "ce"]
 SYNC_FILES += ["ce_console.py", "ce_lock_status.py", "ce_blender_preflight.py", "ce_turnaround.py"]
 SYNC_FILES += ["ce_postfach.py"]  # 0.14: ./ce session say|who, announcement of ce_session_name.py --reserve
 SYNC_FILES += ["ce_plugins.py"]  # 0.16: ./ce plugins check|fix
