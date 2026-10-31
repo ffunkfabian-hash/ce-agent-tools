@@ -214,7 +214,7 @@ class ManualWatcher(Worktree):
     def run_cli(self, *args):
         env = dict(os.environ, PATH=os.environ["PATH"])
         return subprocess.run([sys.executable, str(PLUGIN / "tools" / "ce_await_mail.py"), *args],
-                              cwd=self.repo, capture_output=True, text=True, env=env, timeout=30)
+                              cwd=self.repo, capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
 
     def test_second_watcher_for_the_same_session_exits_4(self):
         (self.git / am.PID_FILE).write_text(str(self.fake_watcher()))
@@ -239,15 +239,104 @@ class Slot(Worktree):
         self.assertFalse((self.git / am.PID_FILE).exists())
 
     def test_foreign_pid_does_not_count(self):
-        sleeper = subprocess.Popen(["sleep", "30"])
+        # 0.31: Windows has no sleep program outside Git Bash - a Python sleeper without the watcher's name instead
+        sleeper = subprocess.Popen(["sleep", "30"] if os.name != "nt" else [sys.executable, "-c", "import time; time.sleep(30)"])
         self.addCleanup(lambda: (sleeper.kill(), sleeper.wait()))
         (self.git / am.PID_FILE).write_text(str(sleeper.pid))
         self.assertEqual(am.watcher_pid(self.git), 0)
+        self.assertIsNone(sleeper.poll(), "the check must not end the foreign process (os.kill(pid, 0) on Windows would)")
+
+
+class WindowsBranches(Worktree):
+    """0.31: the Windows paths of the watcher, mocked so they also run on macOS/Linux, plus real checks on Windows."""
+
+    class FakeLock:
+        def __init__(self, alive=True, started="filetime 1"):
+            self.alive, self.started, self.asked = alive, started, []
+
+        def pid_alive(self, pid):
+            self.asked.append(pid)
+            return self.alive
+
+        def process_started(self, pid):
+            return self.started
+
+    def windows(self, lock, command):
+        from unittest import mock
+        patches = [mock.patch.object(am, "WINDOWS", True), mock.patch.object(am, "_heavy_lock", return_value=lock),
+                   mock.patch.object(am, "windows_command", return_value=command),
+                   mock.patch.object(am.os, "kill", side_effect=AssertionError("os.kill on Windows is TerminateProcess"))]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_alive_on_windows_never_signals_and_checks_the_command_line(self):
+        from unittest import mock
+        self.windows(self.FakeLock(alive=True), "C:\\Python\\python.exe ce_await_mail.py --name x")
+        self.assertTrue(am.alive(4242))
+        with mock.patch.object(am, "windows_command", return_value="C:\\Windows\\notepad.exe"):
+            self.assertFalse(am.alive(4242), "a reused pid of another program does not count")
+        with mock.patch.object(am, "windows_command", return_value=None):
+            self.assertTrue(am.alive(4242), "an unreadable command line counts as alive, like a failed ps")
+        lock = self.FakeLock(alive=False)
+        with mock.patch.object(am, "_heavy_lock", return_value=lock):
+            self.assertFalse(am.alive(4242))
+        self.assertEqual(lock.asked, [4242])
+
+    def test_alive_on_windows_without_heavy_lock_stays_quiet(self):
+        self.windows(None, "")
+        self.assertTrue(am.alive(4242), "no platform layer: no second watcher rather than two")
+
+    def test_windows_parent_reports_1_when_the_session_is_gone_or_its_pid_reused(self):
+        state = {}
+        self.assertEqual(hook.windows_parent(state, self.FakeLock(alive=True)), os.getppid())
+        self.assertEqual(hook.windows_parent(state, self.FakeLock(alive=False)), 1)
+        self.assertEqual(hook.windows_parent(state, self.FakeLock(alive=True, started="filetime 2")), 1, "pid reused")
+        self.assertEqual(hook.windows_parent(state, self.FakeLock(alive=True)), os.getppid())
+
+    def test_the_inbox_read_starts_detached_and_retries_without_breakaway(self):
+        from unittest import mock
+        inbox = load("postfach_inbox", PLUGIN / "hooks" / "postfach_inbox.py")
+        calls = []
+
+        def popen(argv, **kwargs):
+            calls.append(kwargs["creationflags"])
+            if len(calls) == 1:
+                raise PermissionError("job without breakaway")
+
+        with mock.patch.multiple(subprocess, DETACHED_PROCESS=0x8, CREATE_NEW_PROCESS_GROUP=0x200, create=True):
+            inbox.start_fetch_windows(["x"], popen=popen)
+        self.assertEqual(calls, [0x8 | 0x200 | 0x01000000, 0x8 | 0x200])
+
+    @unittest.skipUnless(os.name == "nt", "real Windows processes")
+    def test_on_windows_the_check_leaves_the_watcher_running(self):
+        import heavy_lock
+        pid = self.fake_watcher()
+        (self.git / am.PID_FILE).write_text(str(pid))
+        self.assertEqual(am.watcher_pid(self.git), pid)
+        self.assertTrue(heavy_lock.pid_alive(pid), "alive() must not end the process it looks at")
+        self.assertIn("ce_await_mail", am.windows_command(pid))
+        self.assertEqual(am.windows_command(999999999), "")
+        self.assertEqual(hook.windows_parent({}), os.getppid())
+
+    def test_hooks_speak_utf8_whatever_the_console_encoding(self):
+        """0.31: Windows' cp1252 pipe would turn „Salvo“ into mojibake and → into an error; the hooks switch to UTF-8."""
+        env = {key: value for key, value in os.environ.items() if key not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+        for name in ("postfach_watch", "postfach_inbox"):
+            script = (f"import importlib.util, sys; sys.path.insert(0, {str(PLUGIN / 'hooks')!r}); "
+                      f"spec = importlib.util.spec_from_file_location('h', {str(PLUGIN / 'hooks' / (name + '.py'))!r}); "
+                      "h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h); h.utf8_io(); "
+                      "line = sys.stdin.readline().strip(); print(line + ' → ok'); print('„Fehler“ →', file=sys.stderr)")
+            done = subprocess.run([sys.executable, "-c", script], input="TG 0.24 „Salvo“ · Ö".encode("utf-8"),
+                                  capture_output=True, env=env, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.decode("utf-8").strip(), "TG 0.24 „Salvo“ · Ö → ok", name)
+            self.assertEqual(done.stderr.decode("utf-8").strip(), "„Fehler“ →", name)
 
 
 class Registration(unittest.TestCase):
     def test_hooks_json_registers_async_watcher_and_reminder(self):
-        stop = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]["Stop"]
+        stop = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["Stop"]
         entries = [h for group in stop for h in group["hooks"]]
         watch = [h for h in entries if "postfach_watch.py\" watch" in h["command"]]
         remind = [h for h in entries if "postfach_watch.py\" remind" in h["command"]]
@@ -262,11 +351,11 @@ class Registration(unittest.TestCase):
             plugin = Path(folder) / "ce-shared"
             (plugin / "hooks").mkdir(parents=True)
             (plugin / "tools").mkdir()
-            (plugin / "hooks" / "postfach_watch.py").write_text((PLUGIN / "hooks" / "postfach_watch.py").read_text(encoding="utf-8"))
+            (plugin / "hooks" / "postfach_watch.py").write_text((PLUGIN / "hooks" / "postfach_watch.py").read_text(encoding="utf-8"), encoding="utf-8")
             (plugin / "tools" / "ce_await_mail.py").write_text("raise RuntimeError('kaputt')\n")
             for mode, expected in (("remind", "{}"), ("watch", "")):
                 result = subprocess.run([sys.executable, str(plugin / "hooks" / "postfach_watch.py"), mode], input="{}",
-                                        capture_output=True, text=True, env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin)))
+                                        capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin)))
                 self.assertEqual((result.returncode, result.stdout.strip()), (0, expected), mode)
 
 

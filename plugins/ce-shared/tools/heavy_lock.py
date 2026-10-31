@@ -17,7 +17,8 @@ Contact sheets and docs are light; render/bake load still needs coordination reg
                                                             client, running time, command, waiting runs (0.24)
 
 Contract (this file is the one copy; the repositories call it through CE_TOOLS and keep only thin wrappers):
-- an exclusive flock(2) on ~/Library/Caches/CubeEscape/heavy-<resource>.lock, held by the waiting process for the
+- an exclusive flock(2) on ~/Library/Caches/CubeEscape/heavy-<resource>.lock (Windows 0.31: LockFileEx on
+  %LOCALAPPDATA%\\CubeEscape\\heavy-<resource>.lock, cache_dir()), held by the waiting process for the
   whole heavy step; the file is never deleted. Without a resource (old callers, CE_HEAVY_RESOURCE unset) the old
   shared file heavy-run.lock is used: such steps still queue behind each other, and behind resource-aware ones through a shared/exclusive migration barrier;
 - the holder writes one JSON line {"pid", "what", "checkout", "since"} into it; a waiting run prints it (and again every
@@ -28,7 +29,8 @@ Contract (this file is the one copy; the repositories call it through CE_TOOLS a
   TERM/HUP/INT on to the whole group and return only when the group is empty: a grandchild (Blender under
   check_output.sh) keeps the lock even when its parent died first. Children that leave the group on purpose
   (their own start_new_session) do not. A holder that starts its heavy children itself (testplan.py) does the same
-  with Groups;
+  with Groups. Windows (0.31): the group is a job object (_Job: kill on close, breakaway allowed), Ctrl+C/Ctrl+Break
+  go on as Ctrl+Break, a second signal ends the job;
 - CE_HEAVY_LOCK=0 skips the queue; CE_HEAVY_HELD=<resource|1> marks the children of a holder, so a heavy step on the
   same resource inside another one does not wait for its own parent (a step on another resource queues for that one). CE_HEAVY_RESOURCE names the resource for callers that cannot pass it.
   CE_HEAVY_LOCK_FILE moves the lock directory and file (tests only): the resource is added to its stem.
@@ -51,16 +53,310 @@ import time
 
 try:
     import fcntl
-except ImportError:  # pragma: no cover - no flock (Windows): nothing to queue on
+except ImportError:  # Windows: LockFileEx below
     fcntl = None
 
-DEFAULT = os.path.join(os.path.expanduser("~"), "Library", "Caches", "CubeEscape", "heavy-run.lock")
+WINDOWS = os.name == "nt"
+
+
+def cache_dir(*parts: str) -> str:
+    """CubeEscape's cache folder on this system (locks, check state, search index, nightly logs): macOS (and Linux, as
+    before) ~/Library/Caches/CubeEscape, Windows %LOCALAPPDATA%\\CubeEscape (0.31). The one place for that path."""
+    if WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(base, "CubeEscape", *parts)
+    return os.path.join(os.path.expanduser("~"), "Library", "Caches", "CubeEscape", *parts)
+
+
+DEFAULT = cache_dir("heavy-run.lock")
 RESOURCES = ("unity", "blender", "gpu")
+# never inherited (O_CLOEXEC; Windows: O_NOINHERIT, binary so the holder line keeps its bytes)
+OPEN_FLAGS = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOINHERIT", 0) | getattr(os, "O_BINARY", 0)
 POLL_SECONDS = 2.0
 REPORT_SECONDS = 300.0  # a waiting run says every five minutes that it still waits
 GROUP_POLL = 0.1  # how often run_group looks whether the process group of a finished command is empty
 STRAGGLER_SECONDS = 5.0  # after this long it says which group still keeps the lock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# the signals a holder passes on to its groups (Windows has no HUP; Ctrl+Break is its second console signal)
+FORWARDED = ((signal.SIGTERM, signal.SIGBREAK, signal.SIGINT) if WINDOWS
+             else (signal.SIGTERM, signal.SIGHUP, signal.SIGINT))
+
+
+# Platform layer (0.31 "Crossover"). POSIX keeps flock(2), pread/pwrite and process groups exactly as before. Windows:
+# LockFileEx on one byte far behind the holder line (a locked range cannot be read by others there, the line must stay
+# readable) - shared and exclusive like flock, freed when the handle closes or the process dies; a job object as the
+# process group. Kept in this file: repositories load heavy_lock.py on its own (spec_from_file_location, Blender).
+if WINDOWS:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _LOCK_OFFSET_HIGH = 0x40000000  # byte 2**62: never data
+    _ERROR_LOCK_VIOLATION, _ERROR_INVALID_PARAMETER, _STILL_ACTIVE = 33, 87, 259
+    _CREATE_SUSPENDED = 0x4
+    _JOB_BASIC_ACCOUNTING, _JOB_EXTENDED_LIMIT = 1, 9  # JOBOBJECTINFOCLASS
+    _PROCESS_TERMINATE, _PROCESS_SET_QUOTA, _PROCESS_SUSPEND_RESUME = 0x1, 0x100, 0x800
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _JOB_LIMIT_BREAKAWAY_OK, _JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x800, 0x2000
+
+    class _OVERLAPPED(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p), ("Offset", wintypes.DWORD),
+                    ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
+
+    class _BASIC_LIMIT(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+    class _EXTENDED_LIMIT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BASIC_LIMIT), ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    class _ACCOUNTING(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                    ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+    for _name, _res, _args in (
+            ("LockFileEx", wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                           wintypes.DWORD, ctypes.POINTER(_OVERLAPPED)]),
+            ("UnlockFileEx", wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                             ctypes.POINTER(_OVERLAPPED)]),
+            ("OpenProcess", wintypes.HANDLE, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]),
+            ("CloseHandle", wintypes.BOOL, [wintypes.HANDLE]),
+            ("GetExitCodeProcess", wintypes.BOOL, [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]),
+            ("GetProcessTimes", wintypes.BOOL, [wintypes.HANDLE] + [ctypes.POINTER(ctypes.c_uint64)] * 4),
+            ("CreateJobObjectW", wintypes.HANDLE, [ctypes.c_void_p, wintypes.LPCWSTR]),
+            ("SetInformationJobObject", wintypes.BOOL, [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]),
+            ("QueryInformationJobObject", wintypes.BOOL, [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                          wintypes.DWORD, ctypes.c_void_p]),
+            ("AssignProcessToJobObject", wintypes.BOOL, [wintypes.HANDLE, wintypes.HANDLE]),
+            ("TerminateJobObject", wintypes.BOOL, [wintypes.HANDLE, wintypes.UINT])):
+        _function = getattr(_k32, _name)
+        _function.restype, _function.argtypes = _res, _args
+    _ntdll = ctypes.WinDLL("ntdll")
+    _ntdll.NtResumeProcess.restype, _ntdll.NtResumeProcess.argtypes = ctypes.c_long, [wintypes.HANDLE]
+
+    def _range():
+        return ctypes.byref(_OVERLAPPED(0, 0, 0, _LOCK_OFFSET_HIGH, None))
+
+
+def lock_fd(fd: int, exclusive: bool = True, wait: bool = False) -> None:
+    """flock(fd, LOCK_EX/LOCK_SH [| LOCK_NB]) on every system: BlockingIOError when another holder has it and wait is
+    False. On Windows the locks of one process exclude each other too (flock: per open file), like a second open."""
+    if fcntl is not None:
+        fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | (0 if wait else fcntl.LOCK_NB))
+        return
+    flags = (2 if exclusive else 0) | (0 if wait else 1)  # LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY
+    if not _k32.LockFileEx(msvcrt.get_osfhandle(fd), flags, 0, 1, 0, _range()):
+        error = ctypes.get_last_error()
+        if error == _ERROR_LOCK_VIOLATION:
+            raise BlockingIOError(error, "locked by another holder")
+        raise ctypes.WinError(error)
+
+
+def unlock_fd(fd: int) -> None:
+    """Frees the lock at once (Windows frees a closed handle's lock only "when resources allow")."""
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        _k32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, _range())
+
+
+def read_at(fd: int, size: int, offset: int = 0) -> bytes:
+    if hasattr(os, "pread"):
+        return os.pread(fd, size, offset)
+    os.lseek(fd, offset, os.SEEK_SET)
+    return os.read(fd, size)
+
+
+def write_at(fd: int, data: bytes, offset: int = 0) -> None:
+    if hasattr(os, "pwrite"):
+        os.pwrite(fd, data, offset)
+        return
+    os.lseek(fd, offset, os.SEEK_SET)
+    os.write(fd, data)
+
+
+def pid_alive(pid: int) -> bool:
+    """True while a process with that pid exists. Never os.kill(pid, 0) on Windows: there it is TerminateProcess."""
+    if not WINDOWS:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+    handle = _k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ctypes.get_last_error() != _ERROR_INVALID_PARAMETER  # access denied: it exists
+    try:
+        code = wintypes.DWORD()
+        return not _k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == _STILL_ACTIVE
+    finally:
+        _k32.CloseHandle(handle)
+
+
+def process_started(pid: int) -> str | None:
+    """Windows: the creation time of a live process (a reused pid gets another one), None when it cannot be read."""
+    if not WINDOWS:
+        return None
+    handle = _k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        times = [ctypes.c_uint64() for _ in range(4)]
+        if not _k32.GetProcessTimes(handle, *map(ctypes.byref, times)) or not pid_alive(pid):
+            return None
+        return "filetime %d" % times[0].value
+    finally:
+        _k32.CloseHandle(handle)
+
+
+class _Job:
+    """Windows' process group: a job object that the command joins while it is still suspended, so every process it
+    starts belongs to it too. alive() while any of them runs. Kill on close: when the wrapper dies (TerminateProcess,
+    a closed console), the job's processes die with it - the lock is never free while a part still runs (stricter than
+    POSIX, where only a SIGKILL of the wrapper alone parts them). Breakaway allowed: a child that asks to leave
+    (CREATE_BREAKAWAY_FROM_JOB, the counterpart of start_new_session) is not waited for. Without a job (assignment
+    refused) only the command itself is waited for."""
+
+    def __init__(self, child: subprocess.Popen):
+        self.child, self.pid, self.handle, self.signals = child, child.pid, None, 0
+        process = _k32.OpenProcess(_PROCESS_TERMINATE | _PROCESS_SET_QUOTA | _PROCESS_SUSPEND_RESUME, False, child.pid)
+        try:
+            job = _k32.CreateJobObjectW(None, None)
+            if job and process:
+                limits = _EXTENDED_LIMIT()
+                limits.BasicLimitInformation.LimitFlags = _JOB_LIMIT_KILL_ON_JOB_CLOSE | _JOB_LIMIT_BREAKAWAY_OK
+                size = ctypes.sizeof(limits)
+                if (_k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT, ctypes.byref(limits), size)
+                        and _k32.AssignProcessToJobObject(job, process)):
+                    self.handle, job = job, None
+            if job:
+                _k32.CloseHandle(job)
+        finally:
+            resumed = bool(process) and _ntdll.NtResumeProcess(process) == 0
+            if process:
+                _k32.CloseHandle(process)
+            if not resumed:  # never leave a suspended command behind
+                child.kill()
+                self.close()
+                raise OSError("heavy lock: could not start %s (suspended start failed)" % child.args)
+
+    def __str__(self):
+        return str(self.pid)
+
+    def alive(self) -> bool:
+        if self.handle:
+            info = _ACCOUNTING()
+            if _k32.QueryInformationJobObject(self.handle, _JOB_BASIC_ACCOUNTING, ctypes.byref(info),
+                                              ctypes.sizeof(info), None):
+                return info.ActiveProcesses > 0
+        return self.child.poll() is None
+
+    def signal(self, _signum) -> None:
+        """First signal: Ctrl+Break for the command's console group (Python, sh, Blender end on it). Again, or without a
+        shared console: the whole job ends (TerminateJobObject) - a GUI program such as Unity has no console."""
+        self.signals += 1
+        if self.signals == 1:
+            try:
+                os.kill(self.pid, signal.CTRL_BREAK_EVENT)
+                return
+            except OSError:
+                pass
+        if self.handle:
+            _k32.TerminateJobObject(self.handle, 1)
+        else:
+            with contextlib.suppress(OSError):
+                self.child.kill()
+
+    def close(self) -> None:
+        if self.handle:
+            _k32.CloseHandle(self.handle)
+            self.handle = None
+
+
+def posix_shell(name: str = "sh") -> str | None:
+    """Windows: Git for Windows' sh or bash (next to git.exe), else one on PATH - never System32's bash.exe, which is
+    WSL (another system with other paths). POSIX: the name itself. Twin: ce_loader.windows_sh (the loader stays
+    standard-library-only and on its own) - change both."""
+    if not WINDOWS:
+        return name
+    import shutil
+    git = shutil.which("git")
+    candidates = []
+    if git:
+        root = os.path.dirname(os.path.dirname(os.path.realpath(git)))  # …\Git\cmd\git.exe -> …\Git
+        candidates += [os.path.join(root, "bin", name + ".exe"), os.path.join(root, "usr", "bin", name + ".exe")]
+    candidates += [os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", name + ".exe")]
+    found = shutil.which(name)
+    system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32").lower()
+    if found and not os.path.dirname(os.path.realpath(found)).lower().startswith(system32):
+        candidates.append(found)
+    return next((path for path in candidates if os.path.isfile(path)), None)
+
+
+def script_argv(argv: list) -> list:
+    """argv as this system can start it. Windows starts only programs (a script is WinError 193): an existing script
+    file with a shebang (sh/bash/zsh, python/python3) or ending in .sh goes through Git Bash or this Python; zsh
+    scripts run in bash (there is no zsh). Unchanged on POSIX and for programs."""
+    argv = list(argv)
+    if not WINDOWS or not argv or not os.path.isfile(str(argv[0])):
+        return argv
+    script = str(argv[0])
+    if os.path.splitext(script)[1].lower() in (".exe", ".com", ".bat", ".cmd"):
+        return argv
+    try:
+        with open(script, "rb") as handle:
+            first = handle.readline(256).decode("utf-8", "replace")
+    except OSError:
+        return argv
+    words = first[2:].split() if first.startswith("#!") else []
+    if words and os.path.basename(words[0]) == "env":
+        words = words[1:]
+        while words and words[0].startswith("-"):  # env's own options (-S)
+            words = words[1:]
+    program = os.path.basename(words[0]).lower() if words else ""
+    flags = [word for word in words[1:] if word.startswith("-")]  # bash -eu: without -e a failure would end with 0
+    if program.startswith("python"):
+        return [sys.executable, *flags, *argv]
+    if program in ("bash", "zsh") or (not program and script.lower().endswith(".sh")) or program == "sh":
+        shell = posix_shell("sh" if program == "sh" or not program else "bash")
+        if shell:  # zsh's options mean other things in bash (-f): those are dropped
+            return [shell, *([] if program == "zsh" else flags), *argv]
+    return argv
+
+
+def spawn_group(argv, **popen):
+    """(child, group): the command in a process group of its own - POSIX start_new_session (its pid is the group id),
+    Windows a job object (_Job) and a console group of its own (scripts through script_argv)."""
+    if not WINDOWS:
+        child = subprocess.Popen(argv, start_new_session=True, **popen)
+        return child, child.pid
+    flags = popen.pop("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED
+    child = subprocess.Popen(script_argv(argv), creationflags=flags, **popen)
+    return child, _Job(child)
+
+
+def signal_group(group, signum) -> None:
+    if isinstance(group, int):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(group, signum)
+    else:
+        group.signal(signum)
+
+
+def close_group(group) -> None:
+    if not isinstance(group, int):
+        group.close()
 
 
 def resource_name(resource: str | None = None) -> str | None:
@@ -111,18 +407,16 @@ def describe(text: str) -> str:
 
 def holder(resource: str | None = None) -> str | None:
     """The current holder of that resource's lock in words, or None while nobody holds it."""
-    if fcntl is None:
-        return None
     try:
-        fd = os.open(lock_path(resource), os.O_RDONLY | os.O_CLOEXEC)
+        fd = os.open(lock_path(resource), os.O_RDONLY | OPEN_FLAGS)
     except OSError:
         return None
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            lock_fd(fd, exclusive=False)
         except BlockingIOError:
-            return describe(os.pread(fd, 4096, 0).decode("utf-8", "replace"))
-        fcntl.flock(fd, fcntl.LOCK_UN)
+            return describe(read_at(fd, 4096).decode("utf-8", "replace"))
+        unlock_fd(fd)
         return None
     finally:
         os.close(fd)
@@ -162,10 +456,18 @@ STALE_RESERVATION_S = 3 * 24 * 3600  # like ce_postfach: an older reservation ma
 COMMAND_CHARS = 160
 
 
+WINDOWS_PS = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object "
+              "{ '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }")
+
+
 def process_table(runner=subprocess.run) -> dict:
-    """pid -> (parent pid, command line) of every process (ps -A); empty when ps is missing or fails."""
+    """pid -> (parent pid, command line) of every process (ps -A; Windows: Win32_Process, same line format); empty
+    when the listing is missing or fails."""
+    command = (["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_PS] if WINDOWS
+               else ["ps", "-A", "-o", "pid=,ppid=,command="])
     try:
-        out = runner(["ps", "-A", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=5).stdout
+        out = runner(command, capture_output=True, text=True, timeout=20 if WINDOWS else 5,
+                     **({"encoding": "utf-8", "errors": "replace"} if WINDOWS else {})).stdout
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return {}
     table = {}
@@ -342,30 +644,28 @@ class HeavyLock:
         if self.fd is not None or self.skipped:
             return self
         self.skipped = skipped(resource=self.resource)
-        if fcntl is None:  # pragma: no cover
-            self.skipped = self.skipped or "no flock on this system"
         if self.skipped:
             return self
         if self.resource == "gpu" and os.environ.get("CE_HEAVY_HELD"):
             raise ValueError("acquire exclusive gpu lock before other resources")
         path = lock_path(self.resource)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)  # never inherited (O_CLOEXEC, PEP 446)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | OPEN_FLAGS, 0o644)  # never inherited (O_CLOEXEC, PEP 446)
         start = last = time.monotonic()
         announced = False
         waiter = None
         gate = None
         try:
             if self.resource:
-                gate = os.open(os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
-            locks = ([(gate, fcntl.LOCK_EX if self.resource == "gpu" else fcntl.LOCK_SH)] if gate is not None else []) + [(fd, fcntl.LOCK_EX)]
-            for descriptor, mode in locks:
+                gate = os.open(os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT, os.O_RDWR | os.O_CREAT | OPEN_FLAGS, 0o644)
+            locks = ([(gate, self.resource == "gpu")] if gate is not None else []) + [(fd, True)]
+            for descriptor, exclusive in locks:
               while True:
                 try:
-                    fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
+                    lock_fd(descriptor, exclusive)
                     break
                 except BlockingIOError:
-                    who = describe(os.pread(descriptor, 4096, 0).decode("utf-8", "replace"))
+                    who = describe(read_at(descriptor, 4096).decode("utf-8", "replace"))
                     if who == "unknown":
                         who = "; ".join(filter(None, (holder(r) for r in RESOURCES))) or "shared/resource barrier"
                     waiting_path = (os.environ.get("CE_HEAVY_LOCK_FILE") or DEFAULT) if descriptor == gate else path
@@ -386,6 +686,9 @@ class HeavyLock:
         except BaseException:
             if waiter is not None:
                 ce_lock_status.forget(waiter)
+            if WINDOWS and gate is not None:  # a gate taken before the wait was interrupted
+                with contextlib.suppress(OSError):
+                    unlock_fd(gate)
             os.close(fd)
             if gate is not None:
                 os.close(gate)
@@ -401,7 +704,7 @@ class HeavyLock:
         if self.resource:
             self.info["resource"] = self.resource
         os.ftruncate(fd, 0)
-        os.pwrite(fd, (json.dumps(self.info) + "\n").encode(), 0)
+        write_at(fd, (json.dumps(self.info) + "\n").encode())
         self.fd = fd
         self._previous_held = os.environ.get("CE_HEAVY_HELD")
         os.environ["CE_HEAVY_HELD"] = ",".join(filter(None, [self._previous_held, ("1" if self.resource == "gpu" else self.resource or "1")]))
@@ -417,6 +720,11 @@ class HeavyLock:
         try:
             os.ftruncate(self.fd, 0)  # still holding it: nobody reads an old holder afterwards
         finally:
+            if WINDOWS:  # POSIX frees on close; Windows only "when resources allow" - free it now
+                for descriptor in (self.fd, self._gate_fd):
+                    if descriptor is not None:
+                        with contextlib.suppress(OSError):
+                            unlock_fd(descriptor)
             os.close(self.fd)
             self.fd = None
             if self._gate_fd is not None:
@@ -442,8 +750,11 @@ def held(what: str, checkout: str | None = None, out=None, poll: float = POLL_SE
         lock.release()
 
 
-def group_alive(pgid: int) -> bool:
-    """True while any process of the group still exists (EPERM: one runs that this user may not signal)."""
+def group_alive(pgid) -> bool:
+    """True while any process of the group still exists (EPERM: one runs that this user may not signal). Windows: the
+    group is a _Job (spawn_group)."""
+    if not isinstance(pgid, int):
+        return pgid.alive()
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -480,30 +791,30 @@ def run_group(argv: list, env=None, out=None, **popen) -> int:
     wrapper alone can still part them). Handlers are put back afterwards (None - set outside Python, e.g. in Blender -
     cannot be put back and is left alone)."""
     out = out or (lambda line: print(line, flush=True))
-    child = subprocess.Popen(argv, env=env, start_new_session=True, **popen)  # its pid is the group id
+    child, group = spawn_group(argv, env=env, **popen)  # POSIX: its pid is the group id; Windows: a job object
 
     def forward(signum, _frame):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(child.pid, signum)
+        signal_group(group, signum)
 
     previous = {}
-    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    for sig in FORWARDED:
         try:
             previous[sig] = signal.signal(sig, forward)
         except ValueError:  # not the main thread
             pass
     try:
         while True:
-            try:
-                code = child.wait()
+            try:  # Windows: an endless wait (WaitForSingleObject) never runs the signal handlers - wait in steps
+                code = child.wait(GROUP_POLL if WINDOWS else None)
                 break
-            except KeyboardInterrupt:  # forwarded already; keep waiting for the child
+            except (KeyboardInterrupt, subprocess.TimeoutExpired):  # forwarded already; keep waiting for the child
                 continue
-        wait_groups([child.pid], out,
+        wait_groups([group], out,
                     lambda alive: "heavy lock: command ended (exit %s), the lock stays until the rest of its process "
                                   "group %d ends" % (code, child.pid))
         return code
     finally:
+        close_group(group)
         for sig, handler in previous.items():
             if handler is not None:
                 signal.signal(sig, handler)
@@ -531,7 +842,7 @@ class Groups:
     after it); leaving the block waits until every group is empty, before held() frees the lock. Only the main thread
     may enter it (signal handlers). Children that leave on purpose (their own start_new_session) are not waited for."""
 
-    SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+    SIGNALS = FORWARDED
 
     def __init__(self, out=None):
         self.out = out or (lambda line: print(line, flush=True))
@@ -555,8 +866,7 @@ class Groups:
 
     def _forward(self, signum, pgids=None):
         for pgid in self.pgids if pgids is None else pgids:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pgid, signum)
+            signal_group(pgid, signum)
 
     def popen(self, command: list[str], **popen) -> subprocess.Popen:
         """subprocess.Popen in a process group of its own, waited for when the block ends."""
@@ -564,13 +874,13 @@ class Groups:
             raise Interrupted(self.signum)
         self.quiet = True  # a signal between fork and append would miss the new group
         try:
-            child = subprocess.Popen(command, start_new_session=True, **popen)  # its pid is the group id
-            self.pgids.append(child.pid)
+            child, group = spawn_group(command, **popen)  # POSIX: its pid is the group id; Windows: a job object
+            self.pgids.append(group)
             self.children.append(child)
         finally:
             self.quiet = False
         if self.signum is not None:  # it came while the child started
-            self._forward(self.signum, [child.pid])
+            self._forward(self.signum, [group])
             raise Interrupted(self.signum)
         return child
 
@@ -581,6 +891,8 @@ class Groups:
                         lambda alive: "heavy lock: the lock stays until the process group(s) %s end"
                         % ", ".join(map(str, alive)), self.children)
         finally:
+            for group in self.pgids:
+                close_group(group)
             for sig, handler in self.previous.items():
                 if handler is not None:
                     signal.signal(sig, handler)

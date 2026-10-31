@@ -11,7 +11,7 @@ relative to their own folder. Every copy starts with
 --check changes nothing and exits 1 when a copy is missing, was edited (checksum mismatch: error), or differs from the
 plugin's current file (older version: warning in ce_lint, failure here). Without a plugin next to it (an embedded copy
 of this script) --check verifies the checksums only, plus the plugin if CE_TOOLS or the default plugin path exists.
---all: the four standard repos (CE_REPOS = ':'-separated list overrides).
+--all: the four standard repos (CE_REPOS = os.pathsep-separated list overrides: ':', Windows ';').
 
 0.20 "Lodestar": the same promise without a copy. A repo that names `tools_version` ({"version", "commit"}) in
 .ce-repo.json keeps only the loader ce_loader.py as its ./ce (same header); the loader runs exactly that version from
@@ -111,7 +111,7 @@ def sync_loader(root: Path, source: Path) -> list[str]:
     path = root / LOADER_TARGET
     if path.is_file() and path.read_text(encoding="utf-8") == new:
         return []
-    path.write_text(new, encoding="utf-8")
+    path.write_text(new, encoding="utf-8", newline="")  # (0.31) LF on Windows too, like the plugin
     path.chmod(0o755)
     return [LOADER_TARGET]
 
@@ -166,7 +166,7 @@ def sync(root: Path, config: dict, source: Path) -> list[str]:
         new = embed((source / name).read_text(encoding="utf-8"), version)
         path = target / name
         if not path.is_file() or path.read_text(encoding="utf-8") != new:
-            path.write_text(new, encoding="utf-8")
+            path.write_text(new, encoding="utf-8", newline="")  # (0.31) Windows would write CRLF
             path.chmod(0o755)
             changed.append(name)
     for folder in DATA_DIRS:
@@ -176,9 +176,9 @@ def sync(root: Path, config: dict, source: Path) -> list[str]:
         for item in sorted(p for p in origin.iterdir() if p.suffix in (".json", ".md")):
             path = target / folder / item.name
             path.parent.mkdir(parents=True, exist_ok=True)
-            text = item.read_text(encoding="utf-8")
-            if not path.is_file() or path.read_text(encoding="utf-8") != text:
-                path.write_text(text, encoding="utf-8")
+            data = item.read_bytes()  # (0.31) byte copies, as check() compares them (Windows text mode writes CRLF)
+            if not path.is_file() or path.read_bytes() != data:
+                path.write_bytes(data)
                 changed.append(f"{folder}/{item.name}")
     return changed
 
@@ -225,7 +225,7 @@ def repos_of(args) -> list[Path]:
     if args.repo:
         return [Path(args.repo)]
     if os.environ.get("CE_REPOS"):
-        return [Path(r) for r in os.environ["CE_REPOS"].split(":") if r]
+        return [Path(r) for r in os.environ["CE_REPOS"].split(os.pathsep) if r]  # (0.31) ":", Windows ";"
     found = ce_common.standard_repos(DEFAULT_SYNC_NAMES)
     if found:
         return found
@@ -276,4 +276,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

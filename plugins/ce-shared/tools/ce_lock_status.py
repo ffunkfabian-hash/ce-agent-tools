@@ -8,6 +8,12 @@ import uuid
 
 
 def identity(pid):
+    if os.name == 'nt':  # no ps -o lstart: the creation time (0.31)
+        try:
+            import heavy_lock
+            return heavy_lock.process_started(pid)
+        except (ImportError, OSError, ValueError):
+            return None
     try:
         result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='], capture_output=True, text=True, timeout=2)
         return result.stdout.strip() if result.returncode == 0 else None

@@ -8,7 +8,9 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
 - **Nur, was alle drei Repos gleich brauchen.** Repo-eigene Regeln bleiben als `.claude/hookify.*.local.md` im Repo;
   Subagents und ihre Profile (`.claude/agents/`, `.claude/agent-guard.json`) gehören ebenfalls ins Repo.
 - **Jede Regel mit Tests:** neue oder geänderte Regel → treffende und nicht treffende Befehle in
-  `tests/test_guard.py`; `python3 -m unittest discover -s tests` grün vor jedem Commit.
+  `tests/test_guard.py`; `python3 -m unittest discover -s tests` grün vor jedem Commit (Windows: `py -m unittest …`).
+- **Mac und Windows (0.31):** jeder Windows-Weg in einem eigenen Zweig, POSIX-Code unverändert; Plattformschicht ist
+  `heavy_lock.py` (Sperre, Prozessgruppe, Cache-Pfad, Skriptstart); Regeln mit Windows- und Mac-Fällen testen.
 - **Der Wächter blockiert nie aus Versehen alles:** Fehler im Hook lassen den Aufruf durch (mit Meldung); Muster
   vorsichtig, Fehlalarme sind Fehler.
 - **Version:** jede Änderung ist eine neue Version (Minor +1, eigener Name, cool und englisch); `plugin.json` und

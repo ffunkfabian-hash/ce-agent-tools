@@ -102,7 +102,10 @@ class RobotInterfaceTests(unittest.TestCase):
         with mock.patch.object(interfaces, 'audit', return_value={'status': 'passed'}) as audit, \
              mock.patch.object(os, 'getcwd', return_value='/isolated-caller'), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(interfaces.main(args + ['--cubegen-version', '4', '--cubegen-package', 'export']), 0)
-        self.assertEqual(audit.call_args.args[0].cubegen_package, Path('/isolated-caller/export'))
+        expected = Path('/isolated-caller/export')
+        if os.name == 'nt':  # (0.31) a rooted path gets the current drive there (G:/isolated-caller/export)
+            expected = expected.resolve()
+        self.assertEqual(audit.call_args.args[0].cubegen_package, expected)
 
     def test_complete_package_checked_before_any_copy_and_repeat_is_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -216,7 +219,7 @@ class InterfaceAuditTests(unittest.TestCase):
                 self.assertEqual(result["status"], "failed")
                 self.assertIn("concept validation unavailable", str(result["findings"]))
                 missing = loader if available_importer else importer
-                self.assertIn(str(missing.relative_to(root)), str(result["findings"]))
+                self.assertIn(missing.relative_to(root).as_posix(), str(result["findings"]))  # repo paths with /
                 self.assertNotIn("FileNotFoundError", str(result["findings"]))
 
     def test_native_toolgen_consumer_checks_stay_read_only(self):

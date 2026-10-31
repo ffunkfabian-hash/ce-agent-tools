@@ -92,13 +92,27 @@ class CommonTests(RepoCase):
         with self.assertRaises(ce_common.RepoError):
             ce_common.read_version(self.root, config)
 
+    def test_utf8_console_switches_windows_streams_only(self):
+        """(0.31) Windows: a cp1252 stream becomes UTF-8; POSIX and streams without reconfigure stay as they are."""
+        for windows, expected in ((True, "utf-8"), (False, "cp1252")):
+            stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+            with mock.patch.object(ce_common, "WINDOWS", windows):
+                ce_common.utf8_console(stream, io.StringIO())
+            self.assertEqual(stream.encoding, expected)
+        script = "import sys; sys.path.insert(0, %r); import ce_common; ce_common.utf8_console(); print('„→“ ·')" % str(
+            PLUGIN / "tools")
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}  # as a client starts it
+        done = subprocess.run([sys.executable, "-c", script], capture_output=True, env=env)
+        self.assertEqual((done.returncode, done.stdout.decode("utf-8").strip()), (0, "„→“ ·"), done.stderr)
+        self.assertEqual(ce_common.UTF8, {"encoding": "utf-8", "errors": "replace"} if os.name == "nt" else {})
+
 
 class SyncTests(RepoCase):
     def tools(self):
         return self.root / "scripts" / "ce_tools"
 
     def test_copies_have_header_checksum_and_are_up_to_date(self):
-        copy = (self.tools() / "ce_lint.py").read_text()
+        copy = (self.tools() / "ce_lint.py").read_text(encoding="utf-8")
         lines = copy.splitlines()
         self.assertTrue(lines[0].startswith("#!"))
         self.assertEqual(lines[1], f"# GENERATED from ce-agent-tools {ce_sync.plugin_version(ce_sync.source_dir())} - do not edit")
@@ -110,7 +124,7 @@ class SyncTests(RepoCase):
 
     def test_hand_edit_is_an_error_and_sync_repairs_it(self):
         path = self.tools() / "ce_check.py"
-        path.write_text(path.read_text() + "\n# tweak\n")
+        path.write_text(path.read_text(encoding="utf-8") + "\n# tweak\n", encoding="utf-8")
         findings = ce_sync.check(self.root, self.config, ce_sync.source_dir())
         self.assertEqual([f[0] for f in findings], ["error"])
         self.assertEqual(run_main(ce_sync, "--repo", str(self.root), "--check")[0], 1)
@@ -127,7 +141,7 @@ class SyncTests(RepoCase):
         for folder in ce_sync.DATA_DIRS:
             __import__("shutil").copytree(ce_sync.source_dir().parent / folder, source.parent / folder)
         for name in ce_sync.SYNC_FILES:
-            (source / name).write_text((ce_sync.source_dir() / name).read_text() + "# newer\n")
+            (source / name).write_text((ce_sync.source_dir() / name).read_text(encoding="utf-8") + "# newer\n", encoding="utf-8")
         findings = ce_sync.check(self.root, self.config, source)
         self.assertEqual({f[0] for f in findings}, {"warning"})
         self.assertEqual(len(findings), len(ce_sync.SYNC_FILES))
@@ -143,14 +157,16 @@ class SyncTests(RepoCase):
     def test_copies_run_without_the_plugin(self):
         env = {k: v for k, v in os.environ.items() if k != "CE_TOOLS"}
         env["HOME"] = str(self.root.parent)  # no default plugin path either
+        if os.name == "nt":  # (0.31) Path.home() reads USERPROFILE there
+            env["USERPROFILE"] = env["HOME"]
         done = subprocess.run([sys.executable, "-I", str(self.tools() / "ce_lint.py"), "--repo", str(self.root)],
-                              capture_output=True, text=True, env=env, cwd=self.root.parent)
+                              capture_output=True, text=True, encoding="utf-8", env=env, cwd=self.root.parent)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         lock = subprocess.run([sys.executable, str(self.tools() / "heavy_lock.py"), "status"], capture_output=True,
-                              text=True, env=dict(env, CE_HEAVY_LOCK_FILE=str(self.root / "l")))
+                              text=True, encoding="utf-8", env=dict(env, CE_HEAVY_LOCK_FILE=str(self.root / "l")))
         self.assertEqual(lock.stdout.split()[:2], ["shared", "free"])
         done = subprocess.run([sys.executable, str(self.tools() / "ce_sync.py"), "--repo", str(self.root), "--check"],
-                              capture_output=True, text=True, env=env, cwd=self.root.parent)
+                              capture_output=True, text=True, encoding="utf-8", env=env, cwd=self.root.parent)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
 
@@ -519,6 +535,20 @@ class WorktreeTests(RepoCase):
         self.assertIn(ce_worktrees.DO_NOT_DELETE, ce_worktrees.format_state(busy))
         self.assertTrue(self.states(cwds={str(self.tree): ["claude"]}, active=0)["demo-wt"]["protected"])
 
+    def test_windows_spellings_of_one_folder_match(self):
+        """(0.31) Windows: git's C:/x/wt, a process listing's C:\\X\\wt and Codex' c:\\x\\wt\\sub are one folder;
+        POSIX compares the strings as before. Mocked, runs everywhere."""
+        self.assertEqual(ce_worktrees.windows_key("C:\\Users\\X\\wt\\"), "c:/users/x/wt")
+        self.assertEqual(ce_worktrees.windows_key("C:/Users/X/wt"), "c:/users/x/wt")
+        item = {"path": "C:/Users/X/wt", "head": "", "branch": "f", "bare": False, "prunable": False}
+        codex = {"C:\\USERS\\x\\wt\\sub": {"id": "codex-1", "age_minutes": 1.0}}
+        with mock.patch.object(ce_worktrees.ce_common, "WINDOWS", True):
+            state = ce_worktrees.worktree_state(item, "main", self.projects, {"c:\\users\\x\\WT": ["claude"]}, 60, codex)
+        self.assertEqual((state["processes"], state["session"]["id"]), (["claude"], "codex-1"))
+        with mock.patch.object(ce_worktrees.ce_common, "WINDOWS", False):
+            state = ce_worktrees.worktree_state(item, "main", self.projects, {"c:\\users\\x\\WT": ["claude"]}, 60, codex)
+        self.assertEqual((state["processes"], state["session"]), ([], None))
+
     def test_old_session_is_shown_but_does_not_protect(self):
         self.session(self.tree, minutes_old=60 * 30)
         state = self.states()["demo-wt"]
@@ -652,6 +682,25 @@ class DocsAndNightlyTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("4 Befunde", out)
 
+    def test_docs_shell_check_on_windows_uses_git_bash_never_wsl(self):
+        """(0.31) Windows: bash -n through heavy_lock.posix_shell (Git Bash); without it a finding instead of WSL's
+        bash.exe or a silent pass. Mocked, runs everywhere."""
+        import ce_docs
+        (self.root / "s.sh").write_text("echo ok\n")
+        config = json.loads((self.root / ".ce-repo.json").read_text())
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(ce_docs.ce_common, "WINDOWS", True), \
+                mock.patch.object(ce_docs.heavy_lock, "posix_shell", return_value="C:/Git/bin/bash.exe") as shell, \
+                mock.patch.object(ce_docs.subprocess, "run", return_value=done) as run:
+            _, problems = ce_docs.check(self.root, config)
+        shell.assert_called_once_with("bash")
+        self.assertEqual(run.call_args.args[0][:2], ["C:/Git/bin/bash.exe", "-n"])
+        self.assertEqual(problems, [])
+        with mock.patch.object(ce_docs.ce_common, "WINDOWS", True), \
+                mock.patch.object(ce_docs.heavy_lock, "posix_shell", return_value=None):
+            _, problems = ce_docs.check(self.root, config)
+        self.assertEqual([p["error"].split(":")[0] for p in problems], ["Shell-Syntax nicht prüfbar"])
+
     def test_nightly_runs_each_repo_with_check_nightly_and_skips_the_rest(self):
         import ce_nightly
         other = Path(self.tmp.name) / "other"; other.mkdir()
@@ -714,8 +763,8 @@ class SearchTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name) / "cubeescape-demo"
         (self.root / "docs").mkdir(parents=True)
-        (self.root / "docs" / "LESSONS.md").write_text("# Lehren\n\n## Viewer\n- **Z-Fighting bei gestauchten Flächen** → Koplanar-Regel ([Quelle](TECHNIK.md))\n")
-        (self.root / "docs" / "TECHNIK.md").write_text("# Technik\n\n## Viewer-Prüfung\nDer Determinismus-Test rendert jedes Modell achtmal; Z-Fighting zeigt sich als Flackern.\n\n## Cache\nSchlüssel aus Inhaltshashes.\n")
+        (self.root / "docs" / "LESSONS.md").write_text("# Lehren\n\n## Viewer\n- **Z-Fighting bei gestauchten Flächen** → Koplanar-Regel ([Quelle](TECHNIK.md))\n", encoding="utf-8")
+        (self.root / "docs" / "TECHNIK.md").write_text("# Technik\n\n## Viewer-Prüfung\nDer Determinismus-Test rendert jedes Modell achtmal; Z-Fighting zeigt sich als Flackern.\n\n## Cache\nSchlüssel aus Inhaltshashes.\n", encoding="utf-8")
         (self.root / "tool.py").write_text('"""Renders the viewer eight times (determinism)."""\n\ndef render_eight():\n    """eight renders, z-fighting check"""\n    return 8\n')
         self.index = Path(self.tmp.name) / "index.sqlite"
         self.env = mock.patch.dict(os.environ, {"CE_SEARCH_INDEX": str(self.index), "CE_SEARCH_EMBED": "0"})
@@ -747,7 +796,7 @@ class SearchTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "ce_search", "arguments": {"query": "Z-Fighting", "k": 2}}},
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "nope", "arguments": {}}}]) + "\n"
         tools = Path(__file__).resolve().parent.parent / "plugins" / "ce-shared" / "tools"
-        out = subprocess.run([sys.executable, str(tools / "ce_search.py"), "serve"], input=requests, capture_output=True, text=True,
+        out = subprocess.run([sys.executable, str(tools / "ce_search.py"), "serve"], input=requests, capture_output=True, text=True, encoding="utf-8",
                              env=os.environ.copy(), timeout=60).stdout
         replies = [json.loads(line) for line in out.splitlines() if line.strip()]
         self.assertEqual([r["id"] for r in replies], [1, 2, 3, 4])
@@ -794,26 +843,27 @@ class ReportAndSessionHookTests(unittest.TestCase):
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             (root / ".ce-repo.json").write_text('{"name": "cubeescape-toolgen", "version": "0.1"}')
-            (root / "docs").mkdir(); (root / "docs" / "LESSONS.md").write_text("# Lehren\n- **x** → y\n")
+            (root / "docs").mkdir(); (root / "docs" / "LESSONS.md").write_text("# Lehren\n- **x** → y\n", encoding="utf-8")
             (root / "a.py").write_text("print(1)\n")
             env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(hook.parent.parent))
+            env.pop("PYTHONIOENCODING", None)  # (0.31) as a client starts it: the hook must speak UTF-8 by itself
             start = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "SessionStart", "cwd": str(root)}),
-                                   capture_output=True, text=True, env=env).stdout
+                                   capture_output=True, text=True, encoding="utf-8", env=env).stdout
             context = json.loads(start)["hookSpecificOutput"]["additionalContext"]
             self.assertIn("ce_search", context); self.assertIn("TG Auftrag", context); self.assertIn("**x** → y", context)
             transcript = self.transcript(root)
             stop = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript)}),
-                                  capture_output=True, text=True, env=env).stdout
+                                  capture_output=True, text=True, encoding="utf-8", env=env).stdout
             message = json.loads(stop).get("systemMessage", "")
             self.assertIn("ohne model", message)
-            self.assertIn("Sitzung:", (root / "report.md").read_text())
+            self.assertIn("Sitzung:", (root / "report.md").read_text(encoding="utf-8"))
             # code changed but checks ran: no check-before-stop warning; remove the checks -> warning
             self.assertNotIn("check-before-stop", message)
-            lines = [json.loads(l) for l in transcript.read_text().splitlines()]
+            lines = [json.loads(l) for l in transcript.read_text(encoding="utf-8").splitlines()]
             lines = [l for l in lines if not (l["type"] == "assistant" and l["message"]["content"][0]["input"].get("command") == "./check")]
-            transcript.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+            transcript.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
             stop = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript)}),
-                                  capture_output=True, text=True, env=env).stdout
+                                  capture_output=True, text=True, encoding="utf-8", env=env).stdout
             self.assertIn("check-before-stop", json.loads(stop)["systemMessage"])
 
 
@@ -840,6 +890,18 @@ class MediaAndJudgeTests(unittest.TestCase):
             self.assertEqual(code, 1); self.assertIn("VERSCHIEDEN", out)
             self.assertEqual(run_main(ce_imagediff, "--pairs", f"{a}:{b}")[0], 0)
 
+    def test_imagediff_pairs_keep_windows_drives(self):
+        """(0.31) --pairs A:B: POSIX splits at the first colon as before; Windows keeps C: with its path."""
+        import ce_imagediff
+        self.assertEqual(ce_imagediff.split_pair("a.png:b.png", windows=False), ["a.png", "b.png"])
+        self.assertEqual(ce_imagediff.split_pair("/x/a.png:/y/b:c.png", windows=False), ["/x/a.png", "/y/b:c.png"])
+        for item, pair in (("C:\\x\\a.png:D:\\y\\b.png", ["C:\\x\\a.png", "D:\\y\\b.png"]),
+                           ("a.png:b.png", ["a.png", "b.png"]), ("C:/a.png:rel/b.png", ["C:/a.png", "rel/b.png"]),
+                           ("rel/a.png:C:\\b.png", ["rel/a.png", "C:\\b.png"])):
+            self.assertEqual(ce_imagediff.split_pair(item, windows=True), pair)
+        with self.assertRaises(ValueError):
+            ce_imagediff.split_pair("only.png", windows=True)
+
     def test_media_sheet_still_and_clip(self):
         import tempfile, shutil, ce_media
         from PIL import Image
@@ -855,6 +917,19 @@ class MediaAndJudgeTests(unittest.TestCase):
                 code, out = run_main(ce_media, "clip", str(frames), "--out", str(Path(tmp) / "c.mp4"), "--fps", "6", "--height", "90", "--seconds", "1")
                 self.assertEqual(code, 0, out); self.assertIn("90p", out)
                 self.assertFalse((Path(tmp) / "c.frames.txt").exists())
+            # (0.31) Windows: the concat list names frames with forward slashes; mocked ffmpeg, runs everywhere
+            listed = []
+
+            def fake_ffmpeg(command, **kw):
+                listed.append(Path(command[command.index("-i") + 1]).read_text(encoding="utf-8"))
+                Path(command[-1]).write_bytes(b"mp4")
+                return subprocess.CompletedProcess(command, 0, "", "")
+            with mock.patch.object(ce_media, "WINDOWS", True), mock.patch.object(ce_media.shutil, "which", return_value="ffmpeg"), \
+                    mock.patch.object(ce_media.subprocess, "run", side_effect=fake_ffmpeg):
+                code, out = run_main(ce_media, "clip", str(frames), "--out", str(Path(tmp) / "w.mp4"), "--fps", "6", "--height", "90", "--seconds", "1")
+            self.assertEqual(code, 0, out)
+            self.assertIn(f"file '{(frames / 'f000.png').resolve().as_posix()}'", listed[0])
+            self.assertNotIn("\\", listed[0])
 
     def test_judge_picks_the_model_from_the_diff_and_dry_runs(self):
         import tempfile, subprocess, ce_judge
@@ -874,5 +949,15 @@ class MediaAndJudgeTests(unittest.TestCase):
             self.assertEqual(code, 0, out); self.assertIn("Richter luna", out); self.assertIn("Checkliste", out)
             code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--opus")
             self.assertEqual(code, 0); self.assertTrue((root / "report.judge.diff").is_file())
+            # (0.31) Windows: npm's codex.cmd is started by its full name; mocked, runs everywhere
+            verdict = subprocess.CompletedProcess([], 0, "| 1 | ok |\nFreigabe\n", "")
+            real_run = subprocess.run
+            with mock.patch.object(ce_judge, "WINDOWS", True), \
+                    mock.patch.object(ce_judge.shutil, "which", return_value="C:\\npm\\codex.CMD"), \
+                    mock.patch.object(ce_judge.subprocess, "run") as run:
+                run.side_effect = lambda argv, **kw: verdict if argv[0].endswith("codex.CMD") else real_run(argv, **kw)
+                code, out = run_main(ce_judge, "--repo", str(root), "--base", "main")
+            self.assertIn("Freigabe", out)
+            self.assertTrue(any(c.args[0][:2] == ["C:\\npm\\codex.CMD", "exec"] for c in run.call_args_list))
             sh("checkout", "-q", "main")
             self.assertEqual(run_main(ce_judge, "--repo", str(root), "--base", "main")[0], 2, "no diff")

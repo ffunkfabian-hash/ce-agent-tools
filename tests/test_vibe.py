@@ -24,12 +24,13 @@ FAKE_VIBE = textwrap.dedent('''\
     work, out, mode = Path(value("--workdir")), Path(value("--output-dir")), os.environ["FAKE_VIBE_MODE"]
     env = {k: os.environ.get(k) for k in ("GH_TOKEN", "GH_CONFIG_DIR", "GIT_CONFIG_COUNT")}
     env.update({k: v for k, v in os.environ.items() if k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))})
-    record = {"argv": args, "cwd": os.getcwd(), "prompt": Path(value("--prompt-file")).read_text(),
+    record = {"argv": args, "cwd": os.getcwd(), "prompt": Path(value("--prompt-file")).read_text(encoding="utf-8"),
               "env": env,
               "app_before": (work / "app.py").read_text(),
-              "files": sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file() and ".git" not in p.parts)}
+              "files": sorted(p.relative_to(work).as_posix() for p in work.rglob("*") if p.is_file() and ".git" not in p.parts)}
     if mode == "hang":
-        child = subprocess.Popen(["sh", "-c", "sleep 30"])
+        sleeper = [sys.executable, "-c", "import time; time.sleep(30)"] if os.name == "nt" else ["sh", "-c", "sleep 30"]
+        child = subprocess.Popen(sleeper)
         Path(os.environ["FAKE_VIBE_RECORD"]).write_text(json.dumps({"child": child.pid}))
         print("teilweise", flush=True)
         sys.stderr.write("arbeite\\n")
@@ -92,7 +93,7 @@ class VibeTests(unittest.TestCase):
         sh(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
         sh(self.repo, "remote", "add", "origin", str(self.origin))
         fake = self.tmp / "vibe"
-        fake.write_text(FAKE_VIBE)
+        fake.write_text(FAKE_VIBE, encoding="utf-8")
         fake.chmod(0o755)
         self.record = self.tmp / "record.json"
         (self.tmp / "prompt.txt").write_text("Fix add in app.py\nmehr Details\n")
@@ -105,7 +106,9 @@ class VibeTests(unittest.TestCase):
         guard = self.tmp / "ce tools/hooks/vibe_guard.py"
         guard.parent.mkdir(parents=True)
         guard.write_text("pass\n")
-        self.guard_hooks = GUARD_HOOKS.replace("<guard>", str(guard))
+        self.guard = guard
+        # as_posix: a TOML basic string takes no raw backslashes (C:\Users); the same text as str() on POSIX
+        self.guard_hooks = GUARD_HOOKS.replace("<guard>", guard.as_posix())
         (self.vibe_home / "hooks.toml").write_text(self.guard_hooks)
         mock.patch.dict(os.environ, {"CE_VIBE_BIN": str(fake), "FAKE_VIBE_RECORD": str(self.record),
                                      "FAKE_VIBE_MODE": "edit", "GH_TOKEN": "secret",
@@ -251,10 +254,14 @@ class VibeTests(unittest.TestCase):
         self.assertEqual(summary["answer"], "teilweise")
         child = json.loads(self.record.read_text())["child"]
         for _ in range(50):  # the killed child is reaped by init shortly after
-            try:
-                os.kill(child, 0)
-            except ProcessLookupError:
-                break
+            if os.name == "nt":  # never os.kill(pid, 0) there: it is TerminateProcess (0.31)
+                if not ce_vibe.heavy_lock.pid_alive(child):
+                    break
+            else:
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    break
             __import__("time").sleep(0.1)
         else:
             self.fail("child process of vibe survived the timeout")
@@ -348,6 +355,34 @@ class VibeTests(unittest.TestCase):
             ce_vibe.status()
         report = json.loads(out.getvalue())
         self.assertEqual((report["guard_hook"], report["hooks"]), ("ce-shared-guard", str(self.vibe_home / "hooks.toml")))
+
+    def test_an_unquoted_windows_guard_path_counts_as_the_guard(self):
+        # (0.31) POSIX shlex eats the backslashes of C:\...\vibe_guard.py; Windows also reads the cmd-style words
+        line = r"py C:\ce\hooks\vibe_guard.py"
+        self.assertIn(r"C:\ce\hooks\vibe_guard.py", ce_vibe.command_words(line, windows=True))
+        self.assertNotIn(r"C:\ce\hooks\vibe_guard.py", ce_vibe.command_words(line, windows=False))
+        guard = self.tmp / "g" / "vibe_guard.py"
+        guard.parent.mkdir()
+        guard.write_text("pass\n")
+        (self.vibe_home / "hooks.toml").write_text(  # TOML literal string: the path as written, backslashes kept
+            f"[[hooks]]\nname = 'win-guard'\ntype = 'pre_tool'\nmatch = '*'\ncommand = 'py {guard}'\n")
+        self.assertEqual(ce_vibe.guard_hook(), "win-guard")
+
+    def test_windows_ends_the_whole_job_at_once(self):
+        # (0.31) signal_group's first call is Ctrl+Break, the second TerminateJobObject; a finished job is left alone
+        group = object()
+        with mock.patch.object(ce_vibe.heavy_lock, "group_alive", return_value=True), \
+                mock.patch.object(ce_vibe.heavy_lock, "signal_group") as signal_group:
+            ce_vibe.end_job(group)
+        self.assertEqual([call.args[0] for call in signal_group.call_args_list], [group, group])
+        with mock.patch.object(ce_vibe.heavy_lock, "group_alive", return_value=False), \
+                mock.patch.object(ce_vibe.heavy_lock, "signal_group") as signal_group:
+            ce_vibe.end_job(group)
+        signal_group.assert_not_called()
+        with mock.patch.object(ce_vibe.heavy_lock, "WINDOWS", True), \
+                mock.patch.object(ce_vibe, "run_worker_windows", return_value=(0, "", "", False)) as windows:
+            self.assertEqual(ce_vibe.run_worker(["vibe"], self.repo, {}, 5), (0, "", "", False))
+        windows.assert_called_once_with(["vibe"], self.repo, {}, 5)
 
     def test_hold_repo_is_refused(self):
         with mock.patch.object(ce_vibe, "repo_hold", return_value="Lockstep läuft"):

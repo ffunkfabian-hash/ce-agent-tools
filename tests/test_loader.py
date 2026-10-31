@@ -24,7 +24,16 @@ import ce_sync  # noqa: E402
 
 COMMIT = "a" * 40
 OTHER = "b" * 40
-FAKE_CE = '#!/bin/sh\necho "fake ce $* in $(pwd)"\n'
+WINDOWS = os.name == "nt"
+# Windows (0.31): Git Bash's pwd says /tmp/…, pwd -W the Windows folder (with /); python3 is the Store stub there
+FAKE_CE = '#!/bin/sh\necho "fake ce $* in $(pwd%s)"\n' % (" -W" if WINDOWS else "")
+PYTHON = Path(sys.executable).as_posix() if WINDOWS else "python3"
+BASH = ce_loader.windows_sh(os.environ).replace("sh.exe", "bash.exe") if WINDOWS else "bash"  # not System32's (WSL)
+
+
+def shown(path) -> str:
+    """A folder as the fake ce prints it."""
+    return Path(path).as_posix() if WINDOWS else str(path)
 
 
 def git(root, *args):
@@ -71,6 +80,10 @@ class LoaderCase(unittest.TestCase):
                     "CE_TOOLS_CACHE": str(self.base / "cache"), "CLAUDE_CONFIG_DIR": str(self.base / "claude"),
                     "CE_TOOLS_URL": "file://" + str(self.base) + "/{commit}.tar.gz",
                     "CE_TOOLS_GIT": str(self.base / "no-such-repo")}
+        if WINDOWS:  # Path.home() reads USERPROFILE there; sh lookup, Python and the ce entry need the system names
+            self.env.update({"USERPROFILE": str(self.base), "LOCALAPPDATA": str(self.base / "local"), "OS": "Windows_NT",
+                             **{key: os.environ[key] for key in ("SystemRoot", "ProgramFiles", "TEMP", "TMP")
+                                if key in os.environ}})
         shutil.copy(self.tarball, self.base / f"{COMMIT}.tar.gz")
 
     def pin(self, version, commit, **more):
@@ -275,20 +288,38 @@ class Entry(LoaderCase):
 
     def run_ce(self, *args, cwd=None):
         return subprocess.run([sys.executable, str(self.repo / "ce"), *args], cwd=cwd or self.base,
-                              capture_output=True, text=True, env=self.env)
+                              capture_output=True, text=True, encoding="utf-8", env=self.env)
 
     def test_runs_the_pinned_dispatcher_in_the_repo_root(self):
         done = self.run_ce("check", "--full")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(done.stdout.strip(), f"fake ce check --full in {self.repo}")
+        self.assertEqual(done.stdout.strip(), f"fake ce check --full in {shown(self.repo)}")
         self.assertIn("geladen nach", done.stderr)
         again = self.run_ce("search", "serve")
         self.assertEqual(again.stderr, "", "a cache hit says nothing (stdout may be an MCP channel)")
 
+    def test_the_exit_code_of_the_tools_reaches_the_caller(self):
+        """Windows inventory 31.10.2026: os.execvpe there ended the loader with 0 at once, every failure was invisible."""
+        files = dict(plugin_files("0.20.0"), **{"tools/ce": '#!/bin/sh\necho "late $1"\nexit 5\n'})
+        make_tarball(self.base / f"{COMMIT}.tar.gz", COMMIT, files)
+        done = self.run_ce("check")
+        self.assertEqual((done.returncode, done.stdout.strip()), (5, "late check"), done.stderr)
+
+    @unittest.skipUnless(WINDOWS, "Windows sh lookup")
+    def test_windows_sh_is_git_for_windows_never_wsl(self):
+        shell = ce_loader.windows_sh(os.environ)
+        self.assertTrue(shell and Path(shell).is_file(), shell)
+        self.assertNotIn("system32", shell.lower())
+        system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        with mock.patch.object(ce_loader.shutil, "which", side_effect=lambda name, path=None: str(system32 / "bash.exe")
+                               if name == "sh" else None):
+            found = ce_loader.windows_sh({"ProgramFiles": str(self.base), "SystemRoot": str(system32.parent)})
+        self.assertIsNone(found, "only WSL's sh on PATH: none")
+
     def test_python_tools_leave_the_cache_intact_even_when_writable(self):
         """Cloud probe 23.10.2026: as root the read-only cache did not stop Python, each call wrote __pycache__ and the
         next call fetched again. Writable cache = root; two runs importing modules, the second must be a cache hit."""
-        files = dict(plugin_files("0.20.0"), **{"tools/ce": '#!/bin/sh\nexec python3 "$(dirname "$0")/ce_check.py" "$@"\n',
+        files = dict(plugin_files("0.20.0"), **{"tools/ce": f'#!/bin/sh\nexec {PYTHON} "$(dirname "$0")/ce_check.py" "$@"\n',
                                                 "tools/ce_check.py": "import ce_helper\nprint('ran', ce_helper.X)\n",
                                                 "tools/ce_helper.py": "X = 1\n"})
         make_tarball(self.base / f"{COMMIT}.tar.gz", COMMIT, files)
@@ -325,7 +356,7 @@ class Entry(LoaderCase):
 
     def real_tarball(self):
         """The real plugins/ce-shared of this checkout as the archive of COMMIT; (files, version)."""
-        real = {path.relative_to(PLUGIN).as_posix(): path.read_text() for path in sorted(PLUGIN.rglob("*"))
+        real = {path.relative_to(PLUGIN).as_posix(): path.read_text(encoding="utf-8") for path in sorted(PLUGIN.rglob("*"))
                 if path.is_file() and "__pycache__" not in path.parts}
         make_tarball(self.base / f"{COMMIT}.tar.gz", COMMIT, real)
         return real, ce_sync.plugin_version(PLUGIN / "tools")
@@ -354,7 +385,7 @@ class Entry(LoaderCase):
         self.assertIn("(plugin,", self.run_ce("tools", "where").stdout)
         fetch = self.run_ce("tools", "fetch")
         self.assertEqual(fetch.returncode, 0, fetch.stderr)
-        self.assertIn(f"cache/0.20.0-{COMMIT[:12]}/tools (download,", fetch.stdout)
+        self.assertIn(os.path.join("cache", f"0.20.0-{COMMIT[:12]}", "tools") + " (download,", fetch.stdout)
         self.assertIn("(cache,", self.run_ce("tools", "fetch").stdout)
 
     def test_migration_from_an_embedded_copy(self):
@@ -369,7 +400,7 @@ class Entry(LoaderCase):
         self.assertEqual(pinned.returncode, 0, pinned.stdout + pinned.stderr)
         config = json.loads((self.repo / ".ce-repo.json").read_text())
         self.assertEqual(config, {"name": "demo", "tools_version": {"version": version, "commit": COMMIT}})
-        self.assertEqual(ce_sync.unembed((self.repo / "ce").read_text())[2], real["tools/ce_loader.py"])
+        self.assertEqual(ce_sync.unembed((self.repo / "ce").read_text(encoding="utf-8"))[2], real["tools/ce_loader.py"])
         self.offline()
         done = self.run_ce("tools", "where")
         self.assertIn(f"(cache, ce-agent-tools {version})", done.stdout, done.stderr)
@@ -402,8 +433,8 @@ class SyncWithoutCopy(LoaderCase):
         source = ce_sync.source_dir()
         self.assertEqual(ce_sync.sync(self.repo, self.config, source), ["ce"])
         self.assertEqual(sorted(p.name for p in self.repo.iterdir()), [".ce-repo.json", "ce"])
-        version, _, original = ce_sync.unembed((self.repo / "ce").read_text())
-        self.assertEqual(original, (source / "ce_loader.py").read_text())
+        version, _, original = ce_sync.unembed((self.repo / "ce").read_text(encoding="utf-8"))
+        self.assertEqual(original, (source / "ce_loader.py").read_text(encoding="utf-8"))
         self.assertTrue(os.access(self.repo / "ce", os.X_OK))
         self.assertEqual(ce_sync.sync(self.repo, self.config, source), [])
         self.pin(ce_sync.plugin_version(source), COMMIT)
@@ -445,6 +476,7 @@ class SyncWithoutCopy(LoaderCase):
 
 
 
+@unittest.skipIf(WINDOWS, "the composite action runs on Linux runners only (python3, bash; GitHub Actions sparsam)")
 class CiStep(LoaderCase):
     """.github/actions/ce-tools: the run script of the composite action, executed with a local upstream."""
     ACTION = PLUGIN.parent.parent / ".github" / "actions" / "ce-tools"
@@ -473,7 +505,7 @@ class CiStep(LoaderCase):
         env = dict(self.env, GITHUB_ACTION_PATH=str(self.ACTION), RUNNER_TEMP=str(temp), CE_PIN_REPO=str(self.repo),
                    GITHUB_ENV=str(temp / "env"), GITHUB_OUTPUT=str(temp / "out"), CE_TOOLS_GIT=str(source),
                    CE_ACTION_REF="")
-        return subprocess.run(["bash", "-c", self.script()], capture_output=True, text=True, env=env), temp
+        return subprocess.run([BASH, "-c", self.script()], capture_output=True, text=True, env=env), temp
 
     def test_fetches_the_pinned_commit_outside_the_workspace_and_sets_ce_tools(self):
         source, commit = self.upstream("0.20.0")
@@ -487,7 +519,7 @@ class CiStep(LoaderCase):
         self.offline()
         ran = subprocess.run([sys.executable, str(self.repo / "ce"), "check"], capture_output=True, text=True,
                              env=dict(self.env, CE_TOOLS=str(tools)))
-        self.assertEqual(ran.stdout.strip(), f"fake ce check in {self.repo}", ran.stderr)
+        self.assertEqual(ran.stdout.strip(), f"fake ce check in {shown(self.repo)}", ran.stderr)
 
     def test_wrong_version_or_bad_pin_fails_the_step(self):
         source, commit = self.upstream("0.20.0")

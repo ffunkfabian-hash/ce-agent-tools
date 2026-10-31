@@ -27,6 +27,9 @@ import sys
 import time
 from pathlib import Path
 
+WINDOWS = os.name == "nt"
+# (0.31) git and gh speak UTF-8; Windows would decode their output as cp1252 (a „“ in a comment is a decode error there)
+UTF8 = {"encoding": "utf-8", "errors": "replace"} if WINDOWS else {}
 REPO = "ffunkfabian-hash/cubeescape-nexogen"
 MAILBOX = 16  # 1.15: the one Postfach issue (before: Briefkasten PR 1 = Sightline, one PR per recipient)
 QUOTED = re.compile(r"(\d+\.\d+(?:\.\d+)?)\s*[„“\"']([^“”\"']+)[“”\"']")
@@ -252,8 +255,10 @@ def find_git_dir(cwd: str):
 def git_dir(cwd: str):
     """(absolute git dir of the worktree, current branch), or (None, "")."""
     try:
-        out = subprocess.run(["git", "-C", cwd, "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, timeout=10)
-        branch = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["git", "-C", cwd, "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, timeout=10,
+                             **UTF8)
+        branch = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True, text=True, timeout=10,
+                                **UTF8)
     except (OSError, subprocess.TimeoutExpired):
         return None, ""
     if out.returncode or not out.stdout.strip():
@@ -306,7 +311,51 @@ def reserved(cwd: str):
     return folder, session.get("name", "")
 
 
+def _heavy_lock():
+    """(0.31) heavy_lock next to this file (the platform layer), None when this runs as a lone copy without it."""
+    try:
+        here = str(Path(__file__).resolve().parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import heavy_lock
+        return heavy_lock
+    except Exception:  # noqa: BLE001 - a missing or broken neighbour only costs the Windows check
+        return None
+
+
+def windows_command(pid: int):
+    """(0.31) Windows: the command line of one process (Win32_Process), "" when it is gone, None when it cannot be read."""
+    script = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+              f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}'; if ($p) {{ 'pid ' + $p.CommandLine }}")
+    try:
+        done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                              text=True, timeout=20, **UTF8)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if done.returncode:
+        return None
+    line = done.stdout.strip()
+    return line[4:] if line.startswith("pid ") else ""
+
+
+def alive_windows(pid: int) -> bool:
+    """(0.31) alive() on Windows: os.kill(pid, 0) there is TerminateProcess - it would kill the watcher (or whatever got
+    the pid). Liveness from heavy_lock.pid_alive, the command line from Win32_Process; unknown counts as alive, like a
+    failed ps on POSIX (no second watcher rather than two)."""
+    lock = _heavy_lock()
+    if lock is None:
+        return True
+    if not lock.pid_alive(pid):
+        return False
+    command = windows_command(pid)
+    if command is None:
+        return True
+    return "ce_await_mail" in command or "postfach_watch" in command  # empty: the process just ended
+
+
 def alive(pid: int) -> bool:
+    if WINDOWS:
+        return alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -454,7 +503,7 @@ def fetch_comments(repo: str, numbers: list, since: str) -> list:
 
 def fetch_page(repo: str, number: int, since: str) -> list:
     query = f"repos/{repo}/issues/{number}/comments?per_page=100&since={since}"
-    result = subprocess.run(["gh", "api", "--paginate", query], capture_output=True, text=True, timeout=60)
+    result = subprocess.run(["gh", "api", "--paginate", query], capture_output=True, text=True, timeout=60, **UTF8)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or "gh api failed")
     text = result.stdout.replace("][", ",")  # --paginate prints one array per page
@@ -522,7 +571,23 @@ def follow(fetch, key: str, after: int, since: str, interval: float, remember, a
     return 0
 
 
+def utf8_console() -> None:
+    """(0.31) Windows: messages go out as UTF-8 (ce_common.utf8_console; a lone copy without it reconfigures itself)."""
+    if not WINDOWS:
+        return
+    try:
+        import ce_common
+        ce_common.utf8_console()
+    except Exception:  # noqa: BLE001
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError, OSError):
+                pass
+
+
 def main() -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--name", default="", help="own session name, e.g. 'TG 0.19 „Kinetic“ · Mac'; default: the reservation of this worktree")
     parser.add_argument("--repo", default=REPO)

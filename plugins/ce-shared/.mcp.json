@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "ce-search": {
-      "command": "python3",
+      "command": "sh",
       "args": [
+        "${CLAUDE_PLUGIN_ROOT}/hooks/ce-python",
         "${CLAUDE_PLUGIN_ROOT}/tools/ce_search.py",
         "serve"
       ],

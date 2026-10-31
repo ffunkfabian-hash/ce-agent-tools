@@ -22,6 +22,16 @@ import ce_search
 import ce_sync
 
 
+def as_macos():
+    """(0.31) The launchd tests describe macOS: on a Windows test machine ce_nightly takes its Windows branch and
+    os.getuid does not exist; both are put back to the macOS view here. Nothing changes on macOS/Linux."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(mock.patch.object(ce_nightly, "WINDOWS", False))
+    if not hasattr(os, "getuid"):
+        stack.enter_context(mock.patch.object(ce_nightly.os, "getuid", create=True, return_value=501))
+    return stack
+
+
 class CrosscurrentTests(unittest.TestCase):
     def test_grouped_cli_routes_and_keeps_legacy_aliases(self):
         for args, expected in [(["codex", "judge", "--help"], "--base"),
@@ -160,7 +170,8 @@ class CrosscurrentTests(unittest.TestCase):
             ce_search.build([root], index, log=lambda line: None)
             changed.write_text("# Newheadingunique\nReplacementunique")
             ce_search.build([root], index, log=lambda line: None)
-            with sqlite3.connect(index) as db:
+            # closing: "with connect()" only commits; Windows cannot delete the temp dir while the file is open (0.31)
+            with contextlib.closing(sqlite3.connect(index)) as db, db:
                 db.execute("INSERT INTO chunks_fts(chunks_fts, rank) VALUES('integrity-check', 1)")
             self.assertEqual(ce_search.search("Obsoleteunique", repo="stable-repo", index=index), [])
             self.assertEqual(ce_search.search("Oldheadingunique", repo="stable-repo", index=index), [])
@@ -177,13 +188,38 @@ class CrosscurrentTests(unittest.TestCase):
             ce_search.build([root], index, log=lambda line: None)
             removed.unlink()
             ce_search.build([root], index, log=lambda line: None)
-            with sqlite3.connect(index) as db:
+            with contextlib.closing(sqlite3.connect(index)) as db, db:
                 db.execute("INSERT INTO chunks_fts(chunks_fts, rank) VALUES('integrity-check', 1)")
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM files WHERE repo='stable-repo'").fetchone()[0], 1)
             removed.write_text("# Recreated\nRecreatedunique")
             ce_search.build([root], index, log=lambda line: None)
             self.assertEqual(ce_search.search("Deletedunique", repo="stable-repo", index=index), [])
             self.assertEqual(ce_search.search("Recreatedunique", repo="stable-repo", index=index)[0]["path"], "removed.md")
+
+    def test_search_server_reads_and_writes_utf8_on_every_system(self):
+        # (0.31) an MCP client sends UTF-8; on Windows stdin would read it as cp1252 and never find "Flächen"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"; root.mkdir()
+            (root / "notes.md").write_text("# Viewer\nZ-Fighting bei gestauchten Flächen\n", encoding="utf-8")
+            index = Path(tmp) / "index.sqlite"
+            env = {**os.environ, "CE_SEARCH_INDEX": str(index), "CE_SEARCH_EMBED": "0"}
+            env.pop("PYTHONIOENCODING", None)  # how real clients start it
+            with mock.patch.dict(os.environ, {"CE_SEARCH_EMBED": "0"}):
+                ce_search.build([root], index, log=lambda line: None)
+            request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                  "params": {"name": "ce_search", "arguments": {"query": "Flächen"}}}, ensure_ascii=False)
+            done = subprocess.run([sys.executable, str(TOOLS / "ce_search.py"), "serve"], input=(request + "\n").encode("utf-8"),
+                                  capture_output=True, env=env, timeout=60)
+            reply = json.loads(done.stdout.decode("utf-8"))
+            self.assertIn("notes.md", reply["result"]["content"][0]["text"])
+            self.assertIn("Flächen", reply["result"]["content"][0]["text"])
+
+    def test_search_default_index_is_the_shared_cache_folder(self):
+        # (0.31) one helper for every cache path: ~/Library/Caches/CubeEscape on macOS/Linux, %LOCALAPPDATA% on Windows
+        self.assertEqual(ce_search.DEFAULT_INDEX, Path(ce_search.heavy_lock.cache_dir("search", "index.sqlite")))
+        self.assertEqual(ce_nightly.LOG_DIR, Path(ce_nightly.heavy_lock.cache_dir("nightly")))
+        if os.name != "nt":
+            self.assertEqual(ce_search.DEFAULT_INDEX, Path.home() / "Library" / "Caches" / "CubeEscape" / "search" / "index.sqlite")
 
     def test_contract_validator_checks_extra_properties_and_numeric_schema_order(self):
         import ce_contract
@@ -197,7 +233,7 @@ class CrosscurrentTests(unittest.TestCase):
     def test_scheduler_retains_issue_opt_in_and_refuses_duplicate_legacy_schedule(self):
         import plistlib
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, "HOME", Path(tmp)), \
-             mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), \
+             mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), as_macos(), \
              mock.patch.object(ce_nightly.shutil, "which", return_value=None), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(ce_nightly.install(3, report_issues=True), 2)
             data = plistlib.loads(ce_nightly.plist_path().read_bytes())
@@ -232,7 +268,7 @@ class CrosscurrentTests(unittest.TestCase):
 
     def test_scheduler_reports_launchd_activation_failure(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, "HOME", Path(tmp)), \
-             mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), \
+             mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), as_macos(), \
              mock.patch.object(ce_nightly.shutil, "which", return_value="launchctl"), \
              mock.patch.object(ce_nightly.subprocess, "run", side_effect=[
                  subprocess.CompletedProcess([], 113, "", "not loaded"),
@@ -253,14 +289,14 @@ class CrosscurrentTests(unittest.TestCase):
     def test_nightly_install_preserves_explicit_selection(self):
         import plistlib
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, 'HOME', Path(tmp)), \
-             mock.patch.object(ce_nightly, 'LOG_DIR', Path(tmp) / 'logs'), \
+             mock.patch.object(ce_nightly, 'LOG_DIR', Path(tmp) / 'logs'), as_macos(), \
              mock.patch.object(ce_nightly.shutil, 'which', return_value=None), contextlib.redirect_stdout(io.StringIO()):
             ce_nightly.main(['install', '--repo', tmp, '--hour', '3'])
             plist = plistlib.loads(ce_nightly.plist_path().read_bytes())
             self.assertEqual(plist['ProgramArguments'][2:], ['--repo', str(Path(tmp).resolve())])
 
     def test_failed_uninstall_keeps_plist_and_reports_failure(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, 'HOME', Path(tmp)), \
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, 'HOME', Path(tmp)), as_macos(), \
              mock.patch.object(ce_nightly.shutil, 'which', return_value='launchctl'), \
              mock.patch.object(ce_nightly.subprocess, 'run', side_effect=[
                  subprocess.CompletedProcess([], 0, '', ''),
@@ -269,6 +305,49 @@ class CrosscurrentTests(unittest.TestCase):
             path = ce_nightly.plist_path(); path.parent.mkdir(parents=True); path.write_text('keep')
             self.assertEqual(ce_nightly.uninstall(), 1)
             self.assertEqual(path.read_text(), 'keep')
+
+    def test_windows_scheduler_is_not_set_up_and_says_so(self):
+        # (0.31) launchd is macOS-only: Windows writes no plist, starts no launchctl, exits 2 for install/uninstall
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, "HOME", Path(tmp)), \
+             mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), mock.patch.object(ce_nightly, "WINDOWS", True), \
+             mock.patch.object(ce_nightly.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ce_nightly.main(["install", "--hour", "3"]), 2)
+            self.assertEqual(ce_nightly.main(["uninstall"]), 2)
+            self.assertEqual(ce_nightly.main(["status"]), 0)
+            self.assertFalse(ce_nightly.plist_path().exists())
+        run.assert_not_called()
+        self.assertEqual(out.getvalue().count("Windows-Aufgabenplanung"), 3)
+        self.assertIn("Nicht installiert", out.getvalue())
+
+    def test_windows_keeps_the_system_awake_and_gives_it_back(self):
+        # (0.31) SetThreadExecutionState instead of caffeinate; reset to ES_CONTINUOUS also after an error
+        calls = []
+        kernel32 = mock.Mock(SetThreadExecutionState=lambda flags: calls.append(flags) or 1)
+        with self.assertRaises(RuntimeError), ce_nightly.awake_windows(kernel32):
+            self.assertEqual(calls, [ce_nightly.ES_CONTINUOUS | ce_nightly.ES_SYSTEM_REQUIRED])
+            raise RuntimeError("night run failed")
+        self.assertEqual(calls, [ce_nightly.ES_CONTINUOUS | ce_nightly.ES_SYSTEM_REQUIRED, ce_nightly.ES_CONTINUOUS])
+        refused = mock.Mock(SetThreadExecutionState=mock.Mock(return_value=0))
+        with ce_nightly.awake_windows(refused):
+            pass
+        self.assertEqual(refused.SetThreadExecutionState.call_count, 1)  # nothing kept, nothing to give back
+        with mock.patch.object(ce_nightly, "WINDOWS", True), mock.patch.object(ce_nightly, "awake_windows") as windows, \
+             mock.patch.object(ce_nightly.subprocess, "Popen") as popen:
+            with ce_nightly.awake():
+                pass
+        windows.assert_called_once_with()
+        popen.assert_not_called()
+        if os.name == "nt":  # the real call: kernel32 answers with the previous state, never 0
+            with ce_nightly.awake_windows():
+                pass
+
+    def test_windows_ce_repos_uses_the_path_separator(self):
+        # (0.31) a Windows path has a colon (C:): Windows splits CE_REPOS at os.pathsep (';'), POSIX keeps ':'
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp, "a").resolve(), Path(tmp, "b").resolve()
+            joined = os.pathsep.join([str(first), str(second)])
+            with mock.patch.object(ce_nightly, "WINDOWS", True), mock.patch.dict(os.environ, {"CE_REPOS": joined}):
+                self.assertEqual(ce_nightly.repos(mock.Mock(repo=None)), [first, second])
 
     def test_antigravity_transcript_is_parsed_by_ce_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -403,13 +482,43 @@ class CrosscurrentTests(unittest.TestCase):
             shared.mkdir(parents=True)
             shared_py = shared / "python"
             shared_py.write_text("#!/bin/sh\n")
-            with mock.patch.object(ce_check, "TOOLS_VENV_PYTHON", shared_py):
+            with mock.patch.object(ce_check, "TOOLS_VENV_PYTHON", shared_py), \
+                    mock.patch.object(ce_check.ce_common, "WINDOWS", False):  # (0.31) the POSIX layout everywhere
                 self.assertEqual(ce_check._resolve_argv(["python3", "-m", "unittest"], root)[0], str(shared_py))
                 self.assertEqual(ce_check._resolve_argv(["/usr/bin/python3", "-m", "unittest"], root)[0], "/usr/bin/python3")
                 local_py = root / ".venv" / "bin" / "python"
                 local_py.parent.mkdir(parents=True)
                 local_py.write_text("#!/bin/sh\n")
                 self.assertEqual(ce_check._resolve_argv(["python3", "-m", "unittest"], root)[0], str(local_py))
+
+    def test_check_on_windows_uses_scripts_venvs_this_python_and_runs_scripts(self):
+        """(0.31) Windows: venvs keep python.exe in Scripts, python3 on PATH is the Store stub -> this Python; repo
+        scripts go through heavy_lock.script_argv, output is UTF-8. Mocked, runs everywhere."""
+        import ce_check
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            shared_py = Path(tmp) / "shared_venv" / "bin" / "python"
+            with mock.patch.object(ce_check, "TOOLS_VENV_PYTHON", shared_py), \
+                    mock.patch.object(ce_check.ce_common, "WINDOWS", True):
+                self.assertEqual(ce_check._resolve_argv(["python3", "-m", "unittest"], root),
+                                 [sys.executable, "-m", "unittest"])
+                self.assertEqual(ce_check._resolve_argv(["./check", "quick"], root), ["./check", "quick"])
+                shared_exe = Path(tmp) / "shared_venv" / "Scripts" / "python.exe"
+                shared_exe.parent.mkdir(parents=True)
+                shared_exe.write_text("")
+                self.assertEqual(ce_check._resolve_argv(["python", "x.py"], root)[0], str(shared_exe))
+                local_exe = root / ".venv" / "Scripts" / "python.exe"
+                local_exe.parent.mkdir(parents=True)
+                local_exe.write_text("")
+                self.assertEqual(ce_check._resolve_argv(["python3", "x.py"], root)[0], str(local_exe))
+                done = subprocess.CompletedProcess([], 0, "grün ✓\n", "")
+                with mock.patch.object(ce_check.heavy_lock, "script_argv", side_effect=lambda a: ["sh.exe", *a]), \
+                        mock.patch.object(ce_check.subprocess, "run", return_value=done) as run:
+                    result = ce_check.run_one(["./check", "quick"], root)
+                self.assertEqual((result["code"], result["output"]), (0, "grün ✓\n"))
+                self.assertEqual(run.call_args.args[0], ["sh.exe", "./check", "quick"])
+                self.assertEqual((run.call_args.kwargs["encoding"], run.call_args.kwargs["env"]["PYTHONIOENCODING"]),
+                                 ("utf-8", os.environ.get("PYTHONIOENCODING", "utf-8")))
 
     def test_nightly_all_indexes_full_search_repo_set_including_nexogen_and_tools(self):
         with tempfile.TemporaryDirectory() as tmp:

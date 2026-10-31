@@ -36,7 +36,7 @@ NAME = "CE-AGENT-TOOLS 0.21 „Courier“ · Mac"
 
 
 def git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=ENV).stdout.strip()
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, encoding="utf-8", env=ENV).stdout.strip()
 
 
 def comment(number, body, minutes_ago=1):
@@ -69,11 +69,11 @@ class Origin(unittest.TestCase):
 
     def reserve(self, *args):
         return subprocess.run([sys.executable, str(SESSION), "--repo", str(self.repo), "--agent", "claude", "--reserve", *args],
-                              capture_output=True, text=True, env=ENV)
+                              capture_output=True, text=True, encoding="utf-8", env=ENV)
 
     def say(self, *args):
         return subprocess.run([sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--repo", str(self.repo), "--dry-run", *args],
-                              capture_output=True, text=True, env=ENV)
+                              capture_output=True, text=True, encoding="utf-8", env=ENV)
 
     def remote_sha(self, branch):
         return git(self.bare, "rev-parse", f"refs/heads/{branch}")
@@ -134,7 +134,7 @@ class FreshBase(Origin):
                                                           "deliveries": 1, "hinted": 10, "reminded_at": 1, "last_failure": 1}))
         (folder / "ce-inbox.json").write_text(json.dumps({"name": "CE-AGENT-TOOLS 0.20 „Lodestar“ · Mac", "messages": [{"id": 9}]}))
         self.reserve("--name", "Courier", "--no-announce")
-        self.assertEqual(json.loads((folder / "ce-watch.json").read_text()), {"after": 5})
+        self.assertEqual(json.loads((folder / "ce-watch.json").read_text(encoding="utf-8")), {"after": 5})
         self.assertFalse((folder / "ce-inbox.json").exists())
 
 
@@ -303,7 +303,7 @@ class Follow(unittest.TestCase):
             env = dict(ENV, PATH="/nonexistent")  # no gh: the first read fails, the start line shows where it resumes
             process = subprocess.Popen([sys.executable, str(TOOLS / "ce_await_mail.py"), "--name", "Sightline", "--follow",
                                         "--state", str(state), "--interval", "30"], cwd=tmp, env=env,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
             try:
                 line = process.stderr.readline()
             finally:
@@ -444,13 +444,13 @@ class DuringWork(Worktree):
         comments = [comment(5, "Sightline → CE-AGENT-TOOLS 0.21 „Courier“: alt"), comment(6, "Sightline → TG 0.25 „Ocular“: fremd"),
                     comment(7, "Sightline → CE-AGENT-TOOLS 0.21 „Courier“: neu"), comment(8, f"{NAME} → Sightline: eigene")]
         inbox.fetch(self.git, read=lambda since: comments, now=lambda: self.now[0])
-        saved = json.loads((self.git / inbox.INBOX_FILE).read_text())
+        saved = json.loads((self.git / inbox.INBOX_FILE).read_text(encoding="utf-8"))
         self.assertEqual([m["id"] for m in saved["messages"]], [7])
         self.assertFalse((self.git / inbox.LOCK_FILE).exists())
 
     def test_fetch_records_a_failure_and_one_fetch_at_a_time(self):
         inbox.fetch(self.git, read=lambda since: (_ for _ in ()).throw(RuntimeError("offline")), now=lambda: self.now[0])
-        self.assertIn("offline", json.loads((self.git / inbox.INBOX_FILE).read_text())["error"])
+        self.assertIn("offline", json.loads((self.git / inbox.INBOX_FILE).read_text(encoding="utf-8"))["error"])
         (self.git / inbox.LOCK_FILE).write_text("1")
         calls = []
         inbox.fetch(self.git, read=lambda since: calls.append(since) or [], now=lambda: _time.time())
@@ -521,19 +521,19 @@ class Registration(unittest.TestCase):
             plugin = Path(tmp)
             (plugin / "hooks").mkdir()
             (plugin / "tools").mkdir()
-            (plugin / "hooks" / "postfach_inbox.py").write_text((PLUGIN / "hooks" / "postfach_inbox.py").read_text(encoding="utf-8"))
+            (plugin / "hooks" / "postfach_inbox.py").write_text((PLUGIN / "hooks" / "postfach_inbox.py").read_text(encoding="utf-8"), encoding="utf-8")
             (plugin / "tools" / "ce_await_mail.py").write_text("raise RuntimeError('kaputt')\n")
             result = subprocess.run([sys.executable, str(plugin / "hooks" / "postfach_inbox.py"), "hint"], input="{}",
-                                    capture_output=True, text=True, env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin)))
+                                    capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin)))
             self.assertEqual((result.returncode, result.stdout), (0, ""))
             # cwd outside any git repo: without a cwd in the input the hook uses the process folder, and the test run's folder is
             # this (reserved) worktree – its real Postfach once leaked into the expected output (0.21, failure during the probe)
             bad = subprocess.run([sys.executable, str(PLUGIN / "hooks" / "postfach_inbox.py"), "hint"], input="kein json",
-                                 capture_output=True, text=True, cwd=tmp)
+                                 capture_output=True, text=True, encoding="utf-8", cwd=tmp)
             self.assertEqual((bad.returncode, bad.stdout), (0, ""))
 
     def test_reserve_help_passes_through(self):
-        out = subprocess.run(["sh", str(TOOLS / "ce"), "session", "reserve", "--help"], capture_output=True, text=True)
+        out = subprocess.run(["sh", str(TOOLS / "ce"), "session", "reserve", "--help"], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("--model", out.stdout)
 

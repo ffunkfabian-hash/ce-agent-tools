@@ -17,22 +17,22 @@ class ModelSurvives(Origin):
 
     def test_remembering_the_same_name_again_keeps_the_model(self):
         self.reserve("--name", "Modellzeile", "--model", "Opus 5.5, medium", "--no-announce")
-        saved = json.loads(self.session_file().read_text())
+        saved = json.loads(self.session_file().read_text(encoding="utf-8"))
         pf.sn.remember(self.repo, saved["name"], saved["branch"])  # a later write without --model (patch, worktree switch)
         self.assertEqual(self.say("x").stdout.splitlines()[1], "Opus 5.5, medium")
 
     def test_another_name_does_not_inherit_the_model(self):
         self.reserve("--name", "Modellzeile", "--model", "Opus 5.5, medium", "--no-announce")
-        saved = json.loads(self.session_file().read_text())
+        saved = json.loads(self.session_file().read_text(encoding="utf-8"))
         pf.sn.remember(self.repo, "CE-AGENT-TOOLS 0.99 „Anderes“ · Mac", saved["branch"])
         self.assertEqual(self.say("x").stdout.splitlines()[1], "Modell und Aufwand: nicht angegeben")
 
     def test_reservation_older_than_three_days_still_gives_the_model(self):
         self.reserve("--name", "Modellzeile", "--model", "Opus 5.5, medium", "--no-announce")
         git(self.repo, "checkout", "-q", "claude/ce-agent-tools-0.21-modellzeile")
-        record = json.loads(self.session_file().read_text())
+        record = json.loads(self.session_file().read_text(encoding="utf-8"))
         record["reserved_at"] = time.time() - 5 * 86400
-        self.session_file().write_text(json.dumps(record))
+        self.session_file().write_text(json.dumps(record), encoding="utf-8")
         out = self.say("x")
         self.assertEqual(out.stdout.splitlines()[1], "Opus 5.5, medium", out.stderr)
 

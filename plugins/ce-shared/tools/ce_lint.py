@@ -139,4 +139,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

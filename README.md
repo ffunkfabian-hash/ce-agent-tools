@@ -25,7 +25,7 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | `git-kein-force-push` | blockiert | `git push --force/-f/--mirror/+ref` (nur innerhalb eines Befehls – kein Fehlalarm mehr bei `[ -f … ]` nach einem Push) |
 | `git-stash-geteilt` | blockiert | nacktes `git stash` / `pop` / `clear` (Stash ist mit allen Worktrees geteilt) |
 | `teleport-nur-frisch` | blockiert | Teleport einer Cloud-Sitzung aus einer laufenden Sitzung heraus (verwarf zweimal offene Arbeit) |
-| `unity-nie-auf-checkout` | blockiert | Unity oder die Unity-CLI mit einem Cube-Escape-Checkout als Projekt (`-projectPath`, `--project-path`, `unity open/run/build`) |
+| `unity-nie-auf-checkout` | blockiert | Unity oder die Unity-CLI mit einem Cube-Escape-Checkout als Projekt (`-projectPath`, `--project-path`, `unity open/run/build`); 0.31: jeder Pfad `…/Claude/Cube Escape` auch in Windows-Form (`G:\Claude\…`, `/g/Claude/…`, `~/Claude/…`, `C:\Users\…\Claude` als Verbindung) |
 | `unity-cli-ziel-nennen` | blockiert | `unity mcp/command/list/job/eval/pipeline install` ohne `--project-path` (die CLI nähme sonst irgendeinen Editor) |
 | `commit-on-main` | blockiert | ein einfacher `git commit` (auch hinter einem führenden `cd <Pfad> &&`), dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; andere zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
 | `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` |
@@ -341,7 +341,11 @@ Wegwerf-Repos aus – gegen main abgelehnt, auf Arbeitsbranches normal.
 ```bash
 python3 plugins/ce-shared/tools/ce_check.py quick   # nutzt automatisch .venv oder ~/.local/share/ce-agent-tools/venv
 python3 -m unittest discover -s tests
+py -m unittest discover -s tests                     # Windows (0.31): python3 ist dort meist nur der Store-Platzhalter
 ```
+
+Windows (0.31 „Crossover“): Sperren unter `%LOCALAPPDATA%\CubeEscape` (`heavy_lock.cache_dir()`, macOS unverändert
+`~/Library/Caches/CubeEscape`), Shell-Teile über Git Bash (nie `System32\bash.exe`, das ist WSL), zsh-Skripte laufen in bash.
 
 Optionale Test- und Bildabhängigkeiten (`Pillow`, `numpy`) stehen in `requirements-dev.txt` (`python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`). Lokal ausprobieren ohne Installation: `claude --plugin-dir plugins/ce-shared`. Version in `plugin.json` und
 `marketplace.json` gemeinsam anheben (der Test prüft es), Eintrag in `CHANGELOG.md`.
@@ -391,6 +395,12 @@ Vereinbarung, kein kryptografischer Beweis.
 
 ## Erfahrungen
 
+- **Unter Windows ist `python3` meist der Store-Platzhalter:** Er endet mit Exit 49, und das ist für Claude Code kein Block – jeder ce-shared-Hook (Wächter, Vor-Commit, Sitzung, Postfach) und der `ce-search`-MCP taten auf dem Windows-PC still nichts, `echo "unity list"` lief durch. Hooks und MCP starten deshalb über `hooks/ce-python` (Mac: unverändert `exec python3`, Windows: `py`), `./ce` wählt ebenso; ein Test führt den eingetragenen Hook-Befehl echt aus ([0.31](docs/versions/0.31.md)).
+- **Ein cp1252-stdin macht einen fail-open-Wächter umgehbar:** Python liest eine Windows-Pipe als cp1252; das UTF-8-JSON eines Befehls mit „Á“ oder „←“ enthält dort undefinierte Bytes, der Dekodierfehler endet als „guard error“ – und der Befehl lief ungeprüft. Hook-Ein- und -Ausgänge unter Windows ausdrücklich auf UTF-8 stellen ([0.31](docs/versions/0.31.md)).
+- **`os.kill(pid, 0)` beendet unter Windows den Prozess:** Dort ist jedes Signal außer Ctrl+C/Ctrl+Break ein `TerminateProcess`; die Lebendprüfung des Postfach-Wächters hätte ihn (oder einen Fremdprozess mit wiederverwendeter PID) abgeschossen. Nur `heavy_lock.pid_alive` verwenden ([0.31](docs/versions/0.31.md)).
+- **Windows hat kein exec und unterbricht kein endloses Warten:** `os.execvpe` startet einen neuen Prozess und der Lader endete sofort mit 0 – jeder Fehler unsichtbar. `Popen.wait()` ohne Zeitlimit lässt keine Signal-Handler laufen, ein langes `time.sleep` endet nur für SIGINT; in kurzen Schritten warten ([0.31](docs/versions/0.31.md)).
+- **Windows-Dateisperren sind verbindlich:** Ein mit `LockFileEx` gesperrter Bereich ist für andere nicht lesbar – die Halterzeile muss lesbar bleiben, also ein Byte weit hinter den Daten sperren (2^62); freigeben vor dem Schließen, denn ein geschlossener Griff gibt erst „wenn Ressourcen frei sind“ frei. Die Prozessgruppe ist ein Job-Objekt (angehalten gestartet, dann zugeordnet; Kill-on-Close) ([0.31](docs/versions/0.31.md)).
+- **Kleine Windows-Fallen:** `Path.write_text` schreibt CRLF (die sh-Wrapper des Git-Netzes); `System32\bash.exe` ist WSL, Git Bash liegt neben `git.exe`; Kindprozesse ohne `SystemDrive` legen einen Ordner `%SystemDrive%` im Arbeitsordner an; Text aus Pipes ist cp1252, wo nichts anderes gesagt ist ([0.31](docs/versions/0.31.md)).
 - **Opus füllt 2048 Ausgabetokens mit vier Prüfpunkten:** Die erste echte Probe von `./ce judge --api` brach nach Punkt 4 mit `max_tokens` ab (richtig fail-closed: Nachbessern). Nexogen erlaubt weder ein höheres Limit noch eine Fortsetzungsanfrage, also das Format begrenzen (Zellen ≤ 25 Wörter, ok-Zeilen nur „ok“); danach vollständig in 18 s für 0,06 USD ([0.30](docs/versions/0.30.md)).
 - **Vibe meldet Pfade relativ und Werkzeuge qualifiziert:** `tool_name` ist immer `file_system.bash`, `process.start`, `mcp_<server>.<tool>`, `file_path` kommt so, wie das Modell es schrieb (meist relativ zu `cwd`). Hintergrundbefehle laufen über `process.start`, das `match = "bash"` nicht trifft ([0.27](docs/versions/0.27.md)).
 - **Schreibschutz hält root nicht auf:** Cloud-Sitzungen laufen als root; Python legte trotz schreibgeschütztem Cache `__pycache__` an, die Manifestprüfung verwarf den Cache bei jedem Aufruf. Bytecode mit `PYTHONPYCACHEPREFIX` außerhalb umleiten ([0.20](docs/versions/0.20.md)).

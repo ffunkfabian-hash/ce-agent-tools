@@ -205,7 +205,7 @@ class ReserveAnnounces(unittest.TestCase):
 
     def run_cli(self, *args):
         return subprocess.run([sys.executable, str(SESSION), "--repo", str(self.repo), "--agent", "claude", *args],
-                              capture_output=True, text=True, env=self.env)
+                              capture_output=True, text=True, encoding="utf-8", env=self.env)
 
     def test_patch_reserves_and_offers_the_announcement_text(self):
         result = self.run_cli("--reserve", "--patch", "Stützgriff", "--about", "KG03/KG08 Stützhand")
@@ -228,7 +228,7 @@ class ReserveAnnounces(unittest.TestCase):
         wrapper = Path(self.tmp.name) / "wrapper.py"
         wrapper.write_text("import runpy, sys\nsys.argv[0] = sys.argv[1]\ndel sys.argv[1]\nrunpy.run_path(sys.argv[0], run_name='__main__')\n")
         result = subprocess.run([sys.executable, str(wrapper), str(SESSION), "--repo", str(self.repo), "--agent", "claude", "--name", "Probe", "--reserve"],
-                                capture_output=True, text=True, env=self.env, cwd=self.tmp.name)
+                                capture_output=True, text=True, encoding="utf-8", env=self.env, cwd=self.tmp.name)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertIn("angemeldet", result.stderr)
@@ -239,18 +239,18 @@ class ReserveAnnounces(unittest.TestCase):
         (broken / "ce_session_name.py").write_text(SESSION.read_text(encoding="utf-8"), encoding="utf-8")
         (broken / "ce_postfach.py").write_text("raise RuntimeError('kaputt')\n", encoding="utf-8")
         result = subprocess.run([sys.executable, str(broken / "ce_session_name.py"), "--repo", str(self.repo), "--agent", "claude", "--name", "Probe", "--reserve"],
-                                capture_output=True, text=True, env=self.env)
+                                capture_output=True, text=True, encoding="utf-8", env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Anmeldung nicht gesendet", result.stderr)
         self.assertIn("Reservierung gilt", result.stderr)
-        heads = subprocess.run(["git", "ls-remote", "--heads", str(self.bare)], capture_output=True, text=True).stdout
+        heads = subprocess.run(["git", "ls-remote", "--heads", str(self.bare)], capture_output=True, text=True, encoding="utf-8").stdout
         self.assertIn("claude/fg-0.16-probe", heads)
 
     def test_say_sends_under_the_reserved_spelling(self):
         self.run_cli("--reserve", "--name", "Cross-Talk", "--no-announce")
         subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", "claude/fg-0.16-cross-talk"], check=True)
         out = subprocess.run([sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--repo", str(self.repo), "--dry-run", "Thema"],
-                             capture_output=True, text=True, env=self.env)
+                             capture_output=True, text=True, encoding="utf-8", env=self.env)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertTrue(out.stdout.startswith("FG 0.16 „Cross-Talk“ · "), out.stdout)
 
@@ -259,7 +259,7 @@ class ReserveAnnounces(unittest.TestCase):
         self.run_cli("--reserve", "--patch", "probe-wakeline", "--no-announce")
         subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", "-b", "claude/beautiful-davinci-6v3i1z"], check=True)
         out = subprocess.run([sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--repo", str(self.repo), "--dry-run", "Thema"],
-                             capture_output=True, text=True, env=self.env)
+                             capture_output=True, text=True, encoding="utf-8", env=self.env)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertTrue(out.stdout.startswith("FG Patch probe-wakeline · "), out.stdout)
 
@@ -278,7 +278,7 @@ class SayDashlineTests(unittest.TestCase):
             cmd.append("--dry-run")
         cmd.extend(args)
         env = dict(os.environ, CE_MAILBOX="0")
-        return subprocess.run(cmd, capture_output=True, text=True, env=env)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
 
     def test_triple_dash_as_line(self):
         res = self.run_say("Thema", "---")
@@ -297,7 +297,7 @@ class SayDashlineTests(unittest.TestCase):
         # Options allowed before and after lines; dry-run after lines as specified
         res = subprocess.run([sys.executable, str(TOOLS / "ce_postfach.py"), "say", "--name", "Tester · Mac",
                               "T", "a", "- b", "--to", "alle", "--dry-run"],
-                             capture_output=True, text=True, env=dict(os.environ, CE_MAILBOX="0"))
+                             capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, CE_MAILBOX="0"))
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("Tester · Mac → alle: T\n", res.stdout)
         self.assertIn("\na\n- b\n", res.stdout)
@@ -348,5 +348,5 @@ class Entry(unittest.TestCase):
         (fake_tools / "ce_check.py").write_text("")
         (fake_tools / "ce_session_name.py").write_text("import sys\nprint(sys.argv[1:])\n")
         for args in (["session", "reserve", "Crosstalk"], ["session", "reserve", "--name", "Crosstalk"], ["reserve", "--name", "Crosstalk"]):
-            out = subprocess.run(["sh", str(fake_tools / "ce"), *args], capture_output=True, text=True).stdout.strip()
+            out = subprocess.run(["sh", str(fake_tools / "ce"), *args], capture_output=True, text=True, encoding="utf-8").stdout.strip()
             self.assertEqual(out, "['--name', 'Crosstalk', '--reserve']", args)

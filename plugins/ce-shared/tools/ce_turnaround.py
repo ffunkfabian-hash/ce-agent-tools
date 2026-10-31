@@ -219,7 +219,7 @@ def main(argv=None) -> int:
     command = blender_command(args.blender, source, script)
     try:
         with heavy_lock.held(f"{profile['generator']} turnaround", resource="blender"):
-            result = subprocess.run(command, check=False)
+            result = subprocess.run(heavy_lock.script_argv(command), check=False)  # (0.31) Windows: a script Blender
     except OSError as exc:
         print(f"ce_turnaround: Blender nicht startbar: {exc}", file=sys.stderr)
         return 2
@@ -232,4 +232,9 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     raise SystemExit(main())

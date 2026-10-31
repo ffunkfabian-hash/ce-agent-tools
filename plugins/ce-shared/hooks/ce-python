@@ -1,0 +1,12 @@
+#!/bin/sh
+# ce-python - the Python of the ce-shared hooks and of the ce-search MCP server (0.31 "Crossover"): python3 as before.
+# On Windows python3 is only the Store stub (exit 49: every hook silently did nothing, the guard blocked nothing), so
+# there the py launcher, else a python3/python that really runs. Arguments, stdin and exit code pass through (exec).
+# Twin: the Python choice at the top of tools/ce - change both.
+if [ "${OS:-}" = Windows_NT ]; then
+  command -v py >/dev/null 2>&1 && exec py "$@"
+  for candidate in python3 python; do
+    "$candidate" -c "" </dev/null >/dev/null 2>&1 && exec "$candidate" "$@"
+  done
+fi
+exec python3 "$@"

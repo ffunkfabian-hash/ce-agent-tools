@@ -134,7 +134,11 @@ def matching_rules(rules, tool, data, cwd=None, facts=None):
 # an existing folder, every `..` after a folder, no link undone by `..` (cd_target). Every other line - a missing
 # target included, where the shells try the physical path - stays with the net.
 
+WINDOWS = os.name == "nt"
 GIT_CANDIDATES = ("/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git")
+# Windows (0.31): Git for Windows below the program folders of the hook process (system, 32-bit, per-user install)
+WINDOWS_GIT_ROOTS = (("ProgramFiles", r"C:\Program Files"), ("ProgramW6432", r"C:\Program Files"),
+                     ("ProgramFiles(x86)", r"C:\Program Files (x86)"), ("LOCALAPPDATA", None))
 GIT_REPOSITORY_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 GIT_CONTEXT_OPTIONS = ("-C", "--git-dir", "--work-tree")  # followed (with their value) by the branch query
 GIT_FLAGS = ("--bare", "--no-pager", "-P", "-p", "--paginate", "--no-optional-locks", "--literal-pathspecs",
@@ -300,6 +304,8 @@ def cd_target(words, cwd):
     path = words[1][0]
     if not path or path.startswith(("-", "+")):
         return None
+    if WINDOWS:
+        return windows_cd_target(path, cwd)
     if os.environ.get("CDPATH") and not (path.startswith(("/", "./", "../")) or path in (".", "..")):
         return None
     folder = "/" if path.startswith("/") else os.path.normpath(cwd)
@@ -311,6 +317,47 @@ def cd_target(words, cwd):
     if not os.path.isdir(folder) or os.path.realpath(folder) != os.path.realpath(os.path.join(cwd, path)):
         return None
     return folder
+
+
+MSYS_DRIVE = re.compile(r"/(?:cygdrive/)?([A-Za-z])(?=/|$)")  # Git Bash: /g/Claude or /cygdrive/g/Claude is G:\Claude
+WINDOWS_DRIVE = re.compile(r"[A-Za-z]:[\\/]")
+
+
+def windows_cd_target(path, cwd):
+    """cd_target on Windows, where the shell is Git Bash (0.31): a drive path (G:\\x, G:/x), its Git Bash form (/g/x) or
+    a relative path with /; anything else stays with the net - other mounts (/tmp, /usr), UNC paths, a drive without
+    a slash (G:x), backslashes in a relative path, a bare name while CDPATH is set. Windows itself folds `..` before
+    it looks at links, so the physical walk (cd -P: `..` from the link's target) is done by hand and must agree with
+    the logical one (cd -L, the default). Limit: /g/x is read as Git Bash does (/cygdrive/g/x too, whichever prefix
+    that installation uses); a client whose shell on Windows is PowerShell (Codex, Antigravity - not measured) reads
+    it as <drive>:\\g\\x - only an existing such folder misleads."""
+    drive = MSYS_DRIVE.match(path)
+    if drive:
+        path = drive.group(1).upper() + ":/" + path[drive.end():].lstrip("/")
+    elif path.startswith(("/", "\\")):
+        return None
+    elif WINDOWS_DRIVE.match(path):
+        path = path.replace("\\", "/")
+    elif "\\" in path or ":" in path:
+        return None
+    absolute = bool(WINDOWS_DRIVE.match(path))
+    if os.environ.get("CDPATH") and not (absolute or path.startswith(("./", "../")) or path in (".", "..")):
+        return None
+    logical = path[:3] if absolute else os.path.normpath(cwd)
+    physical = os.path.realpath(logical)
+    for part in (path[3:] if absolute else path).split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not os.path.isdir(logical):
+                return None
+            logical, physical = os.path.dirname(logical), os.path.dirname(os.path.realpath(physical))
+        else:
+            logical, physical = os.path.join(logical, part), os.path.join(physical, part)
+    if not os.path.isdir(logical):
+        return None
+    same = os.path.normcase(os.path.realpath(logical)) == os.path.normcase(os.path.realpath(physical))
+    return logical if same else None
 
 
 def allows_empty_message(args):
@@ -329,15 +376,38 @@ def allows_empty_message(args):
     return False
 
 
+def git_candidates():
+    """Where the system's Git may be: fixed POSIX paths; on Windows Git for Windows' git.exe below the program folders
+    the hook process itself names (never PATH)."""
+    if not WINDOWS:
+        return GIT_CANDIDATES
+    found = []
+    for name, default in WINDOWS_GIT_ROOTS:
+        root = os.environ.get(name) or default
+        if root:
+            base = os.path.join(root, "Programs") if name == "LOCALAPPDATA" else root
+            found += [os.path.join(base, "Git", "cmd", "git.exe"), os.path.join(base, "Git", "bin", "git.exe")]
+    return tuple(dict.fromkeys(found))
+
+
 def trusted_git():
     """The Git binary of the system, never one named by PATH - the command under review may set PATH."""
-    return next((path for path in GIT_CANDIDATES if os.path.isfile(path) and os.access(path, os.X_OK)), None)
+    return next((path for path in git_candidates() if os.path.isfile(path) and os.access(path, os.X_OK)), None)
 
 
 def git_environment(effective):
     """Environment of a read-only Git query: fixed PATH and locale, HOME and DEVELOPER_DIR of the hook process itself,
-    and only the repository variables of the command under review - no PATH, loader or Git config variables from it."""
+    and only the repository variables of the command under review - no PATH, loader or Git config variables from it.
+    Windows: PATH is the system folder (git.exe sets up its own), plus the hook process's system and home names."""
     env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
+    if WINDOWS:
+        system = os.environ.get("SystemRoot") or r"C:\Windows"
+        env["PATH"] = os.pathsep.join((os.path.join(system, "System32"), system))
+        # without them Windows libraries write into a folder literally named %SystemDrive% below the cwd
+        env.update({"SystemRoot": system, "SystemDrive": os.environ.get("SystemDrive") or system[:2]})
+        env.update({name: os.environ[name] for name in ("SystemRoot", "SystemDrive", "USERPROFILE", "HOMEDRIVE",
+                                                        "HOMEPATH", "APPDATA", "LOCALAPPDATA", "ProgramData")
+                    if os.environ.get(name)})
     env.update({name: os.environ[name] for name in ("HOME", "DEVELOPER_DIR") if os.environ.get(name)})
     env.update({name: effective[name] for name in GIT_REPOSITORY_VARIABLES if effective.get(name)})
     return env
@@ -350,7 +420,7 @@ def read_branch(cwd, context):
         return None, None
     git = trusted_git()
     if git is None:
-        return None, f"kein System-Git gefunden ({', '.join(GIT_CANDIDATES)})"
+        return None, f"kein System-Git gefunden ({', '.join(git_candidates())})"
     try:
         result = subprocess.run([git, *context, "symbolic-ref", "-q", "HEAD"], cwd=cwd, capture_output=True,
                                 text=True, timeout=3, env=git_environment(os.environ))
@@ -626,6 +696,12 @@ def decide(payload, rules=None):
 
 
 def main():
+    if os.name == "nt":  # 0.31: clients speak UTF-8, a Windows pipe is cp1252
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     try:
         payload = json.load(sys.stdin)
         print(json.dumps(decide(payload)))

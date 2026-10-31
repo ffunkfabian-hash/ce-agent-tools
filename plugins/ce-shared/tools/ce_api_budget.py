@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Atomic local API cost limits for UTC calendar months, independent of billing."""
-import fcntl
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+try:
+    import fcntl
+except ImportError:  # (0.31) Windows: heavy_lock's LockFileEx with flock semantics
+    fcntl = None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import heavy_lock
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
@@ -116,12 +122,15 @@ class BudgetLedger:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
                                              dir=self.path.parent, delete=False) as stream:
                 temporary = stream.name
-                os.fchmod(stream.fileno(), 0o600)
+                if fcntl is not None:  # (0.31) Windows: the profile's ACL guards it, chmod only sets read-only
+                    os.fchmod(stream.fileno(), 0o600)
                 json.dump(data, stream, sort_keys=True, allow_nan=False)
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
+            if fcntl is None:  # (0.31) Windows opens no directory; NTFS journals the rename itself
+                return
             directory = os.open(self.path.parent, os.O_RDONLY)
             try:
                 os.fsync(directory)
@@ -143,6 +152,8 @@ class BudgetLedger:
     def _transaction(self, operation):
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            if fcntl is None:
+                return self._transaction_windows(operation)
             descriptor = os.open(str(self.path) + ".lock",
                                  os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             with os.fdopen(descriptor, "a") as lock:
@@ -156,6 +167,33 @@ class BudgetLedger:
                 return result
         except OSError as exc:
             raise BudgetError("Cannot lock cost ledger") from exc
+
+    def _transaction_windows(self, operation):
+        """(0.31) The same transaction on Windows: no O_NOFOLLOW there, so a linked lock file is refused before it is
+        opened; the lock is held until the ledger is written and freed at once (unlock_fd)."""
+        lock_path = str(self.path) + ".lock"
+        if os.path.islink(lock_path):
+            raise BudgetError("Cannot lock cost ledger")
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | heavy_lock.OPEN_FLAGS, 0o600)
+        except OSError as exc:
+            raise BudgetError("Cannot lock cost ledger") from exc
+        try:
+            try:
+                heavy_lock.lock_fd(descriptor, exclusive=True, wait=True)
+            except OSError as exc:
+                raise BudgetError("Cannot lock cost ledger") from exc
+            try:
+                data = self._load(self._now_period())
+                result, error = operation(data)
+                self._write(data)
+                if error:
+                    raise error
+                return result
+            finally:
+                heavy_lock.unlock_fd(descriptor)
+        finally:
+            os.close(descriptor)
 
     def reserve(self, amount):
         amount = _money(amount)

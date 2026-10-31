@@ -20,6 +20,7 @@ hook: only the exit code REJECT of `check` is a deliberate refusal; a missing gu
 code (syntax or import error, crash) leave a message and forward unchecked, keeping the previous hook's exit code.
 """
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -212,7 +213,7 @@ def install(repo, guard, python, dry_run=False, out=print):
             item.unlink()
     for name in names:
         temp = folder / f".{name}.tmp"
-        temp.write_text(wrapper(name, state["previous"], guard, python), encoding="utf-8")
+        temp.write_bytes(wrapper(name, state["previous"], guard, python).encode("utf-8"))  # LF also on Windows (sh)
         temp.chmod(0o755)
         os.replace(temp, folder / name)
     (folder / STATE).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -253,6 +254,10 @@ def status(repo, out=print):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if os.name == "nt":  # Git Bash shows UTF-8 like the wrappers' own lines, not the cp1252 of a Windows pipe (0.31)
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(AttributeError, ValueError):
+                stream.reconfigure(encoding="utf-8", errors="replace")
     if argv[:1] == ["check"] and len(argv) == 2:  # called by the wrappers: check <hook>
         return check_hook(argv[1])
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
