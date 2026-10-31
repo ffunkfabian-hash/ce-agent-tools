@@ -118,7 +118,8 @@ class JudgeApiTests(unittest.TestCase):
         self.assertTrue(self.report().rstrip().endswith("Freigabe"))
         # Requests lived in private temporary files outside the repo, removed afterwards.
         for path, mode in self.read_paths:
-            self.assertEqual(mode, 0o600)
+            if sys.platform != "win32":  # (0.31) NTFS has no mode bits; %TEMP% lies in the private profile
+                self.assertEqual(mode, 0o600)
             self.assertFalse(path.exists())
             self.assertNotIn(str(self.repo), str(path))
 

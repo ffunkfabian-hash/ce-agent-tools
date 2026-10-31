@@ -79,7 +79,7 @@ test('dashboard delegates to existing snapshot CLI without online mail and clean
   let temp;
   const html = await render({ python: 'python3', tools: '/backend', repos: ['/repo one', '/repo;two'] },
     async (python, script, args, cwd) => {
-      assert.equal(script, '/backend/ce_console.py');
+      assert.equal(script, path.join('/backend', 'ce_console.py')); // (0.31) native separator
       assert.equal(cwd, '/backend');
       assert.deepEqual(args.slice(3), ['--repos', '/repo one', '/repo;two']);
       assert.equal(args.includes('--mail'), false);
@@ -93,7 +93,7 @@ test('dashboard delegates to existing snapshot CLI without online mail and clean
 test('evidence delegates reference and MP4 directly to the image validator', async () => {
   await render({ python: 'python3', tools: '/backend', repos: [], left: '/a.png', right: '/b.png',
     reference: '/ref.json', clip: '/clip.mp4' }, async (python, script, args, cwd, codes) => {
-    assert.equal(script, '/backend/ce_imagediff.py');
+    assert.equal(script, path.join('/backend', 'ce_imagediff.py'));
     assert.deepEqual(args.slice(0, 3), ['/a.png', '/b.png', '--viewer']);
     assert.deepEqual(args.slice(4), ['--json', '--reference', '/ref.json', '--clip', '/clip.mp4']);
     assert.deepEqual(codes, [0, 1]);
@@ -110,13 +110,30 @@ test('temporary directory is removed when the backend fails', async () => {
   await assert.rejects(fs.stat(temp), { code: 'ENOENT' });
 });
 
+test('windows timeout ends the whole tree of the own child, never a group signal', async () => {
+  // (0.31) mocked, runs everywhere: no process groups and no TERM on Windows -> taskkill /T for our own pid
+  const killed = [];
+  const child = new EventEmitter();
+  child.pid = 4242; child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  child.stdout.setEncoding = child.stderr.setEncoding = () => {};
+  child.kill = () => assert.fail('the parent alone must not be ended');
+  let options;
+  await assert.rejects(execute('python', 'diff', [], '/', [0], (python, argv, opts) => { options = opts; return child; },
+    { timeoutMs: 20, killGraceMs: 10, closeWaitMs: 10, platform: 'win32', killTree: pid => killed.push(pid) }), /Timeout/);
+  assert.equal(options.detached, false);
+  assert.deepEqual(killed, [4242, 4242]);
+});
+
 test('real timeout kills the owned group including a TERM-ignoring child and removes render output',
-  { skip: process.platform === 'win32', timeout: 8000 }, async () => {
+  { timeout: 8000 }, async () => {
     const tools = await fs.mkdtemp(path.join(os.tmpdir(), 'ce-prism-job-test-'));
     const pidFile = path.join(tools, 'pids.json');
     const script = path.join(tools, 'ce_console.py');
     let temp, pids;
     function isRunning(pid) {
+      if (process.platform === 'win32') { // (0.31) no ps; signal 0 only asks there
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      }
       try {
         process.kill(pid, 0);
         // Orphans may briefly remain as reaped-by-init zombies on Linux containers.
@@ -155,7 +172,11 @@ setInterval(() => {}, 1000);
         try { pids = JSON.parse(await fs.readFile(pidFile, 'utf8')); } catch {}
       }
       if (pids) {
-        try { process.kill(-pids.parent, 'SIGKILL'); } catch {}
+        if (process.platform === 'win32') {
+          for (const pid of [pids.child, pids.parent]) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+        } else {
+          try { process.kill(-pids.parent, 'SIGKILL'); } catch {}
+        }
       }
       await fs.rm(tools, { recursive: true, force: true });
     }

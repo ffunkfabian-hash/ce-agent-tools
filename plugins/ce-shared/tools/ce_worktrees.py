@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import os
 import re
 import subprocess
@@ -96,6 +97,12 @@ def codex_sessions_by_cwd(codex_dir: Path | None = None) -> dict[str, dict]:
     return found
 
 
+def windows_key(path: str) -> str:
+    """(0.31) Windows: one spelling per folder - git writes C:/x, Python and Codex C:\\x, case does
+    not matter there. Forward slashes, lower case, no trailing separator."""
+    return ntpath.normcase(ntpath.normpath(path)).replace("\\", "/").rstrip("/")
+
+
 def _norm_Variants(path: str) -> set[str]:
     p = Path(path)
     out = {path.rstrip("/") or "/"}
@@ -104,6 +111,8 @@ def _norm_Variants(path: str) -> set[str]:
             out.add(str(p.resolve()).rstrip("/") or "/")
         except OSError:
             pass
+    if ce_common.WINDOWS:
+        return {windows_key(variant) for variant in out}
     return out
 
 
@@ -129,6 +138,8 @@ def latest_session(path: str, projects: Path, codex_sessions: dict[str, dict] | 
                 other_variants |= wt_vars
         for cwd_key, info in codex_sessions.items():
             norm_cwd = cwd_key.rstrip("/") or "/"
+            if ce_common.WINDOWS:
+                norm_cwd = windows_key(cwd_key)
             matched_targets = [t for t in target_variants if norm_cwd == t or norm_cwd.startswith(t + "/")]
             if not matched_targets:
                 continue
@@ -196,6 +207,9 @@ def worktree_state(item: dict, base: str, projects: Path, cwds: dict[str, list[s
             state["behind"], state["ahead"] = int(behind), int(ahead)
     state["session"] = latest_session(item["path"], projects, codex_sessions, all_worktrees)
     state["processes"] = cwds.get(item["path"], [])
+    if ce_common.WINDOWS and not state["processes"]:  # (0.31) git's C:/x against C:\x of the process listing
+        key = windows_key(item["path"])
+        state["processes"] = [name for cwd, names in cwds.items() if windows_key(cwd) == key for name in names]
     reasons = []
     if state["processes"]:
         reasons.append("Prozess läuft: " + ", ".join(sorted(set(state["processes"]))))
@@ -299,7 +313,7 @@ def main(argv: list[str]) -> int:
     if args.repos:
         repos = [Path(r) for r in args.repos]
     elif os.environ.get("CE_REPOS"):
-        repos = [Path(r) for r in os.environ["CE_REPOS"].split(":") if r]
+        repos = [Path(r) for r in os.environ["CE_REPOS"].split(os.pathsep) if r]
     else:
         repos = default_repos(HOME)
     collected = collect(repos, Path(args.projects), args.base, args.active_minutes)
@@ -320,4 +334,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

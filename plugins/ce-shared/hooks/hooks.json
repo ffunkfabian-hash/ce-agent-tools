@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py\"",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/precommit.py\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/precommit.py\"",
             "timeout": 20
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
             "timeout": 20
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\"",
             "timeout": 30
           }
         ]
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_watch.py\" watch",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_watch.py\" watch",
             "async": true,
             "asyncRewake": true,
             "timeout": 43200
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_watch.py\" remind",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_watch.py\" remind",
             "timeout": 15
           }
         ]
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_inbox.py\" hint",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-python\" \"${CLAUDE_PLUGIN_ROOT}/hooks/postfach_inbox.py\" hint",
             "timeout": 5
           }
         ]

@@ -15,7 +15,7 @@ Categories:
             start with a script inside the main checkout, optionally behind python3/python/sh/bash - no other program.
   ausgabe   generator outputs, .ce-repo.json › tidy.paths: [{"name", "root", "glob": "*", "keep": N,
             "older_than_days": D, "nightly": bool}]: the newest `keep` entries stay, the rest only when older than D days;
-            root inside the main checkout or ~/Library/Caches, nothing tracked by git.
+            root inside the main checkout or ~/Library/Caches (Windows also %LOCALAPPDATA%/CubeEscape), nothing tracked by git.
   beleg     evidence stores outside the repos (~/Library/Caches/*/videos, tidy.evidence: [{"root", "nightly"}]): version
             folders (0.112, 0.112.1 …); the two newest versions stay, for a repo store also the repo version and the one before.
 Never: main checkouts (or a folder holding one) and their Library, ~/Claude/_rettung, the home folder, anything named or
@@ -56,7 +56,13 @@ class Context:
         self.rescue = real(base / "_rettung")
         self.trash = Path(os.environ.get("CE_TRASH") or self.home / ".Trash")
         self.caches = real(self.home / "Library" / "Caches")
+        # (0.31) Windows has no ~/Library/Caches; only CubeEscape's own cache folder there (heavy_lock.cache_dir),
+        # not all of %LOCALAPPDATA%, which also holds programs and their data. POSIX: None
+        self.windows_caches = real(self.home / "AppData" / "Local" / "CubeEscape") if ce_common.WINDOWS else None
         self.mains = [real(m) for m in mains or []]
+
+    def in_caches(self, path: Path) -> bool:
+        return inside(path, self.caches) or (self.windows_caches is not None and inside(path, self.windows_caches))
 
 
 def real(path: Path) -> Path:
@@ -152,7 +158,7 @@ def expand(root: str, main: Path, ctx: Context) -> Path:
 
 def worktree_roots(main: Path, config: dict, ctx: Context) -> list[Path]:
     roots = [main / ".claude" / "worktrees", ctx.home / ".codex" / "worktrees"]
-    roots += [Path(p) for p in os.environ.get("CE_TIDY_WORKTREE_ROOTS", "").split(":") if p]
+    roots += [Path(p) for p in os.environ.get("CE_TIDY_WORKTREE_ROOTS", "").split(os.pathsep) if p]
     extra = config.get("worktree_roots") or []
     if not isinstance(extra, list) or not all(isinstance(p, str) for p in extra):
         raise ce_common.RepoError(".ce-repo.json: tidy.worktree_roots ist keine Liste von Pfaden")
@@ -274,8 +280,27 @@ def argv_of(value, main: Path) -> list[str] | None:
     return [*value[:position], str(target), *value[position + 1:]]
 
 
+def windows_argv(argv: list[str]) -> list[str]:
+    """(0.31) Windows: python3/python is this Python (PATH has the Microsoft Store stub), sh/bash is Git Bash (never
+    System32's WSL bash.exe), a bare script goes through heavy_lock.script_argv. The script itself stays the same."""
+    import heavy_lock
+    if argv[0] in ("python3", "python"):
+        return [sys.executable, *argv[1:]]
+    if argv[0] in ("sh", "bash"):
+        shell = heavy_lock.posix_shell(argv[0])
+        if shell is None:
+            raise OSError(f"{argv[0]}: Git Bash fehlt (Git for Windows installieren)")
+        return [shell, *argv[1:]]
+    return heavy_lock.script_argv(argv)
+
+
 def run_command(argv: list[str], main: Path, timeout: float) -> tuple[int, str]:
-    done = subprocess.run(argv, cwd=main, capture_output=True, text=True, timeout=timeout)
+    if ce_common.WINDOWS:  # (0.31) and the script's output as UTF-8 (a Python child writes its pipe as UTF-8 too)
+        done = subprocess.run(windows_argv(argv), cwd=main, capture_output=True, text=True, timeout=timeout,
+                              env={**os.environ, "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", "utf-8")},
+                              encoding="utf-8", errors="replace")
+    else:
+        done = subprocess.run(argv, cwd=main, capture_output=True, text=True, timeout=timeout)
     lines = [line.strip() for line in (done.stdout + done.stderr).splitlines() if line.strip()]
     return done.returncode, " / ".join(lines[-3:])[:300]
 
@@ -309,7 +334,7 @@ def output_rows(repo: Path, main: Path, config: dict, ctx: Context, sizes: bool)
         if not isinstance(entry.get("root"), str) or not entry["root"]:
             raise ce_common.RepoError(f"tidy.paths {name}: root fehlt")
         root = real(expand(entry["root"], main, ctx))
-        if not (inside(root, main) or inside(root, ctx.caches)):
+        if not (inside(root, main) or ctx.in_caches(root)):
             raise ce_common.RepoError(f"tidy.paths {name}: {root} liegt weder im Haupt-Checkout noch in ~/Library/Caches")
         if protected(root, ctx) == "_rettung" or has_marker(root):
             raise ce_common.RepoError(f"tidy.paths {name}: {root} ist geschützt")
@@ -357,6 +382,8 @@ def evidence_stores(repos: list[tuple[Path, Path, dict]], ctx: Context) -> dict[
     stores: dict[Path, dict] = {}
     try:
         defaults = sorted(ctx.caches.glob("*/videos"))
+        if ctx.windows_caches is not None:
+            defaults += sorted(ctx.windows_caches.glob("*/videos"))  # (0.31)
     except OSError:
         defaults = []
     for store in defaults:
@@ -544,7 +571,7 @@ def summary(rows: list[dict]) -> str:
 
 def default_repos() -> list[Path]:
     if os.environ.get("CE_REPOS"):
-        return [Path(r) for r in os.environ["CE_REPOS"].split(":") if r]
+        return [Path(r) for r in os.environ["CE_REPOS"].split(os.pathsep) if r]
     return ce_worktrees.default_repos()
 
 
@@ -587,4 +614,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

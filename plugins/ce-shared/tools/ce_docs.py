@@ -30,6 +30,7 @@ from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
+import heavy_lock  # noqa: E402
 
 DEFAULT_CHECK = ["README.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "docs/**/*.md", "Docs/**/*.md",
                  ".agents/skills/**/SKILL.md", ".agents/skills/README.md"]
@@ -140,9 +141,16 @@ def check(root: Path, config: dict | None = None) -> tuple:
                 json.loads(path.read_text(encoding="utf-8"))
             except ValueError as error:
                 problems.append({"path": str(path.relative_to(root)), "line": 0, "error": f"JSON: {error}"})
+    # (0.31) Windows: Git Bash - System32's bash.exe is WSL, another system with other paths
+    bash = heavy_lock.posix_shell("bash") if ce_common.WINDOWS else "bash"
     for pattern in docs.get("shell") or []:
         for path in expand(root, [pattern]):
-            result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, check=False)
+            if bash is None:
+                problems.append({"path": str(path.relative_to(root)), "line": 0,
+                                 "error": "Shell-Syntax nicht prüfbar: Git Bash fehlt (Git for Windows installieren)"})
+                continue
+            result = subprocess.run([bash, "-n", str(path)], capture_output=True, text=True, check=False,
+                                    **ce_common.UTF8)
             if result.returncode:
                 problems.append({"path": str(path.relative_to(root)), "line": 0, "error": "Shell-Syntax: " + result.stderr.strip()})
     return rows, problems
@@ -168,4 +176,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

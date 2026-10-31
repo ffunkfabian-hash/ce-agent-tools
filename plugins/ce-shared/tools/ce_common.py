@@ -2,11 +2,32 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 CONFIG_NAME = ".ce-repo.json"
+WINDOWS = os.name == "nt"
+# (0.31) Windows decodes pipes and files as cp1252; git, gh and the tools' own JSON/Markdown are UTF-8. Spread into
+# subprocess.run(..., text=True, **UTF8) / open(..., **UTF8); empty on POSIX, so nothing changes there.
+UTF8 = {"encoding": "utf-8", "errors": "replace"} if WINDOWS else {}
+
+
+def utf8_console(*streams) -> None:
+    """(0.31) Windows: stdout/stderr write UTF-8 - a cp1252 console or pipe cannot take „“ → · and the tool would die
+    on its own German message. Call at the start of a tool's main(). No-op on POSIX and for streams without
+    reconfigure (StringIO in tests)."""
+    if not WINDOWS:
+        return
+    for stream in streams or (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):  # detached or closed stream: leave it
+                pass
 
 
 class RepoError(Exception):
@@ -59,7 +80,7 @@ def read_version(root: Path, config: dict) -> str:
 
 
 def git(root: Path, *args: str, timeout: float = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=timeout, **UTF8)
 
 
 def git_out(root: Path, *args: str, timeout: float = 30) -> str | None:

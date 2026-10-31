@@ -6,7 +6,7 @@ action: warn
 conditions:
   - field: file_path
     operator: regex_match
-    pattern: \.github/workflows/[^/]+\.ya?ml$
+    pattern: \.github[/\\]workflows[/\\][^/\\]+\.ya?ml$
 ---
 
 **GitHub Actions sparsam** (globale Regel in `~/.claude/CLAUDE.md`, Repo `~/Claude/cubeescape-nexogen`; private Repos: 2.000 min/Monat, Budget 0 $ – leer heißt: keine

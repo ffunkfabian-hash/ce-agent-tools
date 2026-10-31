@@ -36,6 +36,8 @@ ABBREVIATIONS = {
     "cubeescape-design": "DS", "cubeescape-reference": "REF", "cubeescape-rules": "RULES", "cubeescape-nexogen": "NX",
     "cubeescape-formgen": "FG", "cubeescape-motiongen": "MG",
 }
+# (0.31) git speaks UTF-8; Windows would decode its output as cp1252
+UTF8 = {"encoding": "utf-8", "errors": "replace"} if os.name == "nt" else {}
 CLOUD_MARKERS = ("CLAUDE_CODE_CONTAINER_ID", "CLAUDE_CODE_REMOTE", "CCR_AGENT_PROXY_ENABLED")
 
 
@@ -45,8 +47,9 @@ def abbreviation(repo_name: str) -> str:
 
 
 def detect_place(system: str, env: dict, agent: str) -> str:
-    """Mac / Cloud / Codex-Mac / Codex-Cloud / Gemini-Mac from the machine itself: macOS is the Mac, everything else (Linux container) the cloud."""
-    base = "Mac" if system == "Darwin" else "Cloud"
+    """Mac / Cloud / Codex-Mac / Codex-Cloud / Gemini-Mac from the machine itself: macOS is the Mac, everything else (Linux container) the cloud.
+    0.31: a Windows machine is "Windows" (Codex-Windows, Gemini-Windows) - a local PC, not the cloud."""
+    base = "Mac" if system == "Darwin" else "Windows" if system == "Windows" else "Cloud"
     if agent == "gemini" or (agent == "auto" and any(key.startswith("ANTIGRAVITY_") for key in env)):
         return "Gemini-" + base
     codex = agent == "codex" or (agent == "auto" and any(key.startswith("CODEX_") for key in env))
@@ -104,13 +107,30 @@ def branch_name(agent: str, abbrev: str, version: str = "", name: str = "", task
 
 def remote_branches(repo: Path):
     try:
-        out = subprocess.run(["git", "-C", str(repo), "ls-remote", "--heads", "origin"], capture_output=True, text=True, timeout=20)
+        out = subprocess.run(["git", "-C", str(repo), "ls-remote", "--heads", "origin"], capture_output=True, text=True, **UTF8, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return []
     return [line.split("refs/heads/", 1)[-1] for line in out.stdout.splitlines() if "refs/heads/" in line]
 
 
+def utf8_console() -> None:
+    """(0.31) Windows: „Name“ · Ort and → go out as UTF-8, not into a cp1252 error (ce_common's helper; a lone copy without it,
+    as in the broken-announcement case, reconfigures itself). No-op on POSIX."""
+    if os.name != "nt":
+        return
+    try:
+        import ce_common
+        ce_common.utf8_console()
+    except Exception:  # noqa: BLE001
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError, OSError):
+                pass
+
+
 def main(argv=None) -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--name", default="", help="the code name (English, chosen by the session; never reuse one from the CHANGELOG)")
     parser.add_argument("--task", default="", help="short task for sessions without a version")
@@ -183,7 +203,7 @@ def remember(repo: Path, name: str, branch: str, model: str = "", about: str = "
     """The reserved name in the worktree's own git dir, so `./ce session say` sends under exactly this name (0.14); the time lets the
     Postfach watcher read from the reservation on and ignore stale ones (0.15); model and task for later messages (0.21)."""
     try:
-        git_dir = subprocess.run(["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, timeout=20).stdout.strip()
+        git_dir = subprocess.run(["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"], capture_output=True, text=True, **UTF8, timeout=20).stdout.strip()
         if not git_dir:
             return
         folder = Path(git_dir)
@@ -237,7 +257,7 @@ def announce(repo: Path, name: str, branch: str, about: str = "", model: str = "
 
 def git_out(repo: Path, *args: str) -> str:
     try:
-        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, **UTF8, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -249,7 +269,7 @@ def fresh_base(repo: Path):
     head = git_out(repo, "rev-parse", "HEAD")
     default = git_out(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/") or "main"
     try:
-        fetched = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", default], capture_output=True, text=True,
+        fetched = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", default], capture_output=True, text=True, **UTF8,
                                  timeout=60).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         fetched = False
@@ -275,7 +295,7 @@ def reserve(repo: Path, branch: str):
         return 1, ""
     start, base, note = fresh_base(repo)
     for command in (["git", "branch", "--force", branch, start], ["git", "push", "-u", "origin", branch]):
-        result = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+        result = subprocess.run(command, cwd=repo, capture_output=True, text=True, **UTF8)
         if result.returncode:
             print(result.stderr.strip() or f"{' '.join(command)} fehlgeschlagen", file=sys.stderr)
             return 1, ""

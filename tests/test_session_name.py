@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,20 @@ class Names(unittest.TestCase):
         self.assertEqual(sn.detect_place("Linux", {}, "codex"), "Codex-Cloud")
         self.assertEqual(sn.detect_place("Darwin", {"ANTIGRAVITY_AGENT": "1"}, "auto"), "Gemini-Mac")
         self.assertEqual(sn.branch_name("gemini", "NX", "1.20", "Crosslink"), "gemini/nx-1.20-crosslink")
+
+    def test_a_windows_machine_is_windows_not_the_cloud(self):
+        """0.31: platform.system() on Windows is "Windows"; Mac and Linux stay as they were."""
+        self.assertEqual(sn.detect_place("Windows", {}, "claude"), "Windows")
+        self.assertEqual(sn.detect_place("Windows", {}, "auto"), "Windows")
+        self.assertEqual(sn.detect_place("Windows", {"CODEX_HOME": "x"}, "auto"), "Codex-Windows")
+        self.assertEqual(sn.detect_place("Windows", {}, "codex"), "Codex-Windows")
+        self.assertEqual(sn.detect_place("Windows", {"ANTIGRAVITY_AGENT": "1"}, "auto"), "Gemini-Windows")
+        self.assertEqual(sn.detect_place("Linux", {}, "auto"), "Cloud")
+
+    @unittest.skipUnless(sys.platform == "win32", "the real platform.system() of a Windows machine")
+    def test_the_cli_on_windows_names_the_place_windows(self):
+        import platform
+        self.assertEqual(sn.detect_place(platform.system(), {}, "claude"), "Windows")
 
     def test_next_version_takes_the_highest_branch(self):
         branches = ["main", "claude/ce-0.96-pinpoint", "release/0.94.0", "codex/ce-0.95-tracefall", "claude/cube-escape-0-87-gunsmith"]
@@ -77,7 +92,7 @@ class ReserveTests(unittest.TestCase):
 
     def run_cli(self, *args):
         import subprocess, sys
-        return subprocess.run([sys.executable, str(SCRIPT), "--repo", str(self.repo), *args], capture_output=True, text=True, env=self.env)
+        return subprocess.run([sys.executable, str(SCRIPT), "--repo", str(self.repo), *args], capture_output=True, text=True, encoding="utf-8", env=self.env)
 
     def test_reserve_pushes_the_branch_and_the_number_is_then_taken(self):
         first = self.run_cli("--name", "Nightshift", "--agent", "claude", "--reserve")

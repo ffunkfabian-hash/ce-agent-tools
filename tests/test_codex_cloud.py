@@ -137,3 +137,19 @@ class DoctorChecks(unittest.TestCase):
                 self.assertEqual(cloud.main(), 0)
         run.assert_not_called()
         which.assert_not_called()
+
+
+class WindowsRun(unittest.TestCase):
+    def test_codex_cmd_by_full_name_in_a_scratch_folder_and_utf8(self):
+        """(0.31) Windows: codex.cmd only starts by its full name, output is UTF-8; codex still runs outside the repo,
+        other programs in their cwd. Mocked, runs everywhere."""
+        done = subprocess.CompletedProcess([], 0, "ok", "")
+        with patch.object(cloud, "WINDOWS", True), \
+                patch.object(cloud.shutil, "which", side_effect=lambda name: rf"C:\npm\{name}.CMD"), \
+                patch.object(cloud.subprocess, "run", return_value=done) as run:
+            cloud.run(["codex", "cloud", "list"], cwd="/repo", capture=True)
+            self.assertEqual(run.call_args.args[0], [r"C:\npm\codex.CMD", "cloud", "list"])
+            self.assertNotEqual(run.call_args.kwargs["cwd"], "/repo")
+            self.assertEqual((run.call_args.kwargs["encoding"], run.call_args.kwargs["capture_output"]), ("utf-8", True))
+            cloud.run(["git", "status"], cwd="/repo")
+            self.assertEqual((run.call_args.args[0][0], run.call_args.kwargs["cwd"]), (r"C:\npm\git.CMD", "/repo"))

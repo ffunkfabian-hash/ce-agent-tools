@@ -16,6 +16,9 @@ import guard  # noqa: E402
 
 RULES = guard.load_rules(PLUGIN / "rules")
 CE = "/Users/ffunk/Claude/Cube Escape"
+WINDOWS = os.name == "nt"
+WINDOWS_SYSTEM_PATH = os.pathsep.join((os.path.join(os.environ.get("SystemRoot") or "C:/Windows", "System32"),
+                                       os.environ.get("SystemRoot") or "C:/Windows"))
 _OUTSIDE = tempfile.TemporaryDirectory(prefix="ce-guard-")  # removed at exit
 OUTSIDE_GIT = _OUTSIDE.name  # no repository: the branch of a plain git commit is unknown
 
@@ -67,10 +70,19 @@ class SharedRuleTests(unittest.TestCase):
             [f'Unity -batchmode -projectPath "{CE}" -quit',
              f'Unity -projectPath "{CE}/.claude/worktrees/x" -batchmode',
              f'unity mcp --project-path "{CE}"', f'unity open "{CE}"',
-             "Unity -projectPath /Users/ffunk/.codex/worktrees/abc/CubeEscape"],
+             "Unity -projectPath /Users/ffunk/.codex/worktrees/abc/CubeEscape",
+             # Windows (0.31): drive, backslashes, the ~/Claude junction, Git Bash's /g/…, an escaped blank
+             r'Unity.exe -batchmode -projectPath "G:\Claude\Cube Escape" -quit',
+             r'"C:\Program Files\Unity\Hub\Editor\6000.6.2f1\Editor\Unity.exe" -projectPath "C:\Users\ffunk\Claude\Cube Escape"',
+             'Unity.exe -projectPath "G:/Claude/Cube Escape/.claude/worktrees/x"', "unity open '/g/Claude/Cube Escape'",
+             'unity mcp --project-path "~/Claude/Cube Escape"', r"Unity -projectPath ~/Claude/Cube\ Escape -batchmode",
+             r'Unity.exe -projectPath "$HOME/Claude/Cube Escape"', r"Unity.exe -projectPath C:\Users\ffunk\.codex\worktrees\a\x"],
             ['Unity -batchmode -projectPath "/Users/ffunk/Library/Caches/CubeEscape/verify/x-mcp"',
              "unity command eval --project-path /Users/ffunk/Library/Caches/CubeEscape/verify/x-mcp",
-             "unity editors --installed"]),
+             "unity editors --installed",
+             r'Unity.exe -batchmode -projectPath "C:\Users\ffunk\AppData\Local\CubeEscape\verify\Cube_Escape-94ad3a2d"',
+             r"unity command eval --project-path C:\Users\ffunk\AppData\Local\CubeEscape\verify\x-mcp",
+             r'Unity.exe -projectPath "G:\Claude\cubeescape-cubegen\unity"', 'git -C "G:/Claude/Cube Escape" status']),
         "unity-cli-ziel-nennen": (
             ["unity mcp", "unity command eval 'return 1;'", "unity list", "unity pipeline install",
              "cd /x && unity command quit"],
@@ -134,6 +146,14 @@ class SharedRuleTests(unittest.TestCase):
     def test_multiedit_and_write_are_file_events(self):
         payload = {"tool_name": "Write", "tool_input": {"file_path": "/r/.github/workflows/a.yaml", "content": "x"}}
         self.assertEqual(names(payload), {"actions-sparsam"})
+
+    def test_windows_paths_of_a_workflow_warn_too(self):
+        """Claude Code on Windows names files with backslashes (0.31)."""
+        for path in (r"G:\Claude\x\.github\workflows\check.yml", "C:/r/.github/workflows/a.yaml"):
+            self.assertEqual(names(edit(path)), {"actions-sparsam"}, path)
+        for path in (r"G:\Claude\x\.github\workflows\README.md", r"G:\Claude\x\docs\workflows\a.yml",
+                     r"G:\r\.github\workflows\sub\a.yml"):
+            self.assertEqual(names(edit(path)), set(), path)
 
     def test_the_old_force_push_false_positive_is_gone(self):
         # The hookify rule matched "-f" anywhere after the word push - even a test of a file named after the rule.
@@ -224,7 +244,7 @@ class CommitOnMainTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(path), "commit", "-q", "--allow-empty", "-m", "start"], check=True, env=env)
             for tag in tags:
                 subprocess.run(["git", "-C", str(path), "tag", tag], check=True, env=env)
-            short = subprocess.run(["/usr/bin/git", "-C", str(path), "symbolic-ref", "--short", "HEAD"], env=env,
+            short = subprocess.run([guard.trusted_git(), "-C", str(path), "symbolic-ref", "--short", "HEAD"], env=env,
                                    capture_output=True, text=True).stdout.strip()
             self.assertEqual(short, f"heads/{branch}", "precondition: --short is ambiguous here")
         self.check("block", [("git commit -m x", "main tagged"), ("git commit -m x", "master tagged"),
@@ -263,7 +283,7 @@ class CommitOnMainTests(unittest.TestCase):
         main, feature = self.leading_cd_folders()
         self.check("block", [
             (f"cd '{main}' && git commit -m x", "feature"), ("cd '../on main' && git commit -m x", "feature"),
-            ("cd ../'on main' && git commit -am fix", "feature"), (f"cd {self.base}/old && git commit -m x", "feature"),
+            ("cd ../'on main' && git commit -am fix", "feature"), (f"cd {self.base.as_posix()}/old && git commit -m x", "feature"),
             (f"cd '{main}'&&git commit -m x", "feature"), ("cd sub && git commit -m x", "on main"),
             ("cd '../on main/sub' && git commit -m x", "feature"), ("cd jump && git commit -m x", "feature"),
             (f"cd '{feature}' && git -C '{main}' commit -m x", "feature"), ("cd .. && git -C 'on main' commit", "feature"),
@@ -274,6 +294,24 @@ class CommitOnMainTests(unittest.TestCase):
             (f"cd '{main}' && git -C '{feature}' commit -m x", "feature"), ("cd ../detached && git commit", "on main"),
             (f"cd '{self.base}' && git commit -m x", "on main"), ("cd ../feature/jump/../../feature && git commit", "on main"),
             (f"cd '{main}' && git status", "feature")])
+
+    @unittest.skipUnless(WINDOWS, "Windows path forms in Git Bash")
+    def test_windows_cd_targets_in_drive_and_git_bash_form(self):
+        """0.31: Claude Code's Bash on Windows is Git Bash. G:\\x (quoted), G:/x and /g/x are the same folder; other
+        mounts, UNC paths and backslashes in relative paths are not followed."""
+        main, feature = self.leading_cd_folders()
+        drive, rest = main.as_posix().split(":", 1)
+        self.check("block", [
+            (f"cd '{main}' && git commit -m x", "feature"), (f'cd "{main}" && git commit -m x', "feature"),
+            (f"cd '{main.as_posix()}' && git commit -m x", "feature"), (f"cd '/{drive.lower()}{rest}' && git commit", "feature"),
+            (f"cd '{main.as_posix().lower()}/sub' && git commit -m x", "feature"), ("cd jump && git commit -m x", "feature")])
+        self.check("pass", [(f"cd '{feature}' && git commit -m x", "on main"),
+                            (f"cd '/{drive.lower()}{feature.as_posix().split(':', 1)[1]}' && git commit", "on main")])
+        self.check("net", [
+            (f"cd {main} && git commit -m x", "feature"),  # unquoted backslashes: the shell drops them
+            ("cd /tmp && git commit -m x", "feature"), ("cd '..\\on main' && git commit -m x", "feature"),
+            (f"cd '{drive}:on main' && git commit -m x", "feature"), ("cd '\\\\server\\share' && git commit", "feature"),
+            ("cd jump/.. && git commit -m x", "feature")])  # Windows folds `..` before links: walked by hand
 
     def test_every_other_cd_line_stays_with_the_git_net(self):
         main, _ = self.leading_cd_folders()
@@ -456,10 +494,10 @@ class BoundedPrecheckTests(unittest.TestCase):
         self.check("block", self.main, ["git commit -m x"])
         self.check("pass", self.feature, ["git commit -m x"])
         self.assertFalse(marker.exists(), "a git or xcrun from the line's PATH ran during the review")
-        self.assertIn(guard.trusted_git(), guard.GIT_CANDIDATES)
+        self.assertIn(guard.trusted_git(), guard.git_candidates())
         env = guard.git_environment({"PATH": str(fake), "DYLD_INSERT_LIBRARIES": "x", "LD_PRELOAD": "x",
                                      "GIT_EXEC_PATH": str(fake), "GIT_CONFIG_PARAMETERS": "x", "GIT_DIR": "/r/.git"})
-        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["PATH"], WINDOWS_SYSTEM_PATH if WINDOWS else "/usr/bin:/bin")
         self.assertEqual(env["GIT_DIR"], "/r/.git")
         self.assertFalse({"DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "GIT_EXEC_PATH", "GIT_CONFIG_PARAMETERS"} & set(env))
 
@@ -662,6 +700,43 @@ class HookProcessTests(unittest.TestCase):
         out = subprocess.run([sys.executable, str(script)], input="not json", text=True, capture_output=True,
                              env=env, check=True).stdout
         self.assertIn("guard error", json.loads(out)["systemMessage"])
+
+    def test_every_hook_and_the_mcp_server_start_through_ce_python(self):
+        """0.31: on Windows python3 is only the Store stub (exit 49) - every registered hook silently did nothing and the
+        guard blocked nothing. The registered command itself runs the guard and blocks, on every system."""
+        hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        commands = [hook["command"] for groups in hooks.values() for group in groups for hook in group["hooks"]]
+        self.assertGreaterEqual(len(commands), 7)
+        for command in commands:
+            self.assertTrue(command.startswith('sh "${CLAUDE_PLUGIN_ROOT}/hooks/ce-python" "${CLAUDE_PLUGIN_ROOT}/hooks/'),
+                            command)
+        server = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["ce-search"]
+        self.assertEqual((server["command"], server["args"][0]), ("sh", "${CLAUDE_PLUGIN_ROOT}/hooks/ce-python"))
+        command = hooks["PreToolUse"][0]["hooks"][0]["command"].replace("${CLAUDE_PLUGIN_ROOT}", PLUGIN.as_posix())
+        sys.path.insert(0, str(PLUGIN / "tools"))
+        import heavy_lock
+        done = subprocess.run([heavy_lock.posix_shell("sh"), "-c", command], input=json.dumps(bash("git push -f")),
+                              text=True, capture_output=True, timeout=60, env=dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN)))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(denied(json.loads(done.stdout)))
+
+    def test_utf8_in_and_out_on_every_system(self):
+        """0.31: on Windows the pipe was cp1252 - "Á" or "←" (bytes 0x81/0x90 there) made the guard fail open and let the
+        line through; the adapters wrote "›" in cp1252, invalid UTF-8 for Codex."""
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN))
+        env.pop("PYTHONUTF8", None)
+        env.pop("PYTHONIOENCODING", None)
+        line = "git push -f origin feature  # Á ← Ünterschied"
+        done = subprocess.run([sys.executable, str(PLUGIN / "hooks" / "guard.py")], capture_output=True, env=env,
+                              input=json.dumps(bash(line), ensure_ascii=False).encode("utf-8"), timeout=30)
+        self.assertTrue(denied(json.loads(done.stdout.decode("utf-8"))), done.stdout)
+        payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": OUTSIDE_GIT,
+                   "tool_input": {"command": f'Unity -projectPath "{CE}" -quit  # Ä'}}
+        done = subprocess.run([sys.executable, str(PLUGIN / "hooks" / "codex_guard.py")], capture_output=True, env=env,
+                              input=json.dumps(payload, ensure_ascii=False).encode("utf-8"), timeout=30)
+        answer = json.loads(done.stdout.decode("utf-8"))
+        self.assertEqual(answer["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("›", answer["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_manifests_are_valid(self):
         market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())

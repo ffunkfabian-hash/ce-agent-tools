@@ -157,7 +157,7 @@ class CodexAdapterTests(unittest.TestCase):
 
     def test_patch_paths_become_absolute_and_moves_share_their_hunks(self):
         files = codex_guard.patch_files(patch("*** Update File: a.txt\n*** Move to: /abs/b.txt\n@@\n-x\n+y\n"), "/r")
-        self.assertEqual(files, [("update", "/r/a.txt", "x", "y"), ("move", "/abs/b.txt", "x", "y")])
+        self.assertEqual(files, [("update", os.path.join("/r", "a.txt"), "x", "y"), ("move", "/abs/b.txt", "x", "y")])
 
     def test_mcp_and_other_function_tools_are_not_shell_commands(self):
         self.assertIsNone(self.codex("mcp__ce-search__ce_search", {"query": "git push --force origin main"}))
@@ -243,7 +243,7 @@ class AntigravityAdapterTests(unittest.TestCase):
 
     def test_relative_targets_use_cwd_or_the_first_workspace(self):
         payloads = antigravity_guard.normalize(antigravity_input("replace_file_content", {"TargetFile": "a.md"}))
-        self.assertEqual(payloads[0]["tool_input"]["file_path"], "/workspace/project/a.md")
+        self.assertEqual(payloads[0]["tool_input"]["file_path"], os.path.join("/workspace/project", "a.md"))
         payloads = antigravity_guard.normalize(antigravity_input("run_command", {"CommandLine": "ls", "Cwd": "/c"}))
         self.assertEqual(payloads[0]["cwd"], "/c")
 
@@ -328,12 +328,12 @@ class VibeAdapterTests(unittest.TestCase):
         payloads = vibe_guard.normalize(vibe_input("file_system.edit", {"file_path": "a.md", "old_string": "x",
                                                                         "new_string": "y"}))
         self.assertEqual(payloads, [{"hook_event_name": "PreToolUse", "cwd": "/Users/x/repo", "tool_name": "Edit",
-                                     "tool_input": {"file_path": "/Users/x/repo/a.md", "old_string": "x",
+                                     "tool_input": {"file_path": os.path.join("/Users/x/repo", "a.md"), "old_string": "x",
                                                     "new_string": "y"}}])
 
     def test_a_shell_cwd_argument_wins_over_the_session_folder(self):
         payloads = vibe_guard.normalize(vibe_input("process.start", {"command": "ls", "cwd": "sub"}))
-        self.assertEqual(payloads[0]["cwd"], "/Users/x/repo/sub")
+        self.assertEqual(payloads[0]["cwd"], os.path.join("/Users/x/repo", "sub"))
         payloads = vibe_guard.normalize(vibe_input("file_system.bash", {"command": "ls", "cwd": "/abs"}))
         self.assertEqual(payloads[0]["cwd"], "/abs")
 
@@ -412,7 +412,7 @@ class RealBranchTests(unittest.TestCase):
         folder = Path(__file__).resolve().parent / "fixtures" / "antigravity"
         for name in ("measured-cli-1.4.5-plain-commit.json", "measured-ide-2.5.5-plain-commit.json"):
             for repo, decision in (("main repo", "deny"), ("work", "allow")):
-                payload = json.loads((folder / name).read_text().replace("<workspace>", str(self.base / repo)))["input"]
+                payload = json.loads((folder / name).read_text(encoding="utf-8").replace("<workspace>", json.dumps(str(self.base / repo))[1:-1]))["input"]
                 _, output = answer(antigravity_guard, payload)
                 self.assertEqual(output["decision"], "allow", (name, repo, "measured compound line"))
                 self.assertIn("Git-Netz (pre-commit)", output["reason"], (name, repo))
@@ -483,7 +483,7 @@ class ParityTests(unittest.TestCase):
 class AdapterProcessTests(unittest.TestCase):
     def run_script(self, name, payload, env=None):
         result = subprocess.run([sys.executable, str(HOOKS / name)], input=json.dumps(payload), text=True,
-                                capture_output=True, env=dict({"PATH": "/usr/bin:/bin"}, **(env or {})))
+                                encoding="utf-8", capture_output=True, env=dict({"PATH": "/usr/bin:/bin"}, **(env or {})))
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
@@ -522,7 +522,7 @@ class AdapterProcessTests(unittest.TestCase):
                                       ("antigravity_guard.py", antigravity_input("run_command", {"CommandLine": "ls"})),
                                       ("vibe_guard.py", vibe_input("file_system.bash", {"command": "ls"}))):
                     result = subprocess.run([sys.executable, str(hooks / name)], input=json.dumps(payload), text=True,
-                                            capture_output=True, env={"PATH": "/usr/bin:/bin"})
+                                            encoding="utf-8", capture_output=True, env={"PATH": "/usr/bin:/bin"})
                     answer = json.loads(result.stdout)
                     self.assertEqual(result.returncode, 0, (name, broken))
                     self.assertIn("guard.py lädt nicht", answer.get("systemMessage") or answer.get("reason")
@@ -547,7 +547,7 @@ class AdapterProcessTests(unittest.TestCase):
                                           ("vibe_guard.py", vibe_input("file_system.bash",
                                                                        {"command": "git commit -m x"}))):
                         result = subprocess.run([sys.executable, str(hooks / name)], input=json.dumps(payload),
-                                                text=True, capture_output=True, env={"PATH": "/usr/bin:/bin"})
+                                                text=True, encoding="utf-8", capture_output=True, env={"PATH": "/usr/bin:/bin"})
                         answer = json.loads(result.stdout)
                         case = (module, broken, name)
                         self.assertEqual(result.returncode, 0, case)

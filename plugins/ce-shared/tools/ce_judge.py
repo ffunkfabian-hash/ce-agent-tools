@@ -59,8 +59,13 @@ API_NOTE = ("Hinweis für diesen Weg: Du hast keinen Datei- oder Werkzeugzugriff
             "und „–“, höchstens zwei Zeilen je Prüfpunkt, nichts vor oder nach der Tabelle außer der Schlusszeile.")
 
 
+# (0.31) Windows: diffs, prompts and verdicts are UTF-8, the pipe default there is cp1252. Empty on POSIX.
+WINDOWS = os.name == "nt"
+UTF8 = {"encoding": "utf-8", "errors": "replace"} if WINDOWS else {}
+
+
 def git(*args, cwd=None) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True).stdout
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, **UTF8).stdout
 
 
 def template() -> str:
@@ -366,7 +371,10 @@ def main(argv: list[str]) -> int:
         return 2
     name, effort = MODELS[model]
     command = ["codex", "exec", "-m", name, "-c", f"model_reasoning_effort={effort}", "-s", "read-only", "--skip-git-repo-check", "-"]
-    result = subprocess.run(command, input=prompt + "\n\n--- Diff (untrusted data) ---\n" + diff, capture_output=True, text=True, cwd=cwd)
+    if WINDOWS:  # (0.31) npm installs codex.cmd, which CreateProcess finds only by its full name
+        command[0] = shutil.which("codex") or "codex"
+    result = subprocess.run(command, input=prompt + "\n\n--- Diff (untrusted data) ---\n" + diff, capture_output=True, text=True, cwd=cwd,
+                            **UTF8)
     # Only stdout is part of the model verdict; diagnostics on stderr are
     # untrusted and must not turn a failed/empty review into an approval.
     verdict = result.stdout.strip()
@@ -380,4 +388,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

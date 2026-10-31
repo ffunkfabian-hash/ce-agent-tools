@@ -71,6 +71,12 @@ def on_error(message):
 
 
 def main(stdin=None, stdout=None):
+    if os.name == "nt" and stdin is None:  # 0.31: clients speak UTF-8, a Windows pipe is cp1252
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     if client_adapter is None:
         message = (f"ce-shared guard error (antigravity): client_adapter.py lädt nicht "
                    f"({LOAD_ERROR.__class__.__name__}: {LOAD_ERROR})")

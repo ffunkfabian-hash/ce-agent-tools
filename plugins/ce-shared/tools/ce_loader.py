@@ -380,6 +380,12 @@ def run_env(env, source: str) -> dict:
 
 def main(argv: list[str], env=None) -> int:
     env = os.environ if env is None else env
+    if os.name == "nt":  # 0.31: messages in UTF-8 like the tools behind it, not the cp1252 of a Windows pipe
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError):
+                pass
     here = Path(__file__).resolve().parent
     try:
         root = find_root(here if (here / CONFIG_NAME).is_file() else Path.cwd().resolve())
@@ -402,8 +408,41 @@ def main(argv: list[str], env=None) -> int:
         say(str(error))
         return error.code
     os.chdir(root)
-    os.execvpe("sh", ["sh", str(tools / "ce"), *argv], run_env(env, source))
-    return 0  # not reached
+    if os.name != "nt":
+        os.execvpe("sh", ["sh", str(tools / "ce"), *argv], run_env(env, source))
+        return 0  # not reached
+    return run_windows(tools, argv, run_env(env, source))
+
+
+def windows_sh(env) -> str | None:
+    """Git for Windows' sh.exe (next to git.exe), else an sh on PATH - never one in System32 (WSL)."""
+    git = shutil.which("git", path=env.get("PATH"))
+    candidates = []
+    if git:
+        root = Path(os.path.realpath(git)).parent.parent  # …\Git\cmd\git.exe -> …\Git
+        candidates += [root / "bin" / "sh.exe", root / "usr" / "bin" / "sh.exe"]
+    candidates.append(Path(env.get("ProgramFiles") or r"C:\Program Files") / "Git" / "bin" / "sh.exe")
+    found = shutil.which("sh", path=env.get("PATH"))
+    system32 = str(Path(env.get("SystemRoot") or r"C:\Windows") / "System32").lower()
+    if found and not os.path.realpath(found).lower().startswith(system32):
+        candidates.append(Path(found))
+    return next((str(path) for path in candidates if path.is_file()), None)
+
+
+def run_windows(tools: Path, argv: list[str], env: dict) -> int:
+    """Windows has no exec: os.execvpe starts a new process and this one ends with 0 at once - the caller never saw the
+    tool's exit code (0.31, Windows inventory). So the tools' sh entry runs as a child and its exit code is passed on.
+    Ctrl+C reaches the child through the console; this process keeps waiting for it instead of ending first."""
+    shell = windows_sh(env)
+    if not shell:
+        say("kein sh gefunden (Git for Windows) - ./ce braucht sh für den Werkzeugeinstieg")
+        return EXIT_UNAVAILABLE
+    child = subprocess.Popen([shell, str(tools / "ce"), *argv], env=env)
+    while True:
+        try:
+            return child.wait(0.2)  # in steps: an endless wait would never let the Ctrl+C handler run
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            continue
 
 
 if __name__ == "__main__":

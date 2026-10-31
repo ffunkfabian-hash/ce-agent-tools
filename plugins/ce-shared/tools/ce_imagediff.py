@@ -14,10 +14,24 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
 import sys
 from pathlib import Path
 
 THRESHOLDS = {"ui": 0.98, "world": 0.95, "bake": 0.99, "any": 0.95}
+# (0.31) Windows: each side may start with a drive (C:\a.png:D:\b.png), the colon after it is no separator
+WINDOWS_PAIR = re.compile(r"((?:[A-Za-z]:)?[^:]*):((?:[A-Za-z]:)?[^:]*)")
+
+
+def split_pair(item: str, windows: bool = os.name == "nt") -> list[str]:
+    """A:B of --pairs; on Windows drive letters stay with their path. ValueError without a separator."""
+    if not windows:
+        return item.split(":", 1)
+    match = WINDOWS_PAIR.fullmatch(item)
+    if not match:
+        raise ValueError(f"--pairs {item}: A:B erwartet")
+    return list(match.groups())
 
 
 def load(path: Path, size=None):
@@ -142,7 +156,7 @@ def main(argv: list[str]) -> int:
             parser.error(str(error))
     pairs = [(args.a, args.b)] if args.a and args.b else []
     for item in args.pairs or []:
-        left, right = item.split(":", 1)
+        left, right = split_pair(item)
         pairs.append((Path(left), Path(right)))
     if not pairs:
         parser.error("A B oder --pairs A:B …")
@@ -192,4 +206,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

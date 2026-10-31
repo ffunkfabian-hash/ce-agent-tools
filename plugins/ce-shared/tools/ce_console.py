@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def run_json(argv, timeout=15):
-    done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **ce_common.UTF8)  # (0.31)
     if done.returncode:
         raise ValueError('Quelle nicht verfügbar (Exit ' + str(done.returncode) + ')')
     return json.loads(done.stdout)
@@ -213,4 +213,9 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main())

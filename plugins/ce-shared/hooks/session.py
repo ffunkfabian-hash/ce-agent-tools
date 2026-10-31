@@ -24,9 +24,25 @@ TOOL_LINE = ("Werkzeuge dieser Sitzung (Pflicht, globale Regeln): `ce_search` (M
              "Bericht = PR-Beschreibung, Ist-Zeit als Warten/Rechnen/Lesen/Umsetzen.")
 
 
+# (0.31) Windows decodes pipes as cp1252; git and the tools write UTF-8. Empty on POSIX.
+UTF8 = {"encoding": "utf-8", "errors": "replace"} if os.name == "nt" else {}
+
+
+def utf8_io() -> None:
+    """(0.31) Windows: the client's JSON in and out as UTF-8 - a cp1252 stdout cannot take → and the hook would die
+    without an answer. Fail-open; nothing on POSIX."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def run(argv, cwd=None, timeout=TIMEOUT):
     try:
-        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout).stdout.strip()
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, **UTF8).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -111,6 +127,7 @@ def stop(payload: dict) -> dict:
 
 
 def main() -> int:
+    utf8_io()
     try:
         payload = json.load(sys.stdin)
     except ValueError:

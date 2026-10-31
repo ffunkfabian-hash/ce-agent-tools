@@ -1,7 +1,6 @@
 """heavy_lock.py of ce-shared: one heavy run at a time on the machine. Tests taken over from Cube Escape
 (Tools/tests/test_heavy_lock.py), the robot generator and Toolgen (tests/test_heavy_lock.py), minus what needs their
 repositories (quiet.py, run_testbed.sh, Blender). Run: python3 -m unittest discover -s tests"""
-import fcntl
 import json
 import os
 import signal
@@ -18,6 +17,20 @@ TOOLS = Path(__file__).resolve().parent.parent / "plugins" / "ce-shared" / "tool
 SCRIPT = TOOLS / "heavy_lock.py"
 sys.path.insert(0, str(TOOLS))
 import heavy_lock as heavy  # noqa: E402
+
+try:
+    import fcntl
+except ImportError:  # Windows (0.31): the lock's own LockFileEx layer
+    fcntl = None
+WINDOWS = os.name == "nt"
+
+
+def try_lock(fd):
+    """flock(LOCK_EX | LOCK_NB) independent of heavy_lock where there is flock, else heavy_lock.lock_fd."""
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        heavy.lock_fd(fd if isinstance(fd, int) else fd.fileno())
 
 
 class LockCase(unittest.TestCase):
@@ -36,9 +49,9 @@ class LockCase(unittest.TestCase):
     def free(self):
         """True when nobody holds the lock (takes and drops it at once)."""
         self.lock.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
+        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT | heavy.OPEN_FLAGS, 0o644)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(fd)
             return True
         except BlockingIOError:
             return False
@@ -77,12 +90,17 @@ class Contract(LockCase):
             self.assertEqual(lock.state(), "skipped (CE_HEAVY_LOCK=0)")
 
     def test_a_second_run_waits_and_names_the_holder(self):
+        hold = 6 if WINDOWS else 1.5  # Windows: the parent check below asks PowerShell, slow under load (0.31)
         holder = self.cli("run", "--what", "baseline.sh", "--checkout", "/x/first", "--", sys.executable, "-c",
-                          "import time; print('go', flush=True); time.sleep(1.5)", stdout=subprocess.PIPE, text=True)
+                          f"import time; print('go', flush=True); time.sleep({hold})", stdout=subprocess.PIPE, text=True)
         try:
             self.assertEqual(holder.stdout.readline().strip(), "go")
             self.assertIn("baseline.sh", heavy.holder())
-            self.assertEqual(heavy.holder_pid(), holder.pid)
+            pid = heavy.holder_pid()
+            if WINDOWS and pid != holder.pid:  # a venv's python.exe redirects: the interpreter is its child (0.31)
+                self.assertEqual(heavy.process_table().get(pid, (None,))[0], holder.pid)
+            else:
+                self.assertEqual(pid, holder.pid)
             start = time.monotonic()
             with mock.patch.dict(os.environ, CE_HEAVY_HELD=""):
                 with heavy.held("second", out=self.lines.append, poll=0.05):
@@ -172,7 +190,7 @@ class Contract(LockCase):
     def test_a_holder_that_has_not_written_its_line_yet_is_waited_for(self):
         self.lock.parent.mkdir(parents=True, exist_ok=True)
         with self.lock.open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(handle)
             self.assertIsNone(heavy.holder_pid(wait=0.1), "empty file: no PID after the wait")
             handle.write(json.dumps({"pid": 4242}))
             handle.flush()
@@ -193,6 +211,7 @@ class ProcessGroups(LockCase):
         self.assertEqual(code, 0)
         self.assertTrue(self.free(), "the background child did not inherit the lock")
 
+    @unittest.skipIf(WINDOWS, "POSIX TERM; Windows: test_windows_*")
     def test_a_terminated_wrapper_ends_its_command_before_the_lock_is_free(self):
         marker = self.base / "child-ended"
         child = ("import pathlib, signal, sys, time\n"
@@ -223,7 +242,7 @@ class ProcessGroups(LockCase):
         marker = self.base / "grandchild-ended"
         grandchild = f"import pathlib, time; time.sleep(1.5); pathlib.Path({str(marker)!r}).write_text('x')"
         wrapper, command_pid = self.grandchild_run(grandchild, "import time; time.sleep(30)")
-        os.kill(command_pid, signal.SIGKILL)  # the command dies, the grandchild goes on
+        os.kill(command_pid, getattr(signal, "SIGKILL", 9))  # the command dies, the grandchild goes on (Windows: TerminateProcess)
         time.sleep(0.4)
         self.assertIsNone(wrapper.poll(), "the wrapper still waits for the grandchild")
         self.assertFalse(marker.exists())
@@ -232,6 +251,7 @@ class ProcessGroups(LockCase):
         self.assertTrue(marker.exists(), "the lock was held until the grandchild ended")
         self.assertTrue(self.free())
 
+    @unittest.skipIf(WINDOWS, "POSIX TERM; Windows: test_windows_*")
     def test_a_terminated_wrapper_passes_the_term_to_its_grandchildren(self):
         marker = self.base / "grandchild-ended"
         grandchild = ("import pathlib, signal, sys, time\n"
@@ -282,9 +302,116 @@ class ProcessGroups(LockCase):
             self.assertEqual(heavy.run_forwarding([sys.executable, "-c", "raise SystemExit(4)"]), 4)
         self.assertEqual(len(seen), 3, "installed, nothing put back (there is nothing to put back)")
         sig = heavy.signal
-        for number, handler in ((sig.SIGTERM, sig.SIG_DFL), (sig.SIGHUP, sig.SIG_DFL),
-                                (sig.SIGINT, sig.default_int_handler)):
-            real(number, handler)
+        for number in heavy.FORWARDED:
+            real(number, sig.default_int_handler if number == sig.SIGINT else sig.SIG_DFL)
+
+    def wait_for(self, path, seconds=10):
+        deadline = time.monotonic() + seconds
+        while not os.path.exists(path):
+            self.assertLess(time.monotonic(), deadline, "%s did not appear" % path)
+            time.sleep(0.02)
+
+    @unittest.skipUnless(WINDOWS, "Windows job objects")
+    def test_windows_a_killed_wrapper_takes_its_whole_job_along(self):
+        """TerminateProcess of the wrapper (a tool's time limit) cannot be caught: kill on job close ends the command
+        and its grandchild, so nothing of the heavy step runs on once the lock is free."""
+        marker = self.base / "grandchild"
+        grandchild = ("import os, pathlib, time\n"
+                      f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(30)\n")
+        wrapper, command_pid = self.grandchild_run(grandchild, "import time; time.sleep(30)")
+        self.wait_for(marker)
+        grandchild_pid = int(marker.read_text())
+        self.assertFalse(self.free())
+        wrapper.terminate()
+        wrapper.wait(timeout=10)
+        deadline = time.monotonic() + 5
+        while (heavy.pid_alive(command_pid) or heavy.pid_alive(grandchild_pid)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(heavy.pid_alive(command_pid), "the command died with the wrapper")
+        self.assertFalse(heavy.pid_alive(grandchild_pid), "the grandchild died with the wrapper")
+        self.assertTrue(self.free())
+
+    @unittest.skipUnless(WINDOWS, "Windows console groups")
+    def test_windows_ctrl_break_goes_on_to_the_group_and_the_lock_waits_for_it(self):
+        marker = self.base / "grandchild-ended"
+        grandchild = ("import pathlib, signal, sys, time\n"
+                      f"def done(*a): time.sleep(0.5); pathlib.Path({str(marker)!r}).write_text('x'); sys.exit(0)\n"
+                      "signal.signal(signal.SIGBREAK, done)\n"
+                      f"pathlib.Path({str(marker) + '.ready'!r}).write_text('x')\n"
+                      "for _ in range(300): time.sleep(0.1)\n")  # one long sleep() would only end for SIGINT
+        command = ("import subprocess, sys\n"
+                   f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+                   "print('go', flush=True)\nimport time; time.sleep(30)\n")
+        wrapper = self.cli("run", "--", sys.executable, "-c", command, stdout=subprocess.PIPE, text=True,
+                           creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        self.addCleanup(lambda: wrapper.poll() is None and wrapper.kill())
+        self.addCleanup(wrapper.stdout.close)
+        self.assertEqual(wrapper.stdout.readline().strip(), "go")
+        self.wait_for(str(marker) + ".ready")
+        try:
+            os.kill(wrapper.pid, signal.CTRL_BREAK_EVENT)
+        except OSError as error:  # no console to share (a detached test runner)
+            self.skipTest("no console for Ctrl+Break: %s" % error)
+        wrapper.wait(timeout=15)
+        self.assertTrue(marker.exists(), "the grandchild got Ctrl+Break and ended before the lock was free")
+        self.assertTrue(self.free())
+
+    @unittest.skipUnless(WINDOWS, "Windows job objects")
+    def test_windows_a_child_that_breaks_away_does_not_keep_the_lock(self):
+        """CREATE_BREAKAWAY_FROM_JOB is Windows' start_new_session: such a child is not waited for."""
+        survivor = ("import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(6)'], "
+                    "creationflags=0x01000000)")
+        start = time.monotonic()
+        code = subprocess.call([sys.executable, str(SCRIPT), "run", "--what", "probe", "--", sys.executable, "-c",
+                                survivor], env=os.environ.copy(), timeout=20)
+        self.assertEqual(code, 0)
+        self.assertLess(time.monotonic() - start, 5, "the wrapper did not wait for the child that left")
+        self.assertTrue(self.free())
+
+    def test_cache_dir_per_system(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\x\AppData\Local"}):
+            path = heavy.cache_dir("heavy-run.lock")
+        if WINDOWS:
+            self.assertEqual(path, os.path.join(r"C:\Users\x\AppData\Local", "CubeEscape", "heavy-run.lock"))
+        else:  # macOS (and Linux) unchanged
+            self.assertEqual(path, os.path.join(os.path.expanduser("~"), "Library", "Caches", "CubeEscape",
+                                                "heavy-run.lock"))
+        self.assertEqual(heavy.DEFAULT, heavy.cache_dir("heavy-run.lock"))
+
+    def test_scripts_start_on_every_system(self):
+        """Windows starts only programs (WinError 193 for verify.sh): scripts go through Git Bash or this Python."""
+        scripts = {"run.sh": "echo plain\n", "zsh.sh": "#!/bin/zsh\necho z\n", "env.py": "#!/usr/bin/env python3\n",
+                   "bash": "#!/usr/bin/env -S bash -e\n", "tool": "binary"}
+        for name, text in scripts.items():
+            (self.base / name).write_text(text)
+        argv = lambda name: heavy.script_argv([str(self.base / name), "--x"])
+        if not WINDOWS:
+            for name in scripts:
+                self.assertEqual(argv(name), [str(self.base / name), "--x"], "POSIX: unchanged")
+            return
+        sh, bash = heavy.posix_shell("sh"), heavy.posix_shell("bash")
+        self.assertNotIn("system32", (sh + bash).lower(), "never WSL")
+        self.assertEqual(argv("run.sh")[:1], [sh])
+        self.assertEqual(argv("zsh.sh")[:1], [bash], "no zsh on Windows")
+        self.assertEqual(argv("bash")[:1], [bash])
+        self.assertEqual(argv("env.py"), [sys.executable, str(self.base / "env.py"), "--x"])
+        self.assertEqual(argv("tool"), [str(self.base / "tool"), "--x"])
+        self.assertEqual(heavy.script_argv(["git", "status"]), ["git", "status"])
+        code = subprocess.call([sys.executable, str(SCRIPT), "run", "--", str(self.base / "run.sh")],
+                               env=os.environ.copy(), timeout=30)
+        self.assertEqual(code, 0, "heavy_lock run starts a .sh script")
+
+    def test_pid_alive_never_ends_the_process(self):
+        """Windows' os.kill(pid, 0) is TerminateProcess - pid_alive must only look."""
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertTrue(heavy.pid_alive(child.pid))
+        time.sleep(0.2)
+        self.assertIsNone(child.poll(), "still running after the check")
+        child.kill()
+        child.wait()
+        self.assertFalse(heavy.pid_alive(child.pid))
 
     def test_run_group_passes_env(self):
         out = self.base / "env.txt"
@@ -436,7 +563,7 @@ class Nametag(LockCase):
         self.lock.parent.mkdir(parents=True, exist_ok=True)
         path = Path(heavy.lock_path("unity"))
         with path.open("a+") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock(handle)
             handle.write(json.dumps({"pid": 999999, "what": "regression", "checkout": "/nowhere", "since": "2026-10-24 21:23:26"}))
             handle.flush()
             text = "\n".join(heavy.status_lines({1: (0, "init")}))

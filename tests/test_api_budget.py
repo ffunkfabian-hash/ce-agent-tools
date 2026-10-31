@@ -45,7 +45,10 @@ class ApiBudgetTests(unittest.TestCase):
         self.assertEqual(state, {"period": "2026-10", "spent": "0.2", "reservations": {}})
         self.ledger.reserve("0.6")
         for path in (self.path, Path(str(self.path) + ".lock")):
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            if sys.platform == "win32":  # (0.31) NTFS has no mode bits; the profile's ACL keeps them private
+                self.assertTrue(path.is_file())
+            else:
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_limits_and_costs_reject_missing_negative_boolean_nan_and_float(self):
         invalid = [None, True, False, -1, "-0.001", "NaN", "Infinity", Decimal("sNaN"), 0.1, {}, ""]
@@ -98,6 +101,31 @@ class ApiBudgetTests(unittest.TestCase):
                 self.ledger.reserve("0.1")
             self.assertEqual(target.read_text(), "secret")
             link.unlink()
+
+    def test_windows_transaction_locks_writes_and_refuses_linked_locks(self):
+        """(0.31) The Windows path (no fcntl: heavy_lock's LockFileEx, no O_NOFOLLOW, no directory fsync), driven on
+        every system with heavy_lock's lock_fd/unlock_fd standing in."""
+        import ce_api_budget
+        import heavy_lock
+        calls = []
+        lock, unlock = heavy_lock.lock_fd, heavy_lock.unlock_fd
+        stand_in = mock.Mock(OPEN_FLAGS=heavy_lock.OPEN_FLAGS,
+                             lock_fd=lambda fd, **kw: (calls.append(("lock", kw)), lock(fd, **kw)),
+                             unlock_fd=lambda fd: (calls.append(("unlock", {})), unlock(fd)))
+        with mock.patch.object(ce_api_budget, "fcntl", None), \
+                mock.patch.object(ce_api_budget, "heavy_lock", stand_in, create=True):
+            reservation = self.ledger.reserve("0.6")
+            with self.assertRaises(BudgetExceeded):
+                self.ledger.reserve("0.5")
+            self.assertEqual(self.ledger.settle(reservation, "0.2")["spent"], "0.2")
+            self.assertEqual(calls[:2], [("lock", {"exclusive": True, "wait": True}), ("unlock", {})])
+            self.assertEqual(len(calls), 6)  # every transaction locks and unlocks, also the refused one
+            lock_path = Path(str(self.path) + ".lock")
+            lock_path.unlink()
+            with mock.patch.object(ce_api_budget.os.path, "islink", side_effect=lambda p: str(p) == str(lock_path)):
+                with self.assertRaisesRegex(BudgetError, "Cannot lock"):
+                    self.ledger.reserve("0.1")
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["spent"], "0.2")
 
     def test_double_and_unknown_settle_or_cancel_fail_closed(self):
         reservation = self.ledger.reserve("0.3")

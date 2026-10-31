@@ -15,7 +15,8 @@ quick is targeted by default (--no-targeted: not): it runs check.targeted if con
 argv element "{files}" is replaced by the changed files (git diff HEAD + untracked). full first repeats what failed
 in the last full run (check.rerun_failed, if the last recorded full run was red); if that still fails, the full run is
 not started. A second full run within 30 minutes on an unchanged tree only gets a hint (never blocked): the full run
-belongs once before finishing. State: ~/Library/Caches/CubeEscape/ce_check/ (CE_CHECK_CACHE moves it).
+belongs once before finishing. State: ~/Library/Caches/CubeEscape/ce_check/, Windows %LOCALAPPDATA%/CubeEscape/ce_check
+(heavy_lock.cache_dir; CE_CHECK_CACHE moves it).
 Exit code: 0 green, 1 red, 2 configuration problem.
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
+import heavy_lock  # noqa: E402
 
 TAIL_LINES = 25
 REPEAT_MINUTES = 30
@@ -43,14 +45,26 @@ def _resolve_argv(argv: list[str], root: Path) -> list[str]:
     """Use the project/tools virtualenv for bare python3 calls when the default python3 lacks PIL/numpy."""
     if not argv or argv[0] not in ("python3", "python"):
         return argv
+    if ce_common.WINDOWS:
+        return _resolve_argv_windows(argv, root)
     for candidate in (root / ".venv" / "bin" / "python", TOOLS_VENV_PYTHON):
         if candidate.is_file():
             return [str(candidate), *argv[1:]]
     return argv
 
 
+def _resolve_argv_windows(argv: list[str], root: Path) -> list[str]:
+    """(0.31) Windows: a venv keeps its Python in Scripts/python.exe; without one this Python - `python3`/`python` on
+    PATH there is mostly the Microsoft Store stub (exit 49), which runs nothing."""
+    tools_venv = TOOLS_VENV_PYTHON.parent.parent / "Scripts" / "python.exe"
+    for candidate in (root / ".venv" / "Scripts" / "python.exe", tools_venv):
+        if candidate.is_file():
+            return [str(candidate), *argv[1:]]
+    return [sys.executable, *argv[1:]]
+
+
 def cache_dir() -> Path:
-    return Path(os.environ.get("CE_CHECK_CACHE") or Path.home() / "Library" / "Caches" / "CubeEscape" / "ce_check")
+    return Path(os.environ.get("CE_CHECK_CACHE") or heavy_lock.cache_dir("ce_check"))
 
 
 def changed_files(root: Path) -> list[str]:
@@ -107,11 +121,23 @@ def run_one(argv: list[str], root: Path) -> dict:
     start = time.monotonic()
     resolved = _resolve_argv(argv, root)
     try:
-        done = subprocess.run(resolved, cwd=root, capture_output=True, text=True)
+        if ce_common.WINDOWS:
+            done = run_windows(resolved, root)
+        else:
+            done = subprocess.run(resolved, cwd=root, capture_output=True, text=True)
         code, output = done.returncode, done.stdout + done.stderr
     except OSError as error:
         code, output = 127, f"cannot start {argv[0]}: {error}\n"
     return {"argv": argv, "code": code, "output": output, "seconds": time.monotonic() - start}
+
+
+def run_windows(argv: list[str], root: Path) -> subprocess.CompletedProcess:
+    """(0.31) Windows: repo scripts (./check, *.sh, shebang files) through Git Bash or this Python (WinError 193
+    otherwise); output read as UTF-8, and a Python child writes its pipes as UTF-8 too instead of cp1252."""
+    env = dict(os.environ)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return subprocess.run(heavy_lock.script_argv(argv), cwd=root, capture_output=True, text=True, env=env,
+                          encoding="utf-8", errors="replace")
 
 
 def expand(argvs: list[list[str]], files: list[str]) -> list[list[str]]:
@@ -209,4 +235,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

@@ -101,7 +101,7 @@ def on_github(repo: Path) -> bool:
 
 def sn_git(repo: Path, *args: str) -> str:
     try:
-        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=20)
+        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, **am.UTF8, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -110,7 +110,7 @@ def sn_git(repo: Path, *args: str) -> str:
 def post(body: str, repo: str = REPO, issue: int = MAILBOX, runner=subprocess.run) -> dict:
     """Posts the comment with `gh api` (same transport as the watcher); returns GitHub's answer (id, html_url). Raises on failure."""
     result = runner(["gh", "api", "-X", "POST", f"repos/{repo}/issues/{issue}/comments", "--input", "-"],
-                    input=json.dumps({"body": body}), capture_output=True, text=True, timeout=60)
+                    input=json.dumps({"body": body}), capture_output=True, text=True, **am.UTF8, timeout=60)
     if result.returncode:
         raise RuntimeError((result.stderr or "").strip() or "gh api failed")
     return json.loads(result.stdout or "{}")
@@ -175,7 +175,7 @@ def sessions(comments: list) -> list:
 
 def fetch(since: str, repo: str = REPO, issue: int = MAILBOX) -> list:
     result = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments?per_page=100&since={since}"],
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, **am.UTF8, timeout=60)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or "gh api failed")
     return json.loads(result.stdout.replace("][", ",") or "[]")
@@ -275,6 +275,7 @@ def normalize_say_argv(argv: list[str]) -> list[str]:
 
 
 def main(argv=None) -> int:
+    am.utf8_console()  # (0.31) Windows: the message text goes out as UTF-8
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     say = sub.add_parser("say", help="Nachricht ins Postfach")

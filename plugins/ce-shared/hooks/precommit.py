@@ -18,6 +18,8 @@ DOC_CHECKS = ("Tools/check_docs.py", "tools/check_docs.py", "scripts/check_docs.
 SKILL_CHECK = ".agents/skills/check_skills.py"
 COMMIT = re.compile(r"(?:^|[;&|(]\s*)git\s+(?:-[Cc]\s+\S+\s+)*commit(?![\w-])")
 TIMEOUT = 8
+# (0.31) Windows decodes pipes as cp1252; git and ce_lint write UTF-8 (paths, „“ in messages). Empty on POSIX.
+UTF8 = {"encoding": "utf-8", "errors": "replace"} if os.name == "nt" else {}
 
 
 def is_commit(command):
@@ -32,20 +34,21 @@ def is_doc(path):
 def commit_files(cwd, command):
     """Files the commit will contain: staged ones, plus tracked changes for `commit -a`."""
     args = ["git", "-C", cwd, "diff", "--name-only"]
-    files = set(subprocess.run(args + ["--cached"], capture_output=True, text=True, timeout=TIMEOUT).stdout.split("\n"))
+    files = set(subprocess.run(args + ["--cached"], capture_output=True, text=True, timeout=TIMEOUT,
+                               **UTF8).stdout.split("\n"))
     if re.search(r"\s-[a-zA-Z]*a[a-zA-Z]*\b|\s--all\b", command):
-        files |= set(subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT).stdout.split("\n"))
+        files |= set(subprocess.run(args, capture_output=True, text=True, timeout=TIMEOUT, **UTF8).stdout.split("\n"))
     return sorted(f for f in files if f)
 
 
 def repo_root(cwd):
     done = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-                          timeout=TIMEOUT)
+                          timeout=TIMEOUT, **UTF8)
     return Path(done.stdout.strip()) if done.returncode == 0 and done.stdout.strip() else None
 
 
 def run_tool(argv, root):
-    done = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=TIMEOUT)
+    done = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=TIMEOUT, **UTF8)
     lines = [line for line in (done.stdout + done.stderr).strip().splitlines() if line.strip()]
     return done.returncode, lines
 
@@ -83,6 +86,8 @@ def decide(payload):
 
 def main():
     try:
+        if os.name == "nt":  # (0.31) the client sends UTF-8 JSON
+            sys.stdin.reconfigure(encoding="utf-8", errors="replace")
         print(json.dumps(decide(json.load(sys.stdin))))
     except Exception:  # never wedge a session, never block a commit
         print(json.dumps({}))

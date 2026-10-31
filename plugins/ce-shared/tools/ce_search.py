@@ -10,9 +10,9 @@ The nightly run rebuilds it; a session asks it instead of reading 12 000-word do
     python3 ce_search.py serve                                     MCP server (stdio): tools ce_search, ce_search_status
     python3 ce_search.py status
 
-Index: ~/Library/Caches/CubeEscape/search/index.sqlite (CE_SEARCH_INDEX moves it). Repos: --repo, CE_REPOS, or the standard
-checkouts under ~/Claude. A hit returns repo, path, heading, lines and the chunk text, so the agent cites the source and reads
-only that part. Pure standard library; embeddings are optional (CE_SEARCH_EMBED=0 turns them off even when installed).
+Index: ~/Library/Caches/CubeEscape/search/index.sqlite, Windows %LOCALAPPDATA%/CubeEscape/search (CE_SEARCH_INDEX moves
+it). Repos: --repo, CE_REPOS (Windows: ';'-separated), or the standard checkouts under ~/Claude. A hit returns repo,
+path, heading, lines and the chunk text, so the agent cites the source and reads only that part. Pure standard library; embeddings are optional (CE_SEARCH_EMBED=0 turns them off even when installed).
 
 Claude Code / Codex: add to .mcp.json  {"mcpServers": {"ce-search": {"command": "python3", "args": ["<tools>/ce_search.py", "serve"]}}}
 """
@@ -27,10 +27,11 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from ce_common import load_config, RepoError
+from ce_common import load_config, RepoError, WINDOWS, utf8_console
+import heavy_lock  # 0.31: the one cache folder (heavy_lock.cache_dir)
 
 HOME = Path.home()
-DEFAULT_INDEX = HOME / "Library" / "Caches" / "CubeEscape" / "search" / "index.sqlite"
+DEFAULT_INDEX = Path(heavy_lock.cache_dir("search", "index.sqlite"))
 DEFAULT_REPOS = ["cubeescape", "cubeescape-toolgen", "cubeescape-robogen", "cubeescape-cubegen", "cubeescape-formgen",
                  "cubeescape-motiongen", "cubeescape-nexogen", "ce-agent-tools"]
 SKIP_DIRS = {".git", "Library", "Temp", "Logs", "obj", "bin", "node_modules", "__pycache__", "output", "outputs", "work",
@@ -47,7 +48,7 @@ def repos(explicit) -> list[Path]:
         return [Path(p).expanduser().resolve() for p in explicit]
     env = os.environ.get("CE_REPOS")
     if env:
-        return [Path(p).expanduser().resolve() for p in env.split(":") if p]
+        return [Path(p).expanduser().resolve() for p in env.split(os.pathsep if WINDOWS else ":") if p]  # 0.31: C: has a colon
     base = Path(os.environ.get("CE_HOME", HOME / "Claude"))
     from ce_common import standard_repos
     return standard_repos(DEFAULT_REPOS, HOME)
@@ -325,7 +326,9 @@ TOOLS = [
 
 
 def serve() -> int:
-    """Minimal MCP server over stdio (JSON-RPC 2.0, newline-delimited)."""
+    """Minimal MCP server over stdio (JSON-RPC 2.0, newline-delimited). 0.31: UTF-8 both ways on Windows too - stdin
+    would otherwise read a client's „Prüfung“ as cp1252."""
+    utf8_console(sys.stdin, sys.stdout)
     def reply(ident, result=None, error=None):
         message = {"jsonrpc": "2.0", "id": ident}
         if error:
@@ -372,6 +375,7 @@ def serve() -> int:
 
 # -------------------------------------------------------------------------------------------------------------------- main
 def main(argv: list[str]) -> int:
+    utf8_console()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     idx = sub.add_parser("index")
