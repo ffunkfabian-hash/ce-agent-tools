@@ -23,7 +23,7 @@ class IdeExtensionTests(unittest.TestCase):
         if not node:
             self.skipTest('Node fehlt; native IDE-Hosttests nicht ausgeführt')
         result = subprocess.run([node, '--test', str(ROOT / 'tests/test_ide_extension.js')],
-                                capture_output=True, text=True, timeout=30, cwd=ROOT)
+                                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, cwd=ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_vsix_contains_only_extension_and_valid_manifests(self):

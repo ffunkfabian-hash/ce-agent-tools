@@ -13,10 +13,13 @@ Prints the output path and size; exit 2 when a tool is missing. Frames are taken
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+WINDOWS = os.name == "nt"  # (0.31)
 
 
 def frames_of(sources) -> list[Path]:
@@ -86,10 +89,13 @@ def clip(sources, out: Path, fps: int, height: int, seconds: float) -> int:
         print("ce_media clip: keine Bilder")
         return 2
     listing = out.with_suffix(".frames.txt")
-    listing.write_text("".join(f"file '{f.resolve()}'\nduration {1 / fps:.6f}\n" for f in files), encoding="utf-8")
+    # (0.31) Windows: forward slashes for ffmpeg's concat list (C:/…), nothing else changes
+    spell = (lambda f: f.resolve().as_posix()) if WINDOWS else (lambda f: f.resolve())
+    listing.write_text("".join(f"file '{spell(f)}'\nduration {1 / fps:.6f}\n" for f in files), encoding="utf-8")
     command = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-t", str(seconds),
                "-vf", f"scale=-2:{height}", "-r", str(fps), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", str(out)]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True,
+                            **({"encoding": "utf-8", "errors": "replace"} if WINDOWS else {}))
     listing.unlink(missing_ok=True)
     if result.returncode:
         print(result.stderr.strip()[-400:])
@@ -126,4 +132,9 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main(sys.argv[1:]))

@@ -7,10 +7,17 @@ const os = require('node:os');
 const path = require('node:path');
 
 // Argument arrays intentionally preserve spaces, shell metacharacters and Unicode.
+// (0.31) Windows has neither process groups nor TERM: taskkill /T /F ends our own child and every descendant.
+function killTreeWindows(pid) {
+  const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, shell: false });
+  killer.on('error', () => {});
+}
+
 function execute(python, script, args, cwd, allowedCodes = [0], runner = spawn,
-  { timeoutMs = 60000, killGraceMs = 1000, closeWaitMs = 1000 } = {}) {
+  { timeoutMs = 60000, killGraceMs = 1000, closeWaitMs = 1000, platform = process.platform,
+    killTree = killTreeWindows } = {}) {
   return new Promise((resolve, reject) => {
-    const grouped = process.platform !== 'win32';
+    const grouped = platform !== 'win32';
     let child, deadline, escalation, closeDeadline, result, abortError, settled = false;
     let stdout = '', stderr = '', bytes = 0;
 
@@ -30,7 +37,10 @@ function execute(python, script, args, cwd, allowedCodes = [0], runner = spawn,
       if (!child || !Number.isInteger(child.pid) || child.pid <= 0) return;
       try {
         if (grouped) process.kill(-child.pid, signal);
-        else child.kill(signal); // Windows has no POSIX process-group signalling.
+        // Windows has no POSIX process-group signalling: the whole tree at once, while the parent still links it
+        // (a TERM stage that ended only the parent would orphan a TERM-ignoring child); KILL repeats it. Never once
+        // the parent has ended: its pid may already belong to another program, and taskkill /T would end that tree.
+        else if (child.exitCode == null && child.signalCode == null) killTree(child.pid);
       } catch (error) {
         if (error.code !== 'ESRCH') {
           abortError = new Error(`${abortError.message}; Prozessabbruch fehlgeschlagen: ${error.message}`);

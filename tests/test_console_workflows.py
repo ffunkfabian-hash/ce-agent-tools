@@ -18,6 +18,15 @@ sys.path.insert(0, str(TOOLS))
 import ce_check
 import ce_console
 import ce_lock_status
+import heavy_lock
+
+
+def started_as(pid, launcher):
+    """launcher when pid is it - or, on Windows, its direct child: a venv's python.exe only redirects to the real
+    interpreter, which then runs (and holds or waits) under its own pid (0.31)."""
+    if pid == launcher or (heavy_lock.WINDOWS and heavy_lock.process_table().get(pid, (None,))[0] == launcher):
+        return launcher
+    return pid
 
 
 class ConsoleTests(unittest.TestCase):
@@ -105,7 +114,7 @@ class WaiterTests(unittest.TestCase):
                 waiter=subprocess.Popen([sys.executable,'-u','-c',prefix+'l=h.HeavyLock("waiter",resource="unity",poll=0.02).acquire();print("ACQUIRED");l.release()'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=env)
                 self.assertIn('waiting',waiter.stdout.readline())
                 rows=ce_lock_status.waiting(lock)
-                self.assertEqual([(r['pid'],r['resource']) for r in rows],[(waiter.pid,'unity')])
+                self.assertEqual([(started_as(r['pid'],waiter.pid),r['resource']) for r in rows],[(waiter.pid,'unity')])
                 holder.communicate(input='release\n',timeout=5)
                 output=waiter.communicate(timeout=5)[0]
                 self.assertIn('ACQUIRED',output)

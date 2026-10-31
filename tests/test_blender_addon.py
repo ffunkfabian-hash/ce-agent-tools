@@ -1,5 +1,4 @@
 import importlib.util
-import fcntl
 import os
 import time
 from types import ModuleType, SimpleNamespace
@@ -15,9 +14,33 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "integrations/blender/ce_blender_tools"
 TOOLS = ROOT / "plugins/ce-shared/tools"
+sys.path.insert(0, str(TOOLS))
+import heavy_lock  # noqa: E402
+try:
+    import fcntl
+except ImportError:  # (0.31) Windows: heavy_lock's LockFileEx
+    fcntl = None
 spec = importlib.util.spec_from_file_location("blender_addon_jobs", PACKAGE / "jobs.py")
 jobs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jobs)
+
+
+def lock_is_free(path):
+    """True when nobody holds the lock file (flock; Windows: LockFileEx through heavy_lock, freed again at once)."""
+    with open(path, "a+") as handle:
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                heavy_lock.lock_fd(handle.fileno(), wait=False)
+                heavy_lock.unlock_fd(handle.fileno())
+            return True
+        except BlockingIOError:
+            return False
+
+
+# (0.31) the renderer's stop signal: TERM on POSIX, Ctrl+Break (forwarded by heavy_lock run) on Windows
+STOP = "signal.SIGBREAK" if os.name == "nt" else "signal.SIGTERM"
 
 
 class BlenderAddonTests(unittest.TestCase):
@@ -52,8 +75,8 @@ class BlenderAddonTests(unittest.TestCase):
 
     def test_selected_virtual_environment_keeps_its_packages_for_worker_and_supervisor(self):
         environment = self.root / "selected environment"
-        venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
-        python = environment / "bin" / "python"
+        venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(environment)  # Windows: links need admin
+        python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         purelib = subprocess.run([str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
                                  capture_output=True, text=True, check=True).stdout.strip()
         (Path(purelib) / "ce_selected_environment_marker.py").write_text("VALUE = 'selected'\n")
@@ -158,10 +181,15 @@ class BlenderAddonTests(unittest.TestCase):
         with patch.object(jobs.subprocess, "Popen", return_value=process):
             job = jobs.Job(command, directory)
         self.addCleanup(job.log.close)
-        with patch.object(jobs.os, "killpg", create=True) as killpg:
+        with patch.object(jobs.os, "killpg", create=True) as killpg, patch.object(jobs.os, "kill") as kill:
             job.cancel()
             job.cancel()
-        process.terminate.assert_called_once_with()
+        if jobs.WINDOWS:  # (0.31) Ctrl+Break for the supervisor's console group, never TerminateProcess
+            kill.assert_called_once_with(12345, jobs.CTRL_BREAK)
+            process.terminate.assert_not_called()
+        else:
+            process.terminate.assert_called_once_with()
+            kill.assert_not_called()
         killpg.assert_not_called()
         self.assertTrue(job.cancelling)
         self.assertFalse(job.log.closed)
@@ -184,7 +212,7 @@ def cleanup_signal(signum, frame):
     global stop
     Path({str(terminated)!r}).touch()
     stop = True
-signal.signal(signal.SIGTERM, cleanup_signal)
+signal.signal({STOP}, cleanup_signal)
 Path({str(ready)!r}).touch()
 while not stop:
     time.sleep(0.01)
@@ -203,12 +231,7 @@ Path({str(ended)!r}).touch()
                 time.sleep(0.01)
             self.assertTrue(predicate(), (directory / "process.log").read_text())
         def lock_free():
-            with (self.root / "heavy-blender.lock").open("a+") as handle:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return True
-                except BlockingIOError:
-                    return False
+            return lock_is_free(self.root / "heavy-blender.lock")
         try:
             wait_until(ready.exists)
             self.assertFalse(lock_free())
@@ -239,7 +262,7 @@ Path({str(ended)!r}).touch()
         renderer = self.root / "stubborn-blender"
         renderer.write_text("#!" + sys.executable + "\n" + f'''import os, signal, time
 from pathlib import Path
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
+signal.signal({STOP}, signal.SIG_IGN)
 Path({str(ready)!r}).write_text(str(os.getpid()))
 while True:
     time.sleep(0.01)
@@ -255,9 +278,10 @@ while True:
             while not ready.exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertTrue(ready.exists(), (directory / "process.log").read_text())
-            identity = json.loads((directory / "worker-identity.json").read_text())
-            self.assertEqual(identity["supervisor_pid"], job.process.pid)
-            self.assertNotEqual(identity["pgid"], job.process.pid)
+            if os.name == "posix":  # Windows: the supervisor's job object is the group, no identity file
+                identity = json.loads((directory / "worker-identity.json").read_text())
+                self.assertEqual(identity["supervisor_pid"], job.process.pid)
+                self.assertNotEqual(identity["pgid"], job.process.pid)
             job.cancel()
             self.assertIsNone(job.poll())
             self.assertFalse(job.escalated)
@@ -270,8 +294,7 @@ while True:
             self.assertFalse(result["ok"])
             self.assertNotEqual(job.process.returncode, -9, "the supervisor must never receive KILL")
             self.assertTrue(job.log.closed)
-            with (self.root / "stubborn-blender.lock").open("a+") as handle:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertTrue(lock_is_free(self.root / "stubborn-blender.lock"))
         finally:
             job.cancel()
             # Continue the same nonblocking cleanup path even on assertion failures.
@@ -280,6 +303,40 @@ while True:
                 time.sleep(0.01)
             job.process.wait(timeout=3)
 
+    def test_windows_cancel_breaks_the_supervisor_twice_and_never_kills_it(self):
+        """(0.31) Windows branch, mocked so it runs everywhere: cancel = Ctrl+Break for the supervisor (heavy_lock run
+        passes it to its worker job); after the grace a second one (heavy_lock ends the whole job). The supervisor
+        itself is killed only when no console signal can be sent; a profile check without supervisor is killed."""
+        asset = self.root / "asset.blend"
+        asset.touch()
+        for kind, shared_console in (("preflight", True), ("preflight", False), ("profile_preflight", True)):
+            with self.subTest(kind=kind, shared_console=shared_console):
+                command, directory = self.prepare(kind=kind, asset=asset)
+                process = Mock(pid=12345)
+                process.poll.return_value = None
+                with patch.object(jobs, "WINDOWS", True),                         patch.object(jobs.subprocess, "Popen", return_value=process) as popen:
+                    job = jobs.Job(command, directory, cancel_grace=0)
+                self.addCleanup(job.log.close)
+                self.assertEqual(popen.call_args.kwargs["creationflags"], jobs.NEW_GROUP)
+                failure = None if shared_console else OSError("no shared console")
+                with patch.object(jobs, "WINDOWS", True), patch.object(jobs.os, "kill", side_effect=failure) as kill,                         patch.object(jobs.os, "killpg", create=True) as killpg:
+                    job.cancel()
+                    self.assertIsNone(job.poll())
+                    self.assertTrue(job.escalated)
+                killpg.assert_not_called()
+                process.terminate.assert_not_called()
+                if not shared_console:
+                    self.assertEqual(kill.call_count, 2)
+                    self.assertEqual(process.kill.call_count, 2)
+                elif kind == "preflight":
+                    self.assertEqual(kill.call_args_list, [((12345, jobs.CTRL_BREAK),)] * 2)
+                    process.kill.assert_not_called()
+                else:
+                    kill.assert_called_once_with(12345, jobs.CTRL_BREAK)
+                    process.kill.assert_called_once_with()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups and their attested identity; Windows: the "
+                                             "supervisor's job object (test_windows_cancel_breaks_...)")
     def test_escalation_rejects_unattested_group_identity(self):
         asset = self.root / "asset.blend"
         asset.touch()

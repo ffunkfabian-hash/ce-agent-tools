@@ -223,6 +223,30 @@ class OutputAndEvidenceTests(TidyCase):
         rows, _, _ = self.collect()
         self.assertFalse(rows[self.main / "out" / "old"]["deletable"])
 
+    def test_windows_cache_root_is_cubeescapes_own_folder_only(self):
+        """(0.31) Windows: tidy.paths may also point into %LOCALAPPDATA%/CubeEscape (heavy_lock.cache_dir), never
+        elsewhere in %LOCALAPPDATA%; evidence stores there are found like ~/Library/Caches/*/videos. Mocked, runs
+        everywhere; POSIX has no such folder."""
+        local = self.home / "AppData" / "Local"
+        write(local / "CubeEscape" / "renders" / "a" / "x.bin")
+        write(local / "Programs" / "app" / "x.bin")
+        write(local / "CubeEscape" / "proj" / "videos" / "0.1" / "x.mp4")
+        with mock.patch.object(ce_tidy.ce_common, "WINDOWS", True):
+            self.config({"paths": [{"root": str(local / "CubeEscape" / "renders")}]})
+            rows, errors, ctx = self.collect(categories=("ausgabe",))
+            self.assertEqual(errors, [])
+            self.assertIn(local / "CubeEscape" / "renders" / "a", rows)
+            self.config({"paths": [{"root": str(local / "Programs")}]})
+            rows, errors, _ = self.collect(categories=("ausgabe",))
+            self.assertEqual(rows, {})
+            self.assertIn("liegt weder", " ".join(errors))
+            self.assertIn(local / "CubeEscape" / "proj" / "videos", ce_tidy.evidence_stores([], ctx))
+        with mock.patch.object(ce_tidy.ce_common, "WINDOWS", False):
+            self.assertIsNone(ce_tidy.Context(self.home).windows_caches)
+            self.config({"paths": [{"root": str(local / "CubeEscape" / "renders")}]})
+            _, errors, _ = self.collect(categories=("ausgabe",))
+            self.assertIn("liegt weder", " ".join(errors))
+
     def test_tracked_output_is_kept(self):
         write(self.main / "build" / "ship" / "x.txt")
         write(self.main / "build" / "tmp" / "x.txt")
@@ -296,7 +320,7 @@ class OutputAndEvidenceTests(TidyCase):
         self.config({"paths": [{"root": "out"}]})
         rows, _, ctx = self.collect()
         real_lstat = os.lstat
-        with mock.patch.object(ce_tidy.os, "lstat", side_effect=lambda p: mock.Mock(st_dev=-1) if str(p).endswith("/a") else real_lstat(p)):
+        with mock.patch.object(ce_tidy.os, "lstat", side_effect=lambda p: mock.Mock(st_dev=-1) if str(p).endswith(os.sep + "a") else real_lstat(p)):
             errors = ce_tidy.apply([rows[self.main / "out" / "a"]], ctx)
         self.assertIn("anderes Volume", errors[0])
         self.assertTrue((self.main / "out" / "a").exists())
@@ -359,7 +383,7 @@ class OutputAndEvidenceTests(TidyCase):
             rows2, _, _ = ce_tidy.collect([other, self.main], ("beleg",), self.projects, cwds={}, sizes=False)
         self.assertTrue(rows2 and all(not r["deletable"] for r in rows2))
         rows, _, ctx = ce_tidy.collect([self.main, other], ("beleg",), self.projects, cwds={}, sizes=False)
-        target = next(r for r in rows if r["path"].endswith("/0.1"))
+        target = next(r for r in rows if r["path"].endswith(os.sep + "0.1"))  # (0.31) native separator
         self.assertTrue(target["deletable"])
         with mock.patch.object(ce_tidy.ce_common, "repo_hold", side_effect=held):
             errors = ce_tidy.apply([target], ctx)
@@ -392,6 +416,25 @@ class CommandAndNightlyTests(TidyCase):
         self.assertFalse((self.main / "applied").exists())
         self.assertEqual(ce_tidy.apply([item], ctx), [])
         self.assertTrue((self.main / "applied").exists())
+
+    def test_windows_commands_use_this_python_and_git_bash_and_read_utf8(self):
+        """(0.31) Windows: python3 is the Store stub there -> this Python; sh/bash -> Git Bash, never WSL; missing Git
+        Bash is an error, not WSL. Mocked, runs everywhere."""
+        import heavy_lock
+        with mock.patch.object(heavy_lock, "posix_shell", side_effect=lambda name: f"C:/Git/bin/{name}.exe"):
+            self.assertEqual(ce_tidy.windows_argv(["python3", "t.py", "-x"]), [sys.executable, "t.py", "-x"])
+            self.assertEqual(ce_tidy.windows_argv(["bash", "t.sh"]), ["C:/Git/bin/bash.exe", "t.sh"])
+        with mock.patch.object(heavy_lock, "posix_shell", return_value=None), self.assertRaises(OSError):
+            ce_tidy.windows_argv(["sh", "t.sh"])
+        with mock.patch.object(heavy_lock, "script_argv", side_effect=lambda argv: ["sh.exe", *argv]):
+            self.assertEqual(ce_tidy.windows_argv(["t.sh"]), ["sh.exe", "t.sh"])
+        done = subprocess.CompletedProcess([], 0, "3 Testkopien, 2 löschbar\n", "")
+        with mock.patch.object(ce_tidy.ce_common, "WINDOWS", True), \
+                mock.patch.object(ce_tidy.subprocess, "run", return_value=done) as run:
+            self.assertEqual(ce_tidy.run_command(["python3", "p.py"], self.main, 5), (0, "3 Testkopien, 2 löschbar"))
+        self.assertEqual(run.call_args.args[0], [sys.executable, "p.py"])
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertIn("PYTHONIOENCODING", run.call_args.kwargs["env"])
 
     def test_failing_command_is_reported(self):
         self.config({"commands": [{"name": "bad", "apply": self.script("bad.py", "raise SystemExit(3)")}]})

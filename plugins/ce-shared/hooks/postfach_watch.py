@@ -36,6 +36,22 @@ except Exception:  # noqa: BLE001 - a broken install must not hold the session
     am = None
 
 
+def windows_parent(state={}, lock=None) -> int:
+    """(0.31) os.getppid for Windows: there a dead parent keeps its pid in getppid (no re-parenting to 1), so the watcher
+    would never notice that its session ended. 1 once the first parent is gone or its pid belongs to a newer process."""
+    pid = os.getppid()
+    try:
+        lock = lock or __import__("heavy_lock")
+        started = lock.process_started(pid)
+        first = state.setdefault(pid, started)
+        return pid if lock.pid_alive(pid) and started == first else 1
+    except Exception:  # noqa: BLE001 - without the check it behaves like before
+        return pid
+
+
+PARENT = windows_parent if os.name == "nt" else os.getppid
+
+
 class SessionGone(Exception):
     """The process that started the hook ended: nobody is left to wake."""
 
@@ -77,7 +93,7 @@ def hinted(folder: Path, number: int) -> bool:
     return number <= am.state_int(am.load_state(folder), "hinted")
 
 
-def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, parent=os.getppid, err=sys.stderr) -> int:
+def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, parent=PARENT, err=sys.stderr) -> int:
     folder, session = am.reservation(payload.get("cwd") or os.getcwd())
     if folder is None:
         return 0
@@ -126,8 +142,18 @@ def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, par
         am.unregister(folder)
 
 
+def utf8_io() -> None:
+    """(0.31) Windows: the client's JSON and the wake text on stderr as UTF-8, not cp1252 („Salvo“ → …)."""
+    try:
+        import ce_common
+        ce_common.utf8_console(sys.stdin, sys.stdout, sys.stderr)
+    except Exception:  # noqa: BLE001 - fail-open
+        pass
+
+
 def main(argv=None) -> int:
     mode = (argv or sys.argv[1:] or ["remind"])[0]
+    utf8_io()
     if am is None:
         if mode != "watch":
             print("{}")

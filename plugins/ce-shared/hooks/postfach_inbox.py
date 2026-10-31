@@ -64,8 +64,35 @@ def write_json(path: Path, value: dict) -> bool:
 
 
 def start_fetch(folder: Path) -> None:
-    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "fetch", str(folder)], stdin=subprocess.DEVNULL,
+    argv = [sys.executable, str(Path(__file__).resolve()), "fetch", str(folder)]
+    if os.name == "nt":
+        start_fetch_windows(argv)
+        return
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+
+
+def start_fetch_windows(argv: list, popen=subprocess.Popen) -> None:
+    """(0.31) Windows has no sessions (start_new_session is ignored there): the read runs detached from the hook's console
+    and process group, and out of its job where the client's job allows that - else inside it, as the job permits."""
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    for extra in (0x01000000, 0):  # CREATE_BREAKAWAY_FROM_JOB; refused (access denied) in a job without breakaway
+        try:
+            popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  creationflags=flags | extra, close_fds=True)
+            return
+        except OSError:
+            if not extra:
+                raise
+
+
+def utf8_io() -> None:
+    """(0.31) Windows: the client's JSON comes and goes as UTF-8, not cp1252 (a cwd with Ö, a → in a message)."""
+    try:
+        import ce_common
+        ce_common.utf8_console(sys.stdin, sys.stdout, sys.stderr)
+    except Exception:  # noqa: BLE001 - fail-open
+        pass
 
 
 def text_of(messages: list, key: str) -> str:
@@ -186,6 +213,7 @@ def fetch(folder: Path, read=None, now=time.time) -> int:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     mode = argv[0] if argv else "hint"
+    utf8_io()
     try:
         if mode == "fetch" and am is not None and len(argv) > 1:
             return fetch(Path(argv[1]))

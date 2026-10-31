@@ -106,7 +106,9 @@ def ant_environment():
 def ant_command(*args, capture=True):
     binary = shutil.which('ant')
     if not binary:
-        raise ApiError('ant fehlt: brew install anthropics/tap/ant')
+        raise ApiError('ant fehlt: ' + ('ant_<version>_windows_amd64.zip von github.com/anthropics/anthropic-cli/releases '
+                                        '(Prüfsumme gegen checksums.txt), ant.exe in einen PATH-Ordner' if os.name == 'nt'
+                                        else 'brew install anthropics/tap/ant'))
     AUTH_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         result = subprocess.run([binary, '--profile', 'nexogen', *args], env=ant_environment(),
@@ -328,4 +330,9 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main())

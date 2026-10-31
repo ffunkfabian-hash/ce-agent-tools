@@ -12,12 +12,14 @@ remote sandbox. Unknown classifications fail closed, including in --dry-run.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
 import tempfile
 
+WINDOWS = os.name == "nt"  # (0.31)
 MODELS = ("gpt-6-luna", "gpt-6.1-sol")
 CAPABILITIES = {"unity", "blender", "visuals", "viewer"}
 CODE_SUFFIXES = {".py", ".cs", ".js", ".ts", ".mjs", ".cjs", ".go", ".rs", ".java", ".c", ".h", ".cpp", ".hpp", ".sh"}
@@ -35,6 +37,8 @@ Die erste Modellzeile ist eine Anforderung; melde, falls sie nicht erfuellbar is
 
 
 def run(argv, cwd=None, capture=False):
+    if WINDOWS:
+        return run_windows(argv, cwd, capture)
     if argv[0] == "codex":
         # Cloud CLI 0.162.1 writes error.log in cwd, even for read-only listing.
         # Explicit --env/--branch select the target; no project cwd is needed.
@@ -43,6 +47,16 @@ def run(argv, cwd=None, capture=False):
                                   capture_output=capture)
     return subprocess.run(argv, cwd=cwd, text=True, check=True,
                           capture_output=capture)
+
+
+def run_windows(argv, cwd=None, capture=False):
+    """(0.31) The same on Windows: npm's codex.cmd is started by its full name (CreateProcess finds only .exe by a
+    bare name), output is read as UTF-8 instead of cp1252."""
+    codex = argv[0] == "codex"
+    command = [shutil.which(argv[0]) or argv[0], *argv[1:]]
+    with tempfile.TemporaryDirectory(prefix="ce-codex-cloud-") as scratch:
+        return subprocess.run(command, cwd=scratch if codex else cwd, text=True, check=True, capture_output=capture,
+                              encoding="utf-8", errors="replace")
 
 
 def check_environments():
@@ -240,4 +254,9 @@ def main():
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main())

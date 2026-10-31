@@ -8,65 +8,72 @@
 #   vibe run --prompt-file F [--json] | status | clean [--apply]   (0.26: Aufgabe an Mistral Vibe im Wegwerf-Worktree, Ergebnis als Patch)
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
+py=python3
+if [ "${OS:-}" = Windows_NT ]; then  # 0.31: python3 there is often the Store stub (exit 49); twin of hooks/ce-python
+  if command -v py >/dev/null 2>&1; then py=py; else
+    for candidate in python3 python; do "$candidate" -c "" </dev/null >/dev/null 2>&1 && { py="$candidate"; break; }; done
+  fi
+  export PYTHONUTF8="${PYTHONUTF8:-1}"  # files and pipes in UTF-8 as on the Mac, not cp1252
+fi
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   session)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
     case "$sub" in
-      reserve) case "${1:-}" in -h|--help|"") exec python3 "$tools/ce_session_name.py" --help;; --name) shift;; esac  # 0.21: no `--name --help`
-               exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
-      topics) exec python3 "$tools/ce_session_name.py" --task Blick --topics "$@";;
-      patch) exec python3 "$tools/ce_session_name.py" --reserve --patch "$@";;
-      mail) exec python3 "$tools/ce_await_mail.py" "$@";;
-      say|who) exec python3 "$tools/ce_postfach.py" "$sub" "$@";;
+      reserve) case "${1:-}" in -h|--help|"") exec "$py" "$tools/ce_session_name.py" --help;; --name) shift;; esac  # 0.21: no `--name --help`
+               exec "$py" "$tools/ce_session_name.py" --name "$@" --reserve;;
+      topics) exec "$py" "$tools/ce_session_name.py" --task Blick --topics "$@";;
+      patch) exec "$py" "$tools/ce_session_name.py" --reserve --patch "$@";;
+      mail) exec "$py" "$tools/ce_await_mail.py" "$@";;
+      say|who) exec "$py" "$tools/ce_postfach.py" "$sub" "$@";;
       *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] [--follow] [--also-pr] | say [--to <Empfänger>[,…]] [--freigabe commit,push,pr --zitat …] <Thema> [Zeilen] | who"; exit 2;;
     esac;;
   codex)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
     case "$sub" in
-      quota|cloud) exec python3 "$tools/ce_codex_${sub}.py" "$@";;
-      judge) exec python3 "$tools/ce_judge.py" "$@";;
+      quota|cloud) exec "$py" "$tools/ce_codex_${sub}.py" "$@";;
+      judge) exec "$py" "$tools/ce_judge.py" "$@";;
       *) echo "codex quota | cloud | judge"; exit 2;;
     esac;;
   evidence)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
     case "$sub" in
-      preflight) exec python3 "$tools/ce_blender_preflight.py" "$@";;
-      turnaround) exec python3 "$tools/ce_turnaround.py" "$@";;
-      diff) exec python3 "$tools/ce_imagediff.py" "$@";;
-      clip|sheet|still) exec python3 "$tools/ce_media.py" "$sub" "$@";;
+      preflight) exec "$py" "$tools/ce_blender_preflight.py" "$@";;
+      turnaround) exec "$py" "$tools/ce_turnaround.py" "$@";;
+      diff) exec "$py" "$tools/ce_imagediff.py" "$@";;
+      clip|sheet|still) exec "$py" "$tools/ce_media.py" "$sub" "$@";;
       *) echo "evidence clip | sheet | still | diff"; exit 2;;
     esac;;
-  check)    mode=quick; case "${1:-}" in --full) mode=full; shift;; --nightly) mode=nightly; shift;; esac; exec python3 "$tools/ce_check.py" "$mode" "$@";;
-  reserve)  case "${1:-}" in -h|--help|"") exec python3 "$tools/ce_session_name.py" --help;; --name) shift;; esac
-            exec python3 "$tools/ce_session_name.py" --name "$@" --reserve;;
-  topics)   exec python3 "$tools/ce_session_name.py" --task Blick --topics;;
+  check)    mode=quick; case "${1:-}" in --full) mode=full; shift;; --nightly) mode=nightly; shift;; esac; exec "$py" "$tools/ce_check.py" "$mode" "$@";;
+  reserve)  case "${1:-}" in -h|--help|"") exec "$py" "$tools/ce_session_name.py" --help;; --name) shift;; esac
+            exec "$py" "$tools/ce_session_name.py" --name "$@" --reserve;;
+  topics)   exec "$py" "$tools/ce_session_name.py" --task Blick --topics;;
   search)
-    case "${1:-}" in query|index|status|serve) exec python3 "$tools/ce_search.py" "$@";; esac
-    exec python3 "$tools/ce_search.py" query "$@";;
-  index)    exec python3 "$tools/ce_search.py" index "$@";;
-  judge)    exec python3 "$tools/ce_judge.py" "$@";;
-  diff)     exec python3 "$tools/ce_imagediff.py" "$@";;
-  sheet|clip|still) exec python3 "$tools/ce_media.py" "$cmd" "$@";;
-  lock)     res="${1:-status}"; [ $# -gt 0 ] && shift; [ "$res" != status ] || exec python3 "$tools/heavy_lock.py" status; exec python3 "$tools/heavy_lock.py" run --resource "$res" "$@";;
-  status)   python3 "$tools/heavy_lock.py" status; exec python3 "$tools/ce_search.py" status;;
-  docs)     exec python3 "$tools/ce_docs.py" "$@";;
+    case "${1:-}" in query|index|status|serve) exec "$py" "$tools/ce_search.py" "$@";; esac
+    exec "$py" "$tools/ce_search.py" query "$@";;
+  index)    exec "$py" "$tools/ce_search.py" index "$@";;
+  judge)    exec "$py" "$tools/ce_judge.py" "$@";;
+  diff)     exec "$py" "$tools/ce_imagediff.py" "$@";;
+  sheet|clip|still) exec "$py" "$tools/ce_media.py" "$cmd" "$@";;
+  lock)     res="${1:-status}"; [ $# -gt 0 ] && shift; [ "$res" != status ] || exec "$py" "$tools/heavy_lock.py" status; exec "$py" "$tools/heavy_lock.py" run --resource "$res" "$@";;
+  status)   "$py" "$tools/heavy_lock.py" status; exec "$py" "$tools/ce_search.py" status;;
+  docs)     exec "$py" "$tools/ce_docs.py" "$@";;
   contract)
     case "${1:-}" in
-      audit) shift; exec python3 "$tools/ce_interfaces.py" audit "$@";;
-      robot-package) shift; exec python3 "$tools/ce_interfaces.py" robot-package "$@";;
-      validate|list) exec python3 "$tools/ce_contract.py" "$@";;
-      *) exec python3 "$tools/ce_contract.py" validate "$@";;
+      audit) shift; exec "$py" "$tools/ce_interfaces.py" audit "$@";;
+      robot-package) shift; exec "$py" "$tools/ce_interfaces.py" robot-package "$@";;
+      validate|list) exec "$py" "$tools/ce_contract.py" "$@";;
+      *) exec "$py" "$tools/ce_contract.py" validate "$@";;
     esac;;
-  report)   exec python3 "$tools/ce_report.py" "$@";;
-  api)      exec python3 "$tools/ce_api.py" "$@";;
-  vibe)     exec python3 "$tools/ce_vibe.py" "$@";;
-  sync)     exec python3 "$tools/ce_sync.py" --repo . "$@";;
-  tidy)     exec python3 "$tools/ce_tidy.py" "$@";;
-  tools)    exec python3 "$tools/ce_loader.py" tools "$@";;  # 0.20: also in repos that still have a copy (tools pin)
-  plugins)  exec python3 "$tools/ce_plugins.py" "$@";;
-  mail)     case "${1:-}" in ""|-*) exec python3 "$tools/ce_await_mail.py" "$@";; esac; exec python3 "$tools/ce_await_mail.py" --name "$@";;
-  say|who)  exec python3 "$tools/ce_postfach.py" "$cmd" "$@";;
+  report)   exec "$py" "$tools/ce_report.py" "$@";;
+  api)      exec "$py" "$tools/ce_api.py" "$@";;
+  vibe)     exec "$py" "$tools/ce_vibe.py" "$@";;
+  sync)     exec "$py" "$tools/ce_sync.py" --repo . "$@";;
+  tidy)     exec "$py" "$tools/ce_tidy.py" "$@";;
+  tools)    exec "$py" "$tools/ce_loader.py" tools "$@";;  # 0.20: also in repos that still have a copy (tools pin)
+  plugins)  exec "$py" "$tools/ce_plugins.py" "$@";;
+  mail)     case "${1:-}" in ""|-*) exec "$py" "$tools/ce_await_mail.py" "$@";; esac; exec "$py" "$tools/ce_await_mail.py" --name "$@";;
+  say|who)  exec "$py" "$tools/ce_postfach.py" "$cmd" "$@";;
   help|--help|-h) sed -n 2,8p "$0";;
   *)        sed -n 2,8p "$0"; exit 2;;
 esac

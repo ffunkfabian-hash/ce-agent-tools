@@ -31,7 +31,8 @@ import sys
 import tempfile
 import tomllib
 
-from ce_common import repo_hold
+from ce_common import UTF8, repo_hold, utf8_console
+import heavy_lock
 
 STATE = Path(os.environ.get('CE_VIBE_STATE', Path.home() / '.local/state/nexogen/vibe'))
 DEFAULTS = {'max_turns': 40, 'max_price': '1.00', 'time_limit': 1200, 'kill_grace': 120}
@@ -62,7 +63,8 @@ def vibe_bin():
 
 
 def git(cwd, *args, check=True, binary=False):
-    done = subprocess.run(['git', '-C', str(cwd), *args], capture_output=True, text=not binary)
+    done = subprocess.run(['git', '-C', str(cwd), *args], capture_output=True, text=not binary,
+                          **({} if binary else UTF8))
     if check and done.returncode:
         error = done.stderr if not binary else done.stderr.decode(errors='replace')
         raise VibeError(f'git {" ".join(args[:2])}: {error.strip()}')
@@ -124,12 +126,21 @@ def matches(pattern, names):
     return any(fnmatch.fnmatch(name.lower(), pattern.lower()) for name in names)
 
 
+def command_words(command, windows=None):
+    """Words of a hook command (shlex). (0.31) Windows also: the words of a cmd-style split without their quotes - POSIX
+    shlex eats the backslashes of an unquoted C:\\...\\vibe_guard.py, which would hide an installed guard."""
+    words = shlex.split(command)
+    if heavy_lock.WINDOWS if windows is None else windows:
+        words += [word.strip('"\'') for word in shlex.split(command, posix=False)]
+    return words
+
+
 def guard_hook():
     """Name of the pre_tool hook in the user's hooks.toml that runs an existing vibe_guard.py for the shell tools
     (bash and process_start), else None - a moved checkout or a match without the shell is no guard."""
     for hook in read_hooks(hooks_file()):
         try:
-            words = shlex.split(str(hook.get('command', '')))
+            words = command_words(str(hook.get('command', '')))
         except ValueError:
             continue
         script = any(word.endswith('vibe_guard.py') and Path(word).is_file() for word in words)
@@ -185,6 +196,8 @@ def snapshot_tree(worktree):
 
 def run_worker(command, worktree, env, timeout):
     """Vibe in its own process group, so a timeout also ends the shell commands it started."""
+    if heavy_lock.WINDOWS:
+        return run_worker_windows(command, worktree, env, timeout)
     proc = subprocess.Popen(command, cwd=worktree, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             start_new_session=True)
     try:
@@ -206,6 +219,36 @@ def end_group(pid):
         os.killpg(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def run_worker_windows(command, worktree, env, timeout):
+    """(0.31) Windows: the process group is heavy_lock's job object (spawn_group; a vibe script goes through
+    script_argv). Ending it is TerminateJobObject - the second signal_group, the first is only Ctrl+Break - so every
+    shell command Vibe started ends too; closing the job kills whatever is left (kill on close)."""
+    proc, group = heavy_lock.spawn_group(command, cwd=worktree, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+            end_job(group)  # background jobs Vibe left behind must not outlive the worktree
+            return proc.returncode, out.decode(errors='replace'), err.decode(errors='replace'), False
+        except subprocess.TimeoutExpired:
+            end_job(group)
+            try:
+                out, err = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:  # a process outside the job still holds the pipes
+                proc.kill()
+                out, err = b'', b''
+            return None, out.decode(errors='replace'), err.decode(errors='replace') + '\nce vibe: harter Abbruch\n', True
+    finally:
+        heavy_lock.close_group(group)
+
+
+def end_job(group):
+    """Windows: the whole job at once (the POSIX counterpart is SIGKILL to the group): signal_group escalates on its
+    second call to TerminateJobObject, the first is only Ctrl+Break."""
+    if heavy_lock.group_alive(group):
+        heavy_lock.signal_group(group, signal.SIGTERM)
+        heavy_lock.signal_group(group, signal.SIGTERM)
 
 
 def read_export(path):
@@ -331,7 +374,8 @@ def print_summary(summary):
 
 def status():
     binary = vibe_bin()
-    version = subprocess.run([binary, '--version'], capture_output=True, text=True).stdout.strip()
+    version = subprocess.run(heavy_lock.script_argv([binary, '--version']), capture_output=True, text=True,
+                             **UTF8).stdout.strip()
     runs = sorted((STATE / 'runs').glob('*')) if (STATE / 'runs').is_dir() else []
     print(json.dumps({'vibe': binary, 'version': version, 'guard_hook': guard_hook(), 'hooks': str(hooks_file()),
                       'state': str(STATE), 'runs': len(runs),
@@ -368,6 +412,7 @@ def clean(days, keep, apply):
 
 
 def main(argv=None):
+    utf8_console()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('status')

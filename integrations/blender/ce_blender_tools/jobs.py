@@ -11,6 +11,10 @@ import subprocess
 import tempfile
 
 KINDS = {"profile_preflight", "profile_turnaround", "preflight", "turnaround"}
+WINDOWS = os.name == "nt"  # (0.31)
+# Windows only; the fallbacks let tests drive the Windows branch on every system
+CTRL_BREAK = getattr(signal, "CTRL_BREAK_EVENT", 1)
+NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
 
 
 def current_asset(filepath: str, saved: bool, dirty: bool) -> str:
@@ -64,9 +68,11 @@ class Job:
         self.escalated = False
         self.request = json.loads((self.directory / "request.json").read_text(encoding="utf-8"))
         self.log = (self.directory / "process.log").open("wb")
+        # (0.31) Windows: a console group of its own, so Ctrl+Break reaches the supervisor alone (cancel below)
+        group = {"creationflags": NEW_GROUP} if WINDOWS else {}
         try:
             self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=self.log,
-                                            stderr=subprocess.STDOUT, start_new_session=os.name == "posix")
+                                            stderr=subprocess.STDOUT, start_new_session=os.name == "posix", **group)
         except Exception:
             self.log.close()
             raise
@@ -96,6 +102,9 @@ class Job:
             return
         self.cancelling = True
         self.cancelled_at = time.monotonic()
+        if WINDOWS:
+            self._break_windows()
+            return
         if self.process.poll() is None:
             try:
                 # Only the supervisor receives TERM here. Its existing run_group
@@ -104,8 +113,37 @@ class Job:
             except ProcessLookupError:
                 pass
 
+    def _break_windows(self):
+        """(0.31) Windows has no TERM: Ctrl+Break for the supervisor's console group. heavy_lock run forwards it to its
+        worker job and, the second time, ends that whole job (TerminateJobObject) while the supervisor itself stays
+        and waits until the job is empty - the lock is never free early. A profile check is its own process and ends
+        on it. Without a shared console (GenerateConsoleCtrlEvent refused) the process is terminated; its job dies
+        with it (kill on close), so nothing outlives it."""
+        if self.process.poll() is not None:
+            return
+        try:
+            os.kill(self.process.pid, CTRL_BREAK)
+        except OSError:
+            try:
+                self.process.kill()
+            except OSError:
+                pass
+
     def _escalate_if_due(self):
         """Kill only the attested worker group; the lock supervisor stays alive."""
+        if (WINDOWS and self.cancelling and not self.escalated
+                and time.monotonic() - self.cancelled_at >= self.cancel_grace):
+            # (0.31) the supervisor's job is its attested group: a second Ctrl+Break makes it end the job; a profile
+            # check has no supervisor and is ended itself
+            if self.request["kind"] in {"preflight", "turnaround"}:
+                self._break_windows()
+            else:
+                try:
+                    self.process.kill()
+                except OSError:
+                    pass
+            self.escalated = True
+            return
         if (not self.cancelling or self.escalated or os.name != "posix"
                 or time.monotonic() - self.cancelled_at < self.cancel_grace):
             return

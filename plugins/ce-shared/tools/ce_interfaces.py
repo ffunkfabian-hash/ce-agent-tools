@@ -269,8 +269,11 @@ def _worker(kind, root, options):
 
 def _native(kind, root, options):
     command = [sys.executable, "-B", str(Path(__file__).resolve()), "--worker", kind, str(root), json.dumps(options)]
-    result = subprocess.run(command, cwd=root, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-                            capture_output=True, text=True, timeout=60)
+    # (0.31) Windows: the worker's JSON (ensure_ascii=False) as UTF-8 both ways, not cp1252; nothing extra on POSIX
+    utf8 = {"encoding": "utf-8", "errors": "replace"} if os.name == "nt" else {}
+    extra = {"PYTHONIOENCODING": "utf-8"} if utf8 else {}
+    result = subprocess.run(command, cwd=root, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **extra},
+                            capture_output=True, text=True, timeout=60, **utf8)
     if result.returncode: raise ValueError(f"{kind} validator failed: {result.stderr[-2000:] or result.stdout[-2000:]}")
     report = json.loads(result.stdout)
     if not isinstance(report, dict) or type(report.get("checked")) is not int or not isinstance(report.get("findings"), list):
@@ -349,4 +352,9 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    try:  # (0.31) Windows: a cp1252 console or pipe cannot take the tool's „“ → ·
+        import ce_common as _console
+        _console.utf8_console()
+    except ImportError:
+        pass
     sys.exit(main())

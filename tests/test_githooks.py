@@ -18,6 +18,19 @@ sys.path[:0] = [str(SCRIPT.parent), str(SCRIPT.parent.parent / "hooks")]
 import ce_githooks  # noqa: E402
 import guard  # noqa: E402
 
+WINDOWS = os.name == "nt"
+if WINDOWS:  # 0.31: Claude Code's Bash there is Git Bash; there is no zsh, and System32's bash is WSL
+    sys.path.insert(0, str(ROOT / "plugins" / "ce-shared" / "tools"))
+    import heavy_lock  # noqa: E402
+    SHELLS = ((heavy_lock.posix_shell("bash") or "bash-not-found (Git for Windows missing)", "-c"),)
+else:
+    SHELLS = (("/bin/bash", "-c"), ("/bin/zsh", "-f", "-c"))
+
+
+def posix(path) -> str:
+    """A path as a shell line or a Git config value writes it (Windows: with /, a backslash would be an escape)."""
+    return Path(path).as_posix() if WINDOWS else str(path)
+
 RULES = guard.load_rules(SCRIPT.parent.parent / "rules")
 
 MARKER_HOOK = '#!/bin/sh\necho "$0 $*" >> "{log}"\ncat >> "{log}"\nexit {code}\n'
@@ -39,8 +52,8 @@ class Repo:
         self.git(self.path, "push", "-q", "origin", "main")
 
     def git(self, cwd, *args, check=True, env=None):
-        result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
-                                env=dict(self.env, **(env or {})))
+        result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", env=dict(self.env, **(env or {})))
         if check and result.returncode != 0:
             raise AssertionError(f"git {args}: {result.stderr}")
         return result
@@ -56,7 +69,7 @@ class Repo:
 
     def tool(self, *args, script=SCRIPT, check=True):
         result = subprocess.run([sys.executable, str(script), *args, "--repo", str(self.path)], capture_output=True,
-                                text=True, env=self.env)
+                                text=True, encoding="utf-8", errors="replace", env=self.env)
         if check and result.returncode != 0:
             raise AssertionError(result.stderr + result.stdout)
         return result
@@ -239,6 +252,8 @@ class ChainTests(GitHookTestCase):
         self.repo.tool("install")
         self.repo.run("checkout", "-q", "-b", "feature")
         self.assertNotEqual(self.repo.commit("x", check=False).returncode, 0)
+        if WINDOWS:  # the failing hook was checked above; there is no execute bit to take away
+            self.skipTest("Windows: Git Bash takes every file with #! as executable")
         (hooks / "pre-commit").chmod(0o644)
         self.assertEqual(self.repo.commit("y").returncode, 0)
 
@@ -260,7 +275,7 @@ class ChainTests(GitHookTestCase):
         global_hooks = self.base / "global hooks"
         log = self.hook(global_hooks, "commit-msg")
         with open(self.base / "gitconfig", "a") as config:
-            config.write(f'[core]\n\thooksPath = "{global_hooks}"\n')
+            config.write(f'[core]\n\thooksPath = "{posix(global_hooks)}"\n')
         self.repo.tool("install")
         self.assertTrue((self.base / "work/.git/ce-hooks/commit-msg").is_file())
         self.repo.run("checkout", "-q", "-b", "feature")
@@ -318,7 +333,7 @@ class InstallTests(GitHookTestCase):
         self.assertEqual(self.repo.run("config", "--get", "core.hooksPath", check=False).stdout, "")
 
     def test_paths_with_spaces_and_quotes_work(self):
-        odd_base = self.base / "it's a \"repo\" $HOME"
+        odd_base = self.base / ("it's a repo $HOME" if WINDOWS else "it's a \"repo\" $HOME")  # Windows: no " in names
         odd_base.mkdir()
         odd = Repo(odd_base, name="work tree")
         odd.tool("install")
@@ -425,7 +440,7 @@ class PrecheckBoundaryTests(GitHookTestCase):
     def sha(self, ref, repo=None):
         return (repo or self.repo).run("rev-parse", "-q", "--verify", ref, check=False).stdout.strip() or None
 
-    def line(self, text, start="main", repo=None, env=None, shell=("/bin/bash", "-c")):
+    def line(self, text, start="main", repo=None, env=None, shell=SHELLS[0]):
         """Pre-check verdict of the line in the start state, then the line run by bash: (verdict, completed run)."""
         repo = repo or self.repo
         repo.run("switch", "-q", start)
@@ -488,7 +503,7 @@ class PrecheckBoundaryTests(GitHookTestCase):
         missing logical target falls back to the physical path, a link undone by `..`) the line keeps the net's note."""
         (self.repo.path / "sub").mkdir()
         (self.second.path / "jump").symlink_to(self.repo.path / "sub")
-        to_main, to_second = os.path.relpath(self.repo.path, self.second.path), os.path.relpath(self.second.path, self.repo.path)
+        to_main, to_second = posix(os.path.relpath(self.repo.path, self.second.path)), posix(os.path.relpath(self.second.path, self.repo.path))
         cases = [  # (repo of the hook folder, line, verdict, the shell tried to commit on main)
             (self.second, f"cd {to_main} && git commit --allow-empty -m x", "block", True),
             (self.second, f"cd '{self.repo.path}' && git commit --allow-empty -m x", "block", True),
@@ -500,7 +515,7 @@ class PrecheckBoundaryTests(GitHookTestCase):
             (self.second, "cd jump/../sub && git commit --allow-empty -m x", "net", True),  # physically main/sub
             (self.second, "cd jump/.. && git commit --allow-empty -m x", "net", False),  # cd -L: work; cd -P: main
             (self.repo, "cd ../missing && git commit --allow-empty -m x", "net", False)]
-        for shell in (("/bin/bash", "-c"), ("/bin/zsh", "-f", "-c")):
+        for shell in SHELLS:
             for repo, text, expected, on_main in cases:
                 main, work = self.sha("main"), self.sha("work", self.second)
                 verdict, run = self.line(text, "main" if repo is self.repo else "work", repo=repo, shell=shell)
