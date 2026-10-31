@@ -14,7 +14,7 @@ Index: ~/Library/Caches/CubeEscape/search/index.sqlite, Windows %LOCALAPPDATA%/C
 it). Repos: --repo, CE_REPOS (Windows: ';'-separated), or the standard checkouts under ~/Claude. A hit returns repo,
 path, heading, lines and the chunk text, so the agent cites the source and reads only that part. Pure standard library; embeddings are optional (CE_SEARCH_EMBED=0 turns them off even when installed).
 
-Claude Code / Codex: add to .mcp.json  {"mcpServers": {"ce-search": {"command": "python3", "args": ["<tools>/ce_search.py", "serve"]}}}
+Claude Code / Codex: add to .mcp.json  {"mcpServers": {"ce-search": {"command": "sh", "args": ["<plugin>/hooks/ce-python", "<tools>/ce_search.py", "serve"]}}} (0.31: ce-python picks python3 or, on Windows, py)
 """
 from __future__ import annotations
 

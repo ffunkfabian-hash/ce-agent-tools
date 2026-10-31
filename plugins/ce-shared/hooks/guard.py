@@ -328,7 +328,8 @@ def windows_cd_target(path, cwd):
     a relative path with /; anything else stays with the net - other mounts (/tmp, /usr), UNC paths, a drive without
     a slash (G:x), backslashes in a relative path, a bare name while CDPATH is set. Windows itself folds `..` before
     it looks at links, so the physical walk (cd -P: `..` from the link's target) is done by hand and must agree with
-    the logical one (cd -L, the default)."""
+    the logical one (cd -L, the default). Limit: /g/x is read as Git Bash does; a client whose shell on Windows is
+    PowerShell (Codex, Antigravity - not measured) reads it as <drive>:\\g\\x - only an existing such folder misleads."""
     drive = MSYS_DRIVE.match(path)
     if drive:
         path = drive.group(1).upper() + ":/" + path[drive.end():].lstrip("/")

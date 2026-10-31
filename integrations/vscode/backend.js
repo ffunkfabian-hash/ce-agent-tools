@@ -38,8 +38,9 @@ function execute(python, script, args, cwd, allowedCodes = [0], runner = spawn,
       try {
         if (grouped) process.kill(-child.pid, signal);
         // Windows has no POSIX process-group signalling: the whole tree at once, while the parent still links it
-        // (a TERM stage that ended only the parent would orphan a TERM-ignoring child); KILL repeats it.
-        else killTree(child.pid);
+        // (a TERM stage that ended only the parent would orphan a TERM-ignoring child); KILL repeats it. Never once
+        // the parent has ended: its pid may already belong to another program, and taskkill /T would end that tree.
+        else if (child.exitCode == null && child.signalCode == null) killTree(child.pid);
       } catch (error) {
         if (error.code !== 'ESRCH') {
           abortError = new Error(`${abortError.message}; Prozessabbruch fehlgeschlagen: ${error.message}`);

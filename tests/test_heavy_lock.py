@@ -52,6 +52,8 @@ class LockCase(unittest.TestCase):
         fd = os.open(self.lock, os.O_RDWR | os.O_CREAT | heavy.OPEN_FLAGS, 0o644)
         try:
             try_lock(fd)
+            if WINDOWS:  # a closed handle frees its lock only "when resources allow"
+                heavy.unlock_fd(fd)
             return True
         except BlockingIOError:
             return False
@@ -380,8 +382,9 @@ class ProcessGroups(LockCase):
 
     def test_scripts_start_on_every_system(self):
         """Windows starts only programs (WinError 193 for verify.sh): scripts go through Git Bash or this Python."""
-        scripts = {"run.sh": "echo plain\n", "zsh.sh": "#!/bin/zsh\necho z\n", "env.py": "#!/usr/bin/env python3\n",
-                   "bash": "#!/usr/bin/env -S bash -e\n", "tool": "binary"}
+        scripts = {"run.sh": "echo plain\n", "zsh.sh": "#!/bin/zsh -f\necho z\n", "env.py": "#!/usr/bin/env python3\n",
+                   "bash": "#!/usr/bin/env -S bash -eu\n", "strict.sh": "#!/bin/bash -e -o pipefail\nfalse\necho ran on\n",
+                   "tool": "binary"}
         for name, text in scripts.items():
             (self.base / name).write_text(text)
         argv = lambda name: heavy.script_argv([str(self.base / name), "--x"])
@@ -391,15 +394,42 @@ class ProcessGroups(LockCase):
             return
         sh, bash = heavy.posix_shell("sh"), heavy.posix_shell("bash")
         self.assertNotIn("system32", (sh + bash).lower(), "never WSL")
-        self.assertEqual(argv("run.sh")[:1], [sh])
-        self.assertEqual(argv("zsh.sh")[:1], [bash], "no zsh on Windows")
-        self.assertEqual(argv("bash")[:1], [bash])
+        path = lambda name: str(self.base / name)
+        self.assertEqual(argv("run.sh"), [sh, path("run.sh"), "--x"])
+        self.assertEqual(argv("zsh.sh"), [bash, path("zsh.sh"), "--x"], "no zsh on Windows; zsh -f is not bash -f")
+        self.assertEqual(argv("bash"), [bash, "-eu", path("bash"), "--x"], "the shebang's options stay (-e)")
+        strict = subprocess.run(heavy.script_argv([path("strict.sh")]), capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(strict.returncode, 0, "bash -e stops at `false` as on the Mac")
+        self.assertNotIn("ran on", strict.stdout)
         self.assertEqual(argv("env.py"), [sys.executable, str(self.base / "env.py"), "--x"])
         self.assertEqual(argv("tool"), [str(self.base / "tool"), "--x"])
         self.assertEqual(heavy.script_argv(["git", "status"]), ["git", "status"])
         code = subprocess.call([sys.executable, str(SCRIPT), "run", "--", str(self.base / "run.sh")],
                                env=os.environ.copy(), timeout=30)
         self.assertEqual(code, 0, "heavy_lock run starts a .sh script")
+
+    @unittest.skipUnless(WINDOWS, "Windows job objects")
+    def test_windows_failed_job_setup_never_leaves_a_suspended_command(self):
+        """Resume refused: the command is ended and the start fails. Assignment refused: the command still runs and
+        is waited for on its own (no job)."""
+        command = [sys.executable, "-c", "import time; time.sleep(30)"]
+        started = []
+        real_popen = heavy.subprocess.Popen
+        def popen(*args, **kw):
+            started.append(real_popen(*args, **kw))
+            return started[-1]
+        with mock.patch.object(heavy.subprocess, "Popen", side_effect=popen), \
+                mock.patch.object(heavy._ntdll, "NtResumeProcess", return_value=-1):
+            with self.assertRaises(OSError):
+                heavy.spawn_group(command)
+        self.assertEqual(started[0].wait(timeout=10), started[0].returncode, "the suspended command was ended")
+        with mock.patch.object(heavy._k32, "AssignProcessToJobObject", return_value=0):
+            child, group = heavy.spawn_group([sys.executable, "-c", "import time; time.sleep(0.5)"])
+        self.assertIsNone(group.handle, "no job")
+        self.assertTrue(group.alive())
+        self.assertEqual(child.wait(timeout=10), 0, "it ran (was resumed)")
+        self.assertFalse(group.alive())
+        heavy.close_group(group)
 
     def test_pid_alive_never_ends_the_process(self):
         """Windows' os.kill(pid, 0) is TerminateProcess - pid_alive must only look."""

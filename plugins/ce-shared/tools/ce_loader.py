@@ -415,7 +415,8 @@ def main(argv: list[str], env=None) -> int:
 
 
 def windows_sh(env) -> str | None:
-    """Git for Windows' sh.exe (next to git.exe), else an sh on PATH - never one in System32 (WSL)."""
+    """Git for Windows' sh.exe (next to git.exe), else an sh on PATH - never one in System32 (WSL). Twin of
+    heavy_lock.posix_shell (this loader imports nothing from the tools) - change both."""
     git = shutil.which("git", path=env.get("PATH"))
     candidates = []
     if git:

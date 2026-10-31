@@ -8,7 +8,7 @@
 - `guard.py` und Regeln: `commit-on-main` findet Git for Windows nur unter den Programmordnern (nie PATH), feste Systemumgebung; `cd`-Ziele in Laufwerks- und Git-Bash-Form (`G:\x`, `G:/x`, `/g/x`), physischer Weg von Hand (Windows faltet `..` vor Links). `unity-nie-auf-checkout` erkennt jeden Pfad `…/Claude/Cube Escape` auch mit `\`, Laufwerk, `/g/…`, `~` und der Verbindung `C:\Users\…\Claude` (auch am Mac: `~/Claude/Cube Escape` sperrt jetzt), `actions-sparsam` auch mit `\`.
 - Git-Netz: Wrapper mit LF (Windows schrieb CRLF), Meldungen in UTF-8.
 - Weitere Windows-Fixes: `os.kill(pid, 0)` (= TerminateProcess) in `ce_await_mail`/Postfach-Hooks ersetzt; Ortserkennung „Windows“; Vibe-Abbruch über das Job-Objekt; Nachtlauf mit `SetThreadExecutionState` statt `caffeinate`, launchd-Befehle unter Windows mit Exit 2 und Hinweis; `ce_api_budget` ohne `fcntl`; UTF-8 für Konsole, Git-/gh-Ausgabe und Dateien (`ce_common.utf8_console`); `CE_REPOS`/`CE_TIDY_WORKTREE_ROOTS` an `os.pathsep` (Windows `;`); Windows-Pfadschreibweisen im Worktree-Schutz; Blender- und VS-Code-Abbruch ohne `killpg`.
-- Tests: Windows 710 grün (5 übersprungen, vorher 118 rot von 532), Linux (WSL Ubuntu) siehe Bericht; neue Windows-Tests für Sperre, Job-Objekt, Ctrl+Break, Breakaway, Skriptstart, Lader-Exitcode, Regeln mit Windows- und Mac-Befehlen, eingetragenen Hook-Befehl. Mac-Probe offen. [Version](docs/versions/0.31.md).
+- Tests: Windows 712 grün (5 übersprungen, vorher 118 rot von 532), Linux (WSL Ubuntu) siehe Bericht; neue Windows-Tests für Sperre, Job-Objekt, Ctrl+Break, Breakaway, Skriptstart, Lader-Exitcode, Regeln mit Windows- und Mac-Befehlen, eingetragenen Hook-Befehl. Mac-Probe offen. [Version](docs/versions/0.31.md).
 
 ## 0.30.0 „Second Opinion“ – unveröffentlicht
 

@@ -9,7 +9,7 @@
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 py=python3
-if [ "${OS:-}" = Windows_NT ]; then  # 0.31: python3 there is often the Store stub (exit 49); like hooks/ce-python
+if [ "${OS:-}" = Windows_NT ]; then  # 0.31: python3 there is often the Store stub (exit 49); twin of hooks/ce-python
   if command -v py >/dev/null 2>&1; then py=py; else
     for candidate in python3 python; do "$candidate" -c "" </dev/null >/dev/null 2>&1 && { py="$candidate"; break; }; done
   fi

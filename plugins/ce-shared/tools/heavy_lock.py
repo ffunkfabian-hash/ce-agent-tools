@@ -94,7 +94,8 @@ if WINDOWS:
     _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _LOCK_OFFSET_HIGH = 0x40000000  # byte 2**62: never data
     _ERROR_LOCK_VIOLATION, _ERROR_INVALID_PARAMETER, _STILL_ACTIVE = 33, 87, 259
-    _CREATE_SUSPENDED, _CREATE_BREAKAWAY_FROM_JOB = 0x4, 0x01000000
+    _CREATE_SUSPENDED = 0x4
+    _JOB_BASIC_ACCOUNTING, _JOB_EXTENDED_LIMIT = 1, 9  # JOBOBJECTINFOCLASS
     _PROCESS_TERMINATE, _PROCESS_SET_QUOTA, _PROCESS_SUSPEND_RESUME = 0x1, 0x100, 0x800
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     _JOB_LIMIT_BREAKAWAY_OK, _JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x800, 0x2000
@@ -235,7 +236,8 @@ class _Job:
             if job and process:
                 limits = _EXTENDED_LIMIT()
                 limits.BasicLimitInformation.LimitFlags = _JOB_LIMIT_KILL_ON_JOB_CLOSE | _JOB_LIMIT_BREAKAWAY_OK
-                if (_k32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))
+                size = ctypes.sizeof(limits)
+                if (_k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT, ctypes.byref(limits), size)
                         and _k32.AssignProcessToJobObject(job, process)):
                     self.handle, job = job, None
             if job:
@@ -255,7 +257,8 @@ class _Job:
     def alive(self) -> bool:
         if self.handle:
             info = _ACCOUNTING()
-            if _k32.QueryInformationJobObject(self.handle, 1, ctypes.byref(info), ctypes.sizeof(info), None):
+            if _k32.QueryInformationJobObject(self.handle, _JOB_BASIC_ACCOUNTING, ctypes.byref(info),
+                                              ctypes.sizeof(info), None):
                 return info.ActiveProcesses > 0
         return self.child.poll() is None
 
@@ -283,7 +286,8 @@ class _Job:
 
 def posix_shell(name: str = "sh") -> str | None:
     """Windows: Git for Windows' sh or bash (next to git.exe), else one on PATH - never System32's bash.exe, which is
-    WSL (another system with other paths). POSIX: the name itself."""
+    WSL (another system with other paths). POSIX: the name itself. Twin: ce_loader.windows_sh (the loader stays
+    standard-library-only and on its own) - change both."""
     if not WINDOWS:
         return name
     import shutil
@@ -317,14 +321,17 @@ def script_argv(argv: list) -> list:
         return argv
     words = first[2:].split() if first.startswith("#!") else []
     if words and os.path.basename(words[0]) == "env":
-        words = [word for word in words[1:] if not word.startswith("-")]
+        words = words[1:]
+        while words and words[0].startswith("-"):  # env's own options (-S)
+            words = words[1:]
     program = os.path.basename(words[0]).lower() if words else ""
+    flags = [word for word in words[1:] if word.startswith("-")]  # bash -eu: without -e a failure would end with 0
     if program.startswith("python"):
-        return [sys.executable, *argv]
+        return [sys.executable, *flags, *argv]
     if program in ("bash", "zsh") or (not program and script.lower().endswith(".sh")) or program == "sh":
         shell = posix_shell("sh" if program == "sh" or not program else "bash")
-        if shell:
-            return [shell, *argv]
+        if shell:  # zsh's options mean other things in bash (-f): those are dropped
+            return [shell, *([] if program == "zsh" else flags), *argv]
     return argv
 
 

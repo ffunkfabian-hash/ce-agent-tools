@@ -40,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
 import ce_worktrees  # noqa: E402
+import heavy_lock  # noqa: E402 - cache_dir(), the one source of the cache path (0.31)
 
 CATEGORIES = ("worktree", "befehl", "ausgabe", "beleg")
 MARKERS = ("nicht löschen", "nicht_löschen", "nicht-löschen", "nicht loeschen", "nicht_loeschen", "nicht-loeschen")
@@ -57,8 +58,11 @@ class Context:
         self.trash = Path(os.environ.get("CE_TRASH") or self.home / ".Trash")
         self.caches = real(self.home / "Library" / "Caches")
         # (0.31) Windows has no ~/Library/Caches; only CubeEscape's own cache folder there (heavy_lock.cache_dir),
-        # not all of %LOCALAPPDATA%, which also holds programs and their data. POSIX: None
-        self.windows_caches = real(self.home / "AppData" / "Local" / "CubeEscape") if ce_common.WINDOWS else None
+        # not all of %LOCALAPPDATA%, which also holds programs and their data. A test home (CE_TIDY_HOME) keeps its
+        # own AppData\Local. POSIX: None
+        windows_caches = (Path(heavy_lock.cache_dir()) if self.home == Path.home().resolve()
+                          else self.home / "AppData" / "Local" / "CubeEscape")
+        self.windows_caches = real(windows_caches) if ce_common.WINDOWS else None
         self.mains = [real(m) for m in mains or []]
 
     def in_caches(self, path: Path) -> bool:
@@ -335,7 +339,8 @@ def output_rows(repo: Path, main: Path, config: dict, ctx: Context, sizes: bool)
             raise ce_common.RepoError(f"tidy.paths {name}: root fehlt")
         root = real(expand(entry["root"], main, ctx))
         if not (inside(root, main) or ctx.in_caches(root)):
-            raise ce_common.RepoError(f"tidy.paths {name}: {root} liegt weder im Haupt-Checkout noch in ~/Library/Caches")
+            raise ce_common.RepoError(f"tidy.paths {name}: {root} liegt weder im Haupt-Checkout noch in "
+                                        f"{'%LOCALAPPDATA%/CubeEscape' if ce_common.WINDOWS else '~/Library/Caches'}")
         if protected(root, ctx) == "_rettung" or has_marker(root):
             raise ce_common.RepoError(f"tidy.paths {name}: {root} ist geschützt")
         if not root.is_dir():

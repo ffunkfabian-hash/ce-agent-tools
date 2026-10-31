@@ -124,6 +124,19 @@ test('windows timeout ends the whole tree of the own child, never a group signal
   assert.deepEqual(killed, [4242, 4242]);
 });
 
+test('windows never ends a tree after the own child has exited (its pid may be reused)', async () => {
+  const killed = [];
+  const child = new EventEmitter();
+  child.pid = 4243; child.exitCode = null; child.signalCode = null;
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  child.stdout.setEncoding = child.stderr.setEncoding = () => {};
+  setTimeout(() => { child.exitCode = 3; child.emit('close', 3, null); }, 5);
+  await assert.rejects(execute('python', 'diff', [], '/', [0], () => child,
+    { timeoutMs: 1000, killGraceMs: 10, closeWaitMs: 10, platform: 'win32', killTree: pid => killed.push(pid) }),
+  /fehlgeschlagen/);
+  assert.deepEqual(killed, [], 'exit with an error code: nothing left to end, no taskkill on a stale pid');
+});
+
 test('real timeout kills the owned group including a TERM-ignoring child and removes render output',
   { timeout: 8000 }, async () => {
     const tools = await fs.mkdtemp(path.join(os.tmpdir(), 'ce-prism-job-test-'));
