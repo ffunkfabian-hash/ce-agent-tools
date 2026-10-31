@@ -458,6 +458,7 @@ COMMAND_CHARS = 160
 
 WINDOWS_PS = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object "
               "{ '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }")
+TABLE_SECONDS = 20.0 if WINDOWS else 5.0  # PowerShell starts in seconds under load, ps at once
 
 
 def process_table(runner=subprocess.run) -> dict:
@@ -466,7 +467,7 @@ def process_table(runner=subprocess.run) -> dict:
     command = (["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_PS] if WINDOWS
                else ["ps", "-A", "-o", "pid=,ppid=,command="])
     try:
-        out = runner(command, capture_output=True, text=True, timeout=20 if WINDOWS else 5,
+        out = runner(command, capture_output=True, text=True, timeout=TABLE_SECONDS,
                      **({"encoding": "utf-8", "errors": "replace"} if WINDOWS else {})).stdout
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return {}

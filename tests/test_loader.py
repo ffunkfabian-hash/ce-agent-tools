@@ -28,7 +28,8 @@ WINDOWS = os.name == "nt"
 # Windows (0.31): Git Bash's pwd says /tmp/…, pwd -W the Windows folder (with /); python3 is the Store stub there
 FAKE_CE = '#!/bin/sh\necho "fake ce $* in $(pwd%s)"\n' % (" -W" if WINDOWS else "")
 PYTHON = Path(sys.executable).as_posix() if WINDOWS else "python3"
-BASH = ce_loader.windows_sh(os.environ).replace("sh.exe", "bash.exe") if WINDOWS else "bash"  # not System32's (WSL)
+BASH = ((ce_loader.windows_sh(os.environ) or "bash.exe").replace("sh.exe", "bash.exe") if WINDOWS
+        else "bash")  # not System32's (WSL); only CiStep uses it, skipped on Windows
 
 
 def shown(path) -> str:
@@ -337,6 +338,15 @@ class Entry(LoaderCase):
         self.assertTrue(list((self.base / "cache" / ".pycache").rglob("ce_helper*.pyc")), "bytecode lands in the prefix")
         self.assertFalse(list((self.base / "inherited").rglob("ce_helper*.pyc")))
         self.assertIn("(cache,", self.run_ce("tools", "where").stdout)
+
+    def test_a_crlf_loader_copy_is_rewritten(self):
+        """0.31: ce_sync compared as text, so a CRLF ./ce (Windows text mode) counted as current and was never repaired."""
+        ce_sync.sync(self.repo, self.config, ce_sync.source_dir())
+        target = self.repo / "ce"
+        target.write_bytes(target.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertEqual(ce_sync.sync(self.repo, self.config, ce_sync.source_dir()), ["ce"])
+        self.assertNotIn(b"\r\n", target.read_bytes())
+        self.assertEqual(ce_sync.sync(self.repo, self.config, ce_sync.source_dir()), [], "current: nothing to do")
 
     def test_tools_where_fetch_and_offline_exit_code(self):
         fetch = self.run_ce("tools", "fetch")

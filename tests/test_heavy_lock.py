@@ -422,7 +422,8 @@ class ProcessGroups(LockCase):
                 mock.patch.object(heavy._ntdll, "NtResumeProcess", return_value=-1):
             with self.assertRaises(OSError):
                 heavy.spawn_group(command)
-        self.assertEqual(started[0].wait(timeout=10), started[0].returncode, "the suspended command was ended")
+        started[0].wait(timeout=10)  # raises when it still runs (or still hangs suspended)
+        self.assertFalse(heavy.pid_alive(started[0].pid), "the suspended command was ended")
         with mock.patch.object(heavy._k32, "AssignProcessToJobObject", return_value=0):
             child, group = heavy.spawn_group([sys.executable, "-c", "import time; time.sleep(0.5)"])
         self.assertIsNone(group.handle, "no job")

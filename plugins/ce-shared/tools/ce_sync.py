@@ -109,7 +109,7 @@ def uses_loader(config: dict) -> bool:
 def sync_loader(root: Path, source: Path) -> list[str]:
     new = embed((source / LOADER).read_text(encoding="utf-8"), plugin_version(source) or "?")
     path = root / LOADER_TARGET
-    if path.is_file() and path.read_text(encoding="utf-8") == new:
+    if path.is_file() and path.read_bytes() == new.encode("utf-8"):  # (0.31) bytes: a CRLF copy is not "equal"
         return []
     path.write_text(new, encoding="utf-8", newline="")  # (0.31) LF on Windows too, like the plugin
     path.chmod(0o755)
@@ -165,7 +165,7 @@ def sync(root: Path, config: dict, source: Path) -> list[str]:
     for name in SYNC_FILES:
         new = embed((source / name).read_text(encoding="utf-8"), version)
         path = target / name
-        if not path.is_file() or path.read_text(encoding="utf-8") != new:
+        if not path.is_file() or path.read_bytes() != new.encode("utf-8"):  # (0.31) a CRLF copy gets repaired
             path.write_text(new, encoding="utf-8", newline="")  # (0.31) Windows would write CRLF
             path.chmod(0o755)
             changed.append(name)

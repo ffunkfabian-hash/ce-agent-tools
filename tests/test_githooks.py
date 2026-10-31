@@ -22,7 +22,7 @@ WINDOWS = os.name == "nt"
 if WINDOWS:  # 0.31: Claude Code's Bash there is Git Bash; there is no zsh, and System32's bash is WSL
     sys.path.insert(0, str(ROOT / "plugins" / "ce-shared" / "tools"))
     import heavy_lock  # noqa: E402
-    SHELLS = ((heavy_lock.posix_shell("bash"), "-c"),)
+    SHELLS = ((heavy_lock.posix_shell("bash") or "bash-not-found (Git for Windows missing)", "-c"),)
 else:
     SHELLS = (("/bin/bash", "-c"), ("/bin/zsh", "-f", "-c"))
 
@@ -252,8 +252,8 @@ class ChainTests(GitHookTestCase):
         self.repo.tool("install")
         self.repo.run("checkout", "-q", "-b", "feature")
         self.assertNotEqual(self.repo.commit("x", check=False).returncode, 0)
-        if WINDOWS:  # no execute bit: Git Bash takes every file with #! as executable
-            return
+        if WINDOWS:  # the failing hook was checked above; there is no execute bit to take away
+            self.skipTest("Windows: Git Bash takes every file with #! as executable")
         (hooks / "pre-commit").chmod(0o644)
         self.assertEqual(self.repo.commit("y").returncode, 0)
 
