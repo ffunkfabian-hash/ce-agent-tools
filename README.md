@@ -27,7 +27,7 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | `teleport-nur-frisch` | blockiert | Teleport einer Cloud-Sitzung aus einer laufenden Sitzung heraus (verwarf zweimal offene Arbeit) |
 | `unity-nie-auf-checkout` | blockiert | Unity oder die Unity-CLI mit einem Cube-Escape-Checkout als Projekt (`-projectPath`, `--project-path`, `unity open/run/build`) |
 | `unity-cli-ziel-nennen` | blockiert | `unity mcp/command/list/job/eval/pipeline install` ohne `--project-path` (die CLI nähme sonst irgendeinen Editor) |
-| `commit-on-main` | blockiert | ein einfacher `git commit`, dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
+| `commit-on-main` | blockiert | ein einfacher `git commit` (auch hinter einem führenden `cd <Pfad> &&`), dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; andere zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
 | `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` |
 | `heavy-unlocked`, `output-cap`, `judge-template` | warnt | schwerer Lauf ohne sichtbare Sperre; ganze JSON-/Log-Datei ausgeben; `codex exec` ohne Checkliste |
 | `merge-nur-sightline` | blockiert | 0.22: `gh pr merge` (auch `--auto`), `gh api … PUT …/pulls/N/merge`, GraphQL `mergePullRequest`/`enablePullRequestAutoMerge` (auch nach `NAME=wert`, `env`, `bash -c`, `eval`) und die GitHub-MCP-Werkzeuge `merge_pull_request`/`enable_pr_auto_merge` – außer in der Sitzung Sightline (reservierter Name `Sightline` in `<git-dir>/ce-session.json` oder `CE_ROLE=sightline`). `git merge origin/main` (main einholen), `gh pr view/create` und `gh pr merge --help` bleiben frei. Feld `merge_attempt`, Ereignis `all`, Logik nur in `guard.py`; ein Lesefehler lässt durch |
@@ -47,7 +47,19 @@ fester Umgebung – nie ein `git`, `PATH` oder Loader aus der geprüften Zeile o
 nicht. Ist der Branch nicht lesbar (kein System-Git, Zeitlimit, unerwarteter Git-Fehler) oder scheitert die Prüfung
 intern, läuft der Befehl mit Hinweis weiter; die übrigen Regeln werden trotzdem geprüft.
 
-**Nicht nachgebildet** wird die Shell: Präfix-Zuweisungen, Operatoren (`&&`, `;`, `|`, `&`, Zeilenumbruch), Subshells, Gruppen, Variablen,
+**Eine zusammengesetzte Form zusätzlich ([0.28](docs/versions/0.28.md)):** `cd <Pfad> && git … commit …`, wie Mistral Vibe
+committet. Bedingungen: `&&` ist das einzige Konstrukt der Zeile; davor steht das eingebaute `cd` mit genau einem festen
+Pfad (keine Option, kein `-`, `+N`, `''`, keine Variable/Muster/`~user`); dahinter ein einfacher `git … commit` wie oben.
+Beurteilt wird der Branch im Zielordner (relativ zu `cwd`; `git -C` danach gilt relativ dazu), aber nur, wenn jede Shell
+dort landet: Das Ziel existiert, jedes `..` folgt auf einen vorhandenen Ordner (bash und zsh lassen `datei/..` und
+`fehlt/..` scheitern), und der logische Pfad (`cd -L`) ist der physische (`cd -P`, `set -P`, zsh `chase_dots`) – kein
+Link wird durch `..` wieder verlassen. Ein bloßer relativer Name (`cd sub`) zählt nur, solange `CDPATH` im Hook-Prozess
+leer ist; `./`, `../` und absolute Pfade immer. Sonst, auch bei fehlendem Ziel (bash und zsh versuchen dann den
+physischen Pfad), Hinweis und Git-Netz. Ist `cd` in der Shell eine Funktion oder ein Alias (z. B. zoxide) oder setzt erst eine
+Startdatei `CDPATH`, kann das Ziel abweichen; dann bleibt das Git-Netz die Schranke. `tests/test_githooks.py` belegt mit
+echter bash und zsh, dass die Shell dort landet, wo die Vorabprüfung nachsah.
+
+**Nicht nachgebildet** wird die Shell: Präfix-Zuweisungen, Operatoren (`&&` außer in der `cd`-Form, `;`, `|`, `&`, Zeilenumbruch), Subshells, Gruppen, Variablen,
 Befehlsersetzungen (auch Claudes übliches `git commit -m "$(cat <<'EOF' …)"`), Heredocs, Umleitungen, Funktionen,
 Wrapper (`env`, `command`, `timeout` …), eingebettete Shells (`bash -c`) und nicht ausgewertete Git-Optionen. Erwähnt
 eine solche Zeile `git … commit`, geht sie mit dem Hinweis „Vorabprüfung: möglicher `git commit` … das Git-Netz

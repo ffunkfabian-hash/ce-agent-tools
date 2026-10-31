@@ -143,7 +143,8 @@ class SharedRuleTests(unittest.TestCase):
 
 class CommitOnMainTests(unittest.TestCase):
     """commit-on-main judges the branch a single simple `git commit` really lands on, in real repositories (Gatehouse:
-    a plain `git commit` in a checkout already on main used to pass). Compound lines are left to the Git net."""
+    a plain `git commit` in a checkout already on main used to pass). Compound lines are left to the Git net, except
+    `cd <path> && git … commit` (Gangway, Mistral Vibe's commit form)."""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -234,7 +235,7 @@ class CommitOnMainTests(unittest.TestCase):
     def test_compound_lines_pass_with_a_note_for_the_git_net(self):
         """Formerly read by the shell interpreter; now the Git net decides when they run."""
         main, feature = self.base / "on main", self.base / "feature"
-        self.check("net", [("git add . && git commit -m x", "on main"), (f"cd '{main}' && git commit -m x", "feature"),
+        self.check("net", [("git add . && git commit -m x", "on main"), (f"cd '{main}' && git add . && git commit", "feature"),
                            ("cd ../'on main'; git commit -m x", "feature"),
                            (f"(cd '{main}' && git commit -m x)", "feature"),
                            ("git checkout feature-x && git switch main && git commit -m x", "feature"),
@@ -242,8 +243,62 @@ class CommitOnMainTests(unittest.TestCase):
                            ("git checkout -b claude/x-patch-y && git commit -m x", "on main"),
                            ("git switch -c codex/x && git commit -m x", "on main"),
                            ("git checkout main -- f.txt && git commit -m x", "feature"),
-                           (f"cd '{feature}' && git commit -m x", "on main"),
+                           (f"cd '{feature}' && git commit -m x; echo ok", "on main"),
                            ("cat > x.sh <<'EOF'\ngit commit -m x\nEOF\nchmod +x x.sh", "on main")])
+
+    def leading_cd_folders(self):
+        """A subfolder sub of the main checkout and a link jump in the feature checkout that points to it."""
+        main = self.base / "on main"
+        (main / "sub").mkdir()
+        (self.base / "feature" / "jump").symlink_to(main / "sub")
+        environ = mock.patch.dict(os.environ)
+        environ.start()
+        self.addCleanup(environ.stop)
+        os.environ.pop("CDPATH", None)
+        return main, self.base / "feature"
+
+    def test_a_leading_cd_moves_the_judged_folder(self):
+        """Gangway: Mistral Vibe 3.0.4 commits as `cd <path> && git commit …` (probe 30.10.2026: passed with a note and
+        landed on main). That one form is judged in the cd target, relative to the hook folder like the shell."""
+        main, feature = self.leading_cd_folders()
+        self.check("block", [
+            (f"cd '{main}' && git commit -m x", "feature"), ("cd '../on main' && git commit -m x", "feature"),
+            ("cd ../'on main' && git commit -am fix", "feature"), (f"cd {self.base}/old && git commit -m x", "feature"),
+            (f"cd '{main}'&&git commit -m x", "feature"), ("cd sub && git commit -m x", "on main"),
+            ("cd '../on main/sub' && git commit -m x", "feature"), ("cd jump && git commit -m x", "feature"),
+            (f"cd '{feature}' && git -C '{main}' commit -m x", "feature"), ("cd .. && git -C 'on main' commit", "feature"),
+            (f"cd '{main}' && git commit -m x  # note", "feature"), ("'cd' ../'on main' && git commit -m x", "feature"),
+            (f"cd '{feature}' && git commit --allow-empty-message -m ''", "on main")])
+        self.check("pass", [
+            (f"cd '{feature}' && git commit -m x", "on main"), ("cd ../feature && git commit -m x", "on main"),
+            (f"cd '{main}' && git -C '{feature}' commit -m x", "feature"), ("cd ../detached && git commit", "on main"),
+            (f"cd '{self.base}' && git commit -m x", "on main"), ("cd ../feature/jump/../../feature && git commit", "on main"),
+            (f"cd '{main}' && git status", "feature")])
+
+    def test_every_other_cd_line_stays_with_the_git_net(self):
+        main, _ = self.leading_cd_folders()
+        self.check("net", [
+            (f"cd '{main}'; git commit -m x", "feature"), (f"cd '{main}' || git commit -m x", "feature"),
+            (f"cd '{main}' && git add . && git commit -m x", "feature"), (f"cd '{main}' &&\ngit commit -m x", "feature"),
+            (f"cd '{main}' && git commit -m x; echo ok", "feature"), (f"(cd '{main}' && git commit -m x)", "feature"),
+            (f"cd '{main}' && git commit -m \"$msg\"", "feature"), (f"cd '{main}' && GIT_DIR=x git commit", "feature"),
+            (f"cd '{main}' && bash -c 'git commit -m x'", "feature"), (f"cd -P '{main}' && git commit -m x", "feature"),
+            ("cd && git commit -m x", "feature"), ("cd - && git commit -m x", "feature"), ("cd +1 && git commit", "feature"),
+            ("cd -- '../on main' && git commit", "feature"), (f"cd '{main}' sub && git commit", "feature"),
+            ("cd '' && git commit -m x", "feature"), ('cd "$HOME/x" && git commit -m x', "feature"),
+            ("cd ~other && git commit -m x", "feature"), (f"cd '{self.base}'/on* && git commit -m x", "feature"),
+            (f"/usr/bin/cd '{main}' && git commit -m x", "feature"), (f"builtin cd '{main}' && git commit", "feature"),
+            (f"cd '{main}' & git commit -m x", "feature"), (f"pushd '{main}' && git commit -m x", "feature")])
+        # judge 7a/7b: the shells check the folder before `..` and try the physical path when the logical one is missing
+        (main / "f.txt").write_text("x")
+        self.check("net", [
+            ("cd missing/../'on main' && git commit -m x", "on main"), ("cd f.txt/../sub && git commit -m x", "on main"),
+            ("cd missing && git commit -m x", "on main"), (f"cd '{self.base}/missing' && git commit", "on main"),
+            ("cd jump/.. && git commit -m x", "feature"),  # cd -L: feature, cd -P (set -P, chase_dots): main
+            ("cd jump/../sub && git commit -m x", "feature")])  # no feature/sub: the shells go physically to main/sub
+        os.environ["CDPATH"] = str(self.base / "feature")  # cd searches CDPATH first: a bare name is not followed
+        self.check("net", [("cd sub && git commit -m x", "on main")])
+        self.check("block", [("cd ./sub && git commit -m x", "on main"), (f"cd '{main}' && git commit -m x", "feature")])
 
     def test_codex_and_claude_get_the_same_answer_from_the_session_folder(self):
         payload = bash("git commit -m x", cwd=str(self.base / "on main"))

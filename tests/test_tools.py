@@ -395,9 +395,7 @@ class ReleaseTests(RepoCase):
         self.assertIn("refs/heads/release/1.2.0", refs)
 
     def test_execute_pushes_to_remote_and_never_forces(self):
-        remote = self.root.parent / "remote.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
-        git(self.root, "remote", "add", "origin", str(remote))
+        remote = self.bare_remote()
         code, out = run_main(ce_release, "--repo", str(self.root), "--execute")
         self.assertEqual(code, 0, out)
         self.assertNotIn("--force", out)
@@ -411,6 +409,9 @@ class ReleaseTests(RepoCase):
     def bare_remote(self):
         remote = self.root.parent / "remote.git"
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        # Git 2.54 starts detached maintenance in the receiving repository after a push; it raced the cleanup of
+        # the scratch folder ("Directory not empty: remote.git")
+        subprocess.run(["git", "-C", str(remote), "config", "receive.autogc", "false"], check=True)
         git(self.root, "remote", "add", "origin", str(remote))
         return remote
 
@@ -454,9 +455,7 @@ class ReleaseTests(RepoCase):
         self.assertIn("FAIL git push", out)
 
     def test_existing_remote_ref_blocks(self):
-        remote = self.root.parent / "remote.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
-        git(self.root, "remote", "add", "origin", str(remote))
+        remote = self.bare_remote()
         git(self.root, "push", "-q", "origin", "HEAD:refs/heads/release/1.2.0")
         code, out = run_main(ce_release, "--repo", str(self.root))
         self.assertEqual(code, 1)

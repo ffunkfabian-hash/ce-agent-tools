@@ -27,8 +27,10 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
 - **Git-Netz:** `githooks/ce_githooks.py` (pre-commit/pre-push) unabhängig vom Client; Grenzen (Optionen, `--no-verify`)
   stehen im README › Git-Netz.
 - **Vorabprüfung begrenzt:** `commit-on-main` beurteilt vor dem Lauf nur einen einzelnen einfachen `git … commit` aus
-  festen Wörtern (README › Regeln, Feld `git_commit`); alles Zusammengesetzte geht mit Hinweis an das Git-Netz. Keine
-  Shell-Nachbildung in `guard.py` – neue Gegenbeispiele werden Laufzeittests des Netzes (`PrecheckBoundaryTests`).
+  festen Wörtern und als einzige zusammengesetzte Form `cd <fester Pfad> && git … commit` (0.28, Vibes Commit-Form;
+  README › Regeln, Feld `git_commit`); alles andere Zusammengesetzte geht mit Hinweis an das Git-Netz. Keine
+  Shell-Nachbildung in `guard.py` – neue Gegenbeispiele werden Laufzeittests des Netzes (`PrecheckBoundaryTests`); eine
+  weitere vorab beurteilte Form nur mit Nutzerentscheid und Laufzeitbeleg mit echter Shell.
 - **Fail-open:** Adapter antworten immer mit Exit 0 und gültigem Clientformat, auch wenn `guard.py` oder `client_adapter.py` nicht lädt; eingetragene
   Befehle reichen nur eine Antwort mit Exit 0 durch, sonst eine Meldung ohne Block (fehlendes Skript, Syntax-/Importfehler;
   Exit 2 hieße in Codex: alles sperren). Git-Wrapper: nur Exitcode `REJECT` ist eine Ablehnung, alles andere ein Startfehler.
