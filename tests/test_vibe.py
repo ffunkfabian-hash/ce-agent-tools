@@ -22,9 +22,10 @@ FAKE_VIBE = textwrap.dedent('''\
     args = sys.argv[1:]
     value = lambda flag: args[args.index(flag) + 1]
     work, out, mode = Path(value("--workdir")), Path(value("--output-dir")), os.environ["FAKE_VIBE_MODE"]
+    env = {k: os.environ.get(k) for k in ("GH_TOKEN", "GH_CONFIG_DIR", "GIT_CONFIG_COUNT")}
+    env.update({k: v for k, v in os.environ.items() if k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))})
     record = {"argv": args, "cwd": os.getcwd(), "prompt": Path(value("--prompt-file")).read_text(),
-              "env": {k: os.environ.get(k) for k in ("GH_TOKEN", "GH_CONFIG_DIR", "GIT_CONFIG_COUNT",
-                                                     "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")},
+              "env": env,
               "app_before": (work / "app.py").read_text(),
               "files": sorted(str(p.relative_to(work)) for p in work.rglob("*") if p.is_file() and ".git" not in p.parts)}
     if mode == "hang":
@@ -165,7 +166,27 @@ class VibeTests(unittest.TestCase):
         self.assertEqual(refs, "")
         self.assertIsNone(record["env"]["GH_TOKEN"])
         self.assertNotEqual(record["env"]["GH_CONFIG_DIR"], None)
-        self.assertEqual(record["env"]["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
+        # the push block sits behind whatever GIT_CONFIG_* entries the environment already has
+        last = int(record["env"]["GIT_CONFIG_COUNT"]) - 1
+        self.assertEqual(record["env"].get(f"GIT_CONFIG_KEY_{last}"), "remote.origin.pushurl")
+        self.assertEqual(record["env"].get(f"GIT_CONFIG_VALUE_{last}"), "ce-vibe-no-push://blocked")
+        self.assertEqual(code, 0)
+
+    def test_worker_cannot_push_with_pre_existing_git_config(self):
+        os.environ["FAKE_VIBE_MODE"] = "push"
+        preset = {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "diff.noprefix", "GIT_CONFIG_VALUE_0": "true",
+                  "GIT_CONFIG_KEY_1": "color.diff", "GIT_CONFIG_VALUE_1": "always"}
+        with mock.patch.dict(os.environ, preset):
+            code, _, _ = self.call()
+        record = json.loads(self.record.read_text())
+        self.assertNotEqual(record["push"], 0)
+        self.assertEqual(record["env"]["GIT_CONFIG_COUNT"], "3")
+        # entries already set by the caller stay untouched, the push block is appended after them
+        for key, value in preset.items():
+            if key != "GIT_CONFIG_COUNT":
+                self.assertEqual(record["env"].get(key), value)
+        self.assertEqual(record["env"].get("GIT_CONFIG_KEY_2"), "remote.origin.pushurl")
+        self.assertEqual(record["env"].get("GIT_CONFIG_VALUE_2"), "ce-vibe-no-push://blocked")
         self.assertEqual(code, 0)
 
     def test_uncommitted_changes_are_carried_but_not_in_patch(self):

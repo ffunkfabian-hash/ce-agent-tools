@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.29.0 „Plumbline“ – unveröffentlicht
+
+- `tests/test_vibe.py`: Der Push-Sperrtest nahm an, dass `GIT_CONFIG_KEY_0` frei ist, und scheiterte, wenn die Umgebung schon `GIT_CONFIG_COUNT` setzt (Cloud-Container mit 3 Einträgen). `worker_env()` hängt die Sperre korrekt hinten an; der Test prüft jetzt die Stelle `GIT_CONFIG_COUNT-1`, der Fake-Vibe zeichnet alle `GIT_CONFIG_KEY_*`/`VALUE_*` auf, und ein neuer Fall mit zwei vorab gesetzten Einträgen belegt Anhängen ohne Überschreiben (Gegenprobe: Sperre an Stelle 0 → rot). Keine Änderung am Werkzeug. Erster echter Auftrag über `./ce vibe run` (Mistral Medium 3.5, 17 Schritte, 0,23 USD Listenpreis); Patch von Sightline geprüft und im Stil der Datei vereinfacht; Vergleichslauf mit Mistral Large 4 (12 Schritte) lieferte dieselbe Lösung ohne Nacharbeit. [Version](docs/versions/0.29.md).
+
 ## 0.28.0 „Gangway“ – unveröffentlicht
 
 - `commit-on-main` entscheidet eine zusammengesetzte Form vorab: `cd <fester Pfad> && git … commit …` (einziges Konstrukt `&&`, eingebautes `cd` mit genau einem Pfad ohne Option/Variable/Muster) – Branch im Zielordner relativ zu `cwd`, nur wenn jede Shell dort landet (Ziel vorhanden, jedes `..` hinter einem Ordner, logischer = physischer Pfad), bloße relative Namen nur ohne `CDPATH`. Alles andere Zusammengesetzte bleibt mit Hinweis beim Git-Netz. Anlass: Mistral Vibe 3.0.4 committet so; Probe 30.10.2026 mit installiertem `~/.vibe/hooks.toml` ließ `cd <repo> && git commit` auf `main` mit Hinweis durch. Gilt für alle vier Clients (nur `guard.py` entscheidet). Erweitert die Repo-Regel „Vorabprüfung begrenzt“ (`AGENTS.md`) um genau diese Form. 4 neue Tests (`test_guard.py` › `CommitOnMainTests`, `test_client_hooks.py` › Gleichstand aller vier Clients, `test_githooks.py` › Laufzeitbeleg mit echter bash und zsh). [Version](docs/versions/0.28.md).
