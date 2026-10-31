@@ -304,7 +304,8 @@ class CommitOnMainTests(unittest.TestCase):
         self.check("block", [
             (f"cd '{main}' && git commit -m x", "feature"), (f'cd "{main}" && git commit -m x', "feature"),
             (f"cd '{main.as_posix()}' && git commit -m x", "feature"), (f"cd '/{drive.lower()}{rest}' && git commit", "feature"),
-            (f"cd '{main.as_posix().lower()}/sub' && git commit -m x", "feature"), ("cd jump && git commit -m x", "feature")])
+            (f"cd '{main.as_posix().lower()}/sub' && git commit -m x", "feature"), ("cd jump && git commit -m x", "feature"),
+            (f"cd '/cygdrive/{drive.lower()}{rest}' && git commit", "feature")])  # Git Bash with the cygdrive prefix
         self.check("pass", [(f"cd '{feature}' && git commit -m x", "on main"),
                             (f"cd '/{drive.lower()}{feature.as_posix().split(':', 1)[1]}' && git commit", "on main")])
         self.check("net", [
