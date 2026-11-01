@@ -27,5 +27,7 @@ jobs:
           python-version: "3.12"
       # zsh: test_githooks prüft die Commit-Form auch unter zsh; node: test_ide_extension.js
       - run: sudo apt-get install -y --no-install-recommends zsh
+      # Tests legen Wegwerf-Repos mit Tags an (ce_release); der Runner hat keine Git-Identität
+      - run: git config --global user.name ci && git config --global user.email ci@example.invalid
       - run: python3 -m pip install -r requirements-dev.txt
       - run: python3 -m unittest discover -s tests
