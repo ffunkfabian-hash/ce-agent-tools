@@ -205,6 +205,52 @@ def release_note(body: str, key: str = "") -> str:
             "sonst das Ja beim Nutzer in der Sitzung einholen (Leitfaden 1).")
 
 
+# 0.32 (Panorama 8): a question with a default answer and a deadline. Format only - nothing here answers for the user.
+DECISION_TOPIC = "Entscheidung nötig"
+DECISION_NO_AUTO = "Ohne Antwort des Nutzers entscheidet niemand; der Standard ist ein Vorschlag, keine Antwort."
+FRIST = re.compile(r"^\s*(\d{1,4})\s*(m|min|h)?\s*$", re.I)
+MAX_FRIST_MIN = 24 * 60
+
+
+def parse_frist(text: str) -> int:
+    """Minutes of a deadline like `60m`, `90`, `2h` (1 .. 24 h); ValueError otherwise."""
+    match = FRIST.match(text or "")
+    minutes = int(match[1]) * (60 if match and (match[2] or "").lower() == "h" else 1) if match else 0
+    if not 1 <= minutes <= MAX_FRIST_MIN:
+        raise ValueError(f"Frist {text!r}: Minuten oder Stunden zwischen 1 min und 24 h (z. B. 60m, 2h)")
+    return minutes
+
+
+def decision_lines(standard: str, frist: str, now=None) -> tuple:
+    """(lines, deadline): the fixed lines under a `Entscheidung nötig: <Frage>` head. Raises ValueError for empty/multi-line input."""
+    standard = (standard or "").strip()
+    if not standard or "\n" in standard or len(standard) > 120:
+        raise ValueError("--standard: eine nicht leere Zeile (höchstens 120 Zeichen), z. B. A")
+    deadline = (now or datetime.datetime.now(datetime.timezone.utc)) + datetime.timedelta(minutes=parse_frist(frist))
+    stamp = deadline.strftime("%Y-%m-%dT%H:%MZ")
+    return [f"Standard: {standard}", f"Frist: {frist.strip()}, bis {stamp}", DECISION_NO_AUTO], deadline
+
+
+def decision_note(body: str, now=None) -> str:
+    """The line a watcher puts in front of a decision question; "" for any other message."""
+    lines = (body or "").strip().splitlines()
+    rest = lines[0].split("→", 1)[1] if lines and "→" in lines[0] else ""
+    if not rest.partition(":")[2].strip(" *").startswith(DECISION_TOPIC):
+        return ""
+    standard = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("Standard:")), "")
+    until = next(iter(re.findall(r"bis (\d{4}-\d\d-\d\dT\d\d:\d\dZ)", next((l for l in lines if l.startswith("Frist:")), ""))), "")
+    state = ""
+    if until:
+        try:
+            end = datetime.datetime.strptime(until, "%Y-%m-%dT%H:%MZ").replace(tzinfo=datetime.timezone.utc)
+            left = (end - (now or datetime.datetime.now(datetime.timezone.utc))).total_seconds() / 60
+            state = f", noch {int(left)} min" if left > 0 else ", Frist abgelaufen"
+        except ValueError:
+            state = ""
+    return (f"ENTSCHEIDUNGSFRAGE (Standard {standard or '?'}, Frist bis {until or '?'}{state}): "
+            "dem Nutzer vorlegen; ohne dessen Antwort gilt nichts – auch nicht der Standard.")
+
+
 UNREACHABLE = re.compile(r"not found|404|could not resolve|401|403|bad credentials|authentication|gh auth login|no such host|"
                          r"resolve host|forbidden", re.I)
 
@@ -540,6 +586,9 @@ def deliver(repo: str, result: dict, out=sys.stdout, key: str = "") -> None:
     note = release_note(result.get("body", ""), key)
     if note:
         print(note + "\n", file=out)
+    question = decision_note(result.get("body", ""))
+    if question:
+        print(question + "\n", file=out)
     print(result.get("body", ""), file=out, flush=True)
 
 

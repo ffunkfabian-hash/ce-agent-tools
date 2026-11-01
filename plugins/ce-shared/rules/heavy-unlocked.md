@@ -16,5 +16,5 @@ conditions:
 ---
 
 **Schwerer Lauf ohne sichtbare Sperre:** Die Werkzeuge nehmen die Sperre selbst (`testplan.py`, `generate_tools.py`, `check_output.sh`),
-aber nur mit der richtigen Ressource in ihrer eingebetteten Kopie (`ce_sync --check`). Vorher `heavy_lock.py status`; ist die Ressource
+aber nur mit der richtigen Ressource (der Lader `./ce` liefert den gepinnten Stand, `./ce tools where`). Vorher `heavy_lock.py status`; ist die Ressource
 belegt, erst alles Nicht-Schwere erledigen (globale Regel › Schwere Läufe und Sperren).

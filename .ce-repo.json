@@ -17,11 +17,15 @@
   },
   "docs": {
     "changelog": "CHANGELOG.md",
-    "lessons": "README.md#erfahrungen"
+    "lessons": "README.md#erfahrungen",
+    "versions": "docs/versions"
   },
   "heavy_lock": false,
   "coordination": {
     "repo": "ffunkfabian-hash/cubeescape-nexogen",
     "registry": "https://github.com/ffunkfabian-hash/cubeescape-nexogen/blob/main/repos.json"
+  },
+  "lint": {
+    "profile": "rules"
   }
 }

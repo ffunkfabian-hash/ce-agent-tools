@@ -24,6 +24,7 @@ from pathlib import Path
 
 BIG_DOC = 60_000
 MAX_CONTEXT_TOKENS = 150_000
+DELEGATION_AFTER = 150     # (0.32) messages without any subagent before the Stop hint 'delegate' appears
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
 
@@ -257,6 +258,9 @@ def hints(info: dict) -> list[str]:
     out = []
     if info["messages"] > 300:
         out.append("über 300 Nachrichten: neue Sitzung beginnen (› Sitzungen kurz halten)")
+    if DELEGATION_AFTER < info["messages"] and not sum(info["agents"].values()):
+        out.append(f"über {DELEGATION_AFTER} Nachrichten, 0 Unteragenten: Lesen/Suchen an ce-searcher (Haiku), Prüfung an ce-judge, "
+                   "Belege an ce-recorder abgeben (› Unteragenten und Modelle) – nur ein Hinweis")
     usage = info.get("usage") or {}
     max_input = usage.get("max_input_tokens_per_request")
     if isinstance(max_input, int) and max_input > MAX_CONTEXT_TOKENS:

@@ -43,6 +43,20 @@ def sheet_tile_size(width: int, columns: int) -> int:
     return tile
 
 
+FONT_CANDIDATES = ["/System/Library/Fonts/Helvetica.ttc", "/Library/Fonts/Arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                   "/usr/share/fonts/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                   "C:/Windows/Fonts/arial.ttf"]
+
+
+def montage_font() -> list:
+    """['-font', file] for the first installed font. (0.32) A bare ImageMagick 7 (CI runner, minimal Linux) has no default font:
+    `montage` then dies with "unable to read font `(null)'" even without labels."""
+    for candidate in FONT_CANDIDATES:
+        if Path(candidate).is_file():
+            return ["-font", candidate]
+    return []
+
+
 def sheet(sources, out: Path, columns: int, width: int, label: bool) -> int:
     files = frames_of(sources)
     if not files:
@@ -55,14 +69,19 @@ def sheet(sources, out: Path, columns: int, width: int, label: bool) -> int:
     except ValueError as error:
         print(f"ce_media sheet: {error}", file=sys.stderr)
         return 2
+    magick_ok = False
     if shutil.which("magick") or shutil.which("montage"):
-        base = ["magick", "montage"] if shutil.which("magick") else ["montage"]
+        base = (["magick", "montage"] if shutil.which("magick") else ["montage"]) + montage_font()
         args = base + [*map(str, files), "-tile", f"{columns}x", "-geometry", f"{tile}x{tile}+2+2", "-background", "#202020"]
         if label:
             args = base + ["-label", "%f", *map(str, files), "-tile", f"{columns}x", "-geometry", f"{tile}x{tile}+2+2",
                            "-background", "#202020", "-fill", "#dddddd", "-pointsize", "11"]
-        subprocess.run(args + [str(out)], check=True)
-    else:
+        try:
+            subprocess.run(args + [str(out)], check=True, capture_output=True)
+            magick_ok = True
+        except (subprocess.CalledProcessError, OSError) as error:   # (0.32) a broken ImageMagick must not stop the sheet: Pillow below
+            print(f"ce_media sheet: ImageMagick fehlgeschlagen ({error.__class__.__name__}), Pillow-Weg", file=sys.stderr)
+    if not magick_ok:
         from PIL import Image, ImageDraw
         rows = -(-len(files) // columns)
         canvas = Image.new("RGB", (columns * (tile + 4), rows * (tile + 4 + (14 if label else 0))), "#202020")

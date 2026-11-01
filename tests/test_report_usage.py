@@ -140,6 +140,29 @@ class ReportUsageTests(unittest.TestCase):
         self.assertTrue(any("Cache-Schreiben (255,000 Tokens) > 2× Spitzen-Input (90,100)" in h for h in thrash_hints))
         self.assertTrue(any("möglichen wiederholten Cache-Neuaufbau" in h for h in thrash_hints))
 
+    def info(self, messages, agents):
+        return {"messages": messages, "agents": agents, "usage": {}, "checks_repeated_same_command": 0,
+                "big_doc_reads": 0, "searches": 0, "largest_output_bytes": 0}
+
+    def delegation(self, messages, agents):
+        return [h for h in ce_report.hints(self.info(messages, agents)) if "0 Unteragenten" in h]
+
+    def test_hint_many_messages_without_subagents(self):
+        """0.32 (Panorama 2): a long session that never delegated gets a hint - not a block, not at 150 itself."""
+        [hint] = self.delegation(151, {})
+        self.assertIn("über 150 Nachrichten", hint)
+        self.assertIn("ce-searcher", hint)
+        self.assertEqual(self.delegation(150, {}), [])                  # the threshold is "more than 150"
+        self.assertEqual(self.delegation(10, {}), [])
+        self.assertEqual(self.delegation(900, {"sonnet": 1}), [])       # one subagent of any kind is enough
+        self.assertEqual(self.delegation(900, {"inherit": 2}), [])
+        long_text = " ".join(ce_report.hints(self.info(400, {})))
+        self.assertIn("über 300 Nachrichten", long_text)               # the older hint stays next to it
+        self.assertIn("0 Unteragenten", long_text)
+
+    def test_the_hint_is_not_part_of_the_one_line_summary(self):
+        self.assertNotIn("0 Unteragenten:", ce_report.one_line(dict(self.analyse_records([record("a", {"input_tokens": 1})]), messages=200)))
+
 
 if __name__ == "__main__":
     unittest.main()
