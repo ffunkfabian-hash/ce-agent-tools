@@ -166,7 +166,8 @@ def check(root: Path, config: dict | None = None) -> tuple:
     return rows, problems
 
 
-STALE_IGNORE = ["CHANGELOG*", "docs/versions/**", "Docs/versions/**", "docs/pruefung*"]
+# "dir/**/*", not "dir/**": before Python 3.13 a trailing ** matches directories only, so files stayed scanned (CI, Python 3.12)
+STALE_IGNORE = ["CHANGELOG*", "docs/versions/**/*", "Docs/versions/**/*", "docs/pruefung*"]
 HISTORY = re.compile(r"früher|ehemals|vormals|abgelöst|\bersetzt\b|\balt(?:e[nrms]?)?\b|ce-docs:\s*ok", re.I)
 STALE_PATTERNS = [
     (re.compile(r"cubeescape-rules"), "`cubeescape-rules` heißt jetzt cubeescape-nexogen"),

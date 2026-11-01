@@ -71,6 +71,14 @@ class StaleTests(unittest.TestCase):
         self.write("docs/aktuell.md", "cubeescape-rules\n")
         self.assertEqual([(w["path"], w["line"]) for w in self.warnings()], [("docs/aktuell.md", 1)])
 
+    def test_ignore_globs_match_files_on_every_python(self):
+        """CI ran Python 3.12, where a trailing `**` matched only directories: docs/versions/*.md stayed scanned."""
+        self.write("docs/versions/0.5.md", "heavy-run.lock\n")
+        self.write("docs/versions/deep/x.md", "heavy-run.lock\n")
+        ignored = set(ce_docs.expand(self.root, ce_docs.STALE_IGNORE))
+        self.assertEqual({p.name for p in ignored}, {"0.5.md", "x.md"})
+        self.assertEqual(self.warnings(), [])
+
     def test_configuration_threshold_and_ignore(self):
         self.write("AGENTS.md", "Agent Tools 0.12 und Agent Tools 0.35\n")
         self.assertEqual(len(self.warnings()), 1)
