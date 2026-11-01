@@ -289,7 +289,7 @@ def main(argv=None) -> int:
     say.add_argument("--zeit", default="", help="mit --freigabe: Zeit des Ja in UTC (Standard: jetzt)")
     say.add_argument("--frage", default="", help="Entscheidungsfrage (eine Zeile, z. B. 'A oder B?'): Thema `Entscheidung nötig: …`; mit --standard, --frist")
     say.add_argument("--standard", default="", help="mit --frage: vorgeschlagene Antwort (Pflicht), z. B. A")
-    say.add_argument("--frist", default="60m", help="mit --frage: Frist (Standard 60m; 1 min bis 24 h); danach nur noch ein Hinweis, keine Automatik")
+    say.add_argument("--frist", default="", help="mit --frage: Frist (Standard 60m; 1 min bis 24 h); danach nur noch ein Hinweis, keine Automatik")
     say.add_argument("--name", default="", help="eigener Sitzungsname; Standard: aus dem Branch")
     say.add_argument("--model", default="", help="Modell und Aufwand, z. B. 'Opus 5.5, high'")
     say.add_argument("--agent", choices=("auto", "claude", "codex", "gemini"), default="auto")
@@ -319,13 +319,13 @@ def main(argv=None) -> int:
         if args.topic:
             args.lines = [args.topic, *args.lines]      # with --frage the first positional is just another line
         try:
-            decision, _deadline = am.decision_lines(args.standard, args.frist)
+            decision, _deadline = am.decision_lines(args.standard, args.frist or "60m")
         except ValueError as error:
             print(error, file=sys.stderr)
             return 2
         args.topic = f"{am.DECISION_TOPIC}: {args.frage.strip()}"
         args.lines = [*decision, *args.lines]
-    elif args.standard:
+    elif args.standard or args.frist:
         print("--standard und --frist gehören zu --frage", file=sys.stderr)
         return 2
     elif not args.topic:

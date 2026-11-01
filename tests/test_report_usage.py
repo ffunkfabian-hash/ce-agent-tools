@@ -160,7 +160,7 @@ class ReportUsageTests(unittest.TestCase):
         self.assertIn("über 300 Nachrichten", long_text)               # the older hint stays next to it
         self.assertIn("0 Unteragenten", long_text)
 
-    def test_one_line_does_not_change_and_hint_is_in_the_stop_path(self):
+    def test_the_hint_is_not_part_of_the_one_line_summary(self):
         self.assertNotIn("0 Unteragenten:", ce_report.one_line(dict(self.analyse_records([record("a", {"input_tokens": 1})]), messages=200)))
 
 

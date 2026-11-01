@@ -23,7 +23,8 @@ change the exit code (JSON: "warnings"):
 - "Standardbranch `X`" in the text where the checkout's origin/HEAD names another branch (only if origin/HEAD is known).
 Not scanned: CHANGELOG*, docs/versions/**, docs/pruefung*, code fences, and lines that say they are history (früher, ehemals,
 vormals, abgelöst, ersetzt, alt, "ce-docs: ok")
-and version mentions after "ab"/"seit"/"since"/"from" (a start version is no claim about today). docs.stale.ignore adds globs.
+and version mentions that are no claim about today: after ab/seit/since/from/aus/mit/mindestens/bis/nach/Stand, in
+parentheses, in link text, or on a line with a date. docs.stale.ignore adds globs.
 """
 from __future__ import annotations
 
@@ -166,13 +167,25 @@ def check(root: Path, config: dict | None = None) -> tuple:
 
 
 STALE_IGNORE = ["CHANGELOG*", "docs/versions/**", "Docs/versions/**", "docs/pruefung*"]
-HISTORY = re.compile(r"früher|ehemals|vormals|abgelöst|ersetzt|\balt(?:e[nrms]?)?\b|ce-docs:\s*ok", re.I)
+HISTORY = re.compile(r"früher|ehemals|vormals|abgelöst|\bersetzt\b|\balt(?:e[nrms]?)?\b|ce-docs:\s*ok", re.I)
 STALE_PATTERNS = [
     (re.compile(r"cubeescape-rules"), "`cubeescape-rules` heißt jetzt cubeescape-nexogen"),
-    (re.compile(r"heavy-run\.lock"), "`heavy-run.lock` gibt es nicht mehr (Sperre je Ressource: `./ce lock <res>`)"),
+    (re.compile(r"heavy-run\.lock"), "`heavy-run.lock` ist nur noch die alte Gesamtsperre (Sperre je Ressource: `./ce lock <res>`)"),
     (re.compile(r"eingebettet\w*\s+in\s+jedem\s+Repo", re.I), "„eingebettet in jedem Repo“: Werkzeuge kommen über den Lader (`./ce`)"),
 ]
-AGENT_TOOLS = re.compile(r"(?<!ab )(?<!seit )(?<!since )(?<!from )(?:Agent[ -]Tools|ce-agent-tools|ce-shared)\s+v?0\.(\d+)(?:\.\d+)?", re.I)
+AGENT_TOOLS = re.compile(r"(?:Agent[ -]Tools|ce-agent-tools|ce-shared)\s+v?0\.(\d+)(?:\.\d+)?", re.I)
+# a version named as a minimum, start or dated fact is no claim about today
+VERSION_CONTEXT = re.compile(r"(?:\b(?:ab|seit|since|from|aus|mit|mindestens|min|bis|nach|stand)\b\.?|[≥(])\s*$", re.I)
+DATED = re.compile(r"\d{1,2}\.\d{1,2}\.(?:\d{2}){1,2}\b|\d{4}-\d\d-\d\d")
+
+
+def version_claim(line: str, match) -> bool:
+    """True when `match` (an Agent-Tools version) reads like a statement about the current state."""
+    if DATED.search(line) or VERSION_CONTEXT.search(line[:match.start()]) or line[match.end():].lstrip().startswith("„"):
+        return False                                                  # a release named with its codename is history
+    return not (line.rfind("[", 0, match.start()) > line.rfind("]", 0, match.start()))   # inside link text
+
+
 DEFAULT_BRANCH = re.compile(r"Standardbranch\s*[:=]?\s*`([^`]+)`", re.I)
 
 
@@ -207,7 +220,7 @@ def stale(root: Path, config: dict | None = None) -> list:
                 continue
             found = [message for pattern, message in STALE_PATTERNS if pattern.search(line)]
             found += [f"„{m[0].strip()}“ ist alt (Agent Tools ab 0.{below} gilt als aktuell)" for m in AGENT_TOOLS.finditer(line)
-                      if int(m[1]) < below]
+                      if int(m[1]) < below and version_claim(line, m)]
             if branch:
                 found += [f"Standardbranch `{m[1]}` im Text, GitHub-Standard (origin/HEAD) ist `{branch}`"
                           for m in DEFAULT_BRANCH.finditer(line) if m[1] != branch]

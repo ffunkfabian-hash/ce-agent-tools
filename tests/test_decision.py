@@ -60,6 +60,7 @@ class FormatTests(unittest.TestCase):
                            (("--frage", "A oder B?", "--standard", "A", "--frist", "gleich"), "Frist"),
                            (("--frage", "A oder B?", "--standard", "A", "--frist", "48h"), "Frist"),
                            (("--standard", "A", "Thema"), "gehören zu --frage"),
+                           (("--frist", "30m", "Thema"), "gehören zu --frage"),
                            ((), "Thema fehlt"),
                            (("--frage", "A oder B?", "--standard", "x" * 200), "--standard")):
             with self.subTest(args=args):

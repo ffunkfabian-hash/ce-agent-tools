@@ -52,10 +52,16 @@ class StaleTests(unittest.TestCase):
         for text in ("Agent Tools 0.30 ist der Stand.", "Agent Tools 0.31.2", "Ab Agent Tools 0.26 gilt das.", "seit Agent Tools 0.13",
                      "Nur Agent Tools 1.0 und Agent Tools 0.100", "früher `cubeescape-rules`", "Ehemals heavy-run.lock",
                      "die alte gemeinsame Datei heavy-run.lock", "abgelöst: eingebettet in jedem Repo",
-                     "Agent Tools 0.12 <!-- ce-docs: ok -->", "ce-docs: ok Agent Tools 0.12", "Agent Tools Version 0.12 (kein Muster)",
+                     "Agent Tools 0.12 <!-- ce-docs: ok -->",
+                     "Mindestens (Agent Tools 0.27) nötig", "wirkt aus Agent Tools 0.27", "Abnahmestand am 22.10.2026 mit Agent Tools 0.11",
+                     "siehe [Agent Tools 0.13 #11](x)", "| Agent Tools 0.14 „Crosstalk“ (Anmeldung) | gemergt |", "Wird übersetzt, nicht ersetzt",
+                     "mit Agent Tools 0.27 oder neuer", "nach Agent Tools 0.20 bleibt es", "ce-docs: ok Agent Tools 0.12", "Agent Tools Version 0.12 (kein Muster)",
                      "eingebettet im Repo", "cubeescape-nexogen und rules"):
             with self.subTest(text=text):
                 self.assertEqual(self.messages(text), [])
+
+    def test_translated_is_not_history(self):
+        self.assertEqual(len(self.messages("Das ist übersetzt: Agent Tools 0.12")), 1)
 
     def test_code_fences_and_history_files_are_not_scanned(self):
         self.write("README.md", "```\ncubeescape-rules\nheavy-run.lock\n```\n")

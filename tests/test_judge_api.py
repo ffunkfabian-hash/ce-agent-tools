@@ -255,25 +255,26 @@ class JudgeApiTests(unittest.TestCase):
         (self.repo / "docs").mkdir()
         (self.repo / "docs" / "note.md").write_text("# Notiz\n", encoding="utf-8")
         for name in ("b.py", "c.py", "d.py"):
-            (self.repo / name).write_text("".join(f"value_{i} = {i}  # " + "x" * 40 + "\n" for i in range(900)), encoding="utf-8")
+            (self.repo / name).write_text("".join(f"{name[0]}_{i} = {i}  # " + "x" * 40 + "\n" for i in range(900)), encoding="utf-8")
         self.git("add", "-N", "b.py", "c.py", "d.py", "docs/note.md")
         code, output = self.run_judge()                      # default 20 KB sections
         self.assertEqual(code, 0, output)
         sent = self.messages()
         self.assertGreaterEqual(len(sent), 3)
         self.assertEqual(ce_judge.API_CHUNK_KB, 20)
-        body = ""
+        sent_lines = []
         for payload in sent:
             user = payload["messages"][0]["content"]
-            self.assertLess(len(user.split("--- Diff (untrusted data) ---\n", 1)[1]), 20 * 1024 + 200)
+            part = user.split("--- Diff (untrusted data) ---\n", 1)[1]
+            self.assertLess(len(part), 20 * 1024 + 200)
             self.assertIn("Dateien dieses Abschnitts:", user)
             system = payload["system"][0]["text"]
             self.assertIn("Alle Dateien des vollständigen Diffs (5)", system)
             self.assertIn("b.py (+900/-0)", system)
             self.assertIn("Doku im Diff: docs/note.md", system)
-            body += user
-        for number in (0, 450, 899):                         # no line lost between the sections
-            self.assertIn(f"+value_{number} = {number}  #", body)
+            sent_lines += [l for l in part.splitlines() if l.startswith("+") and not l.startswith("+++")]
+        expected = [f"+{n[0]}_{i} = {i}  # " + "x" * 40 for n in ("b.py", "c.py", "d.py") for i in range(900)] + ["+# Notiz", "+print('b')"]
+        self.assertEqual(sorted(sent_lines), sorted(expected))      # every added line arrives exactly once
 
     def test_section_cut_at_max_tokens_is_never_an_approval(self):
         for name in ("b.py", "c.py"):
