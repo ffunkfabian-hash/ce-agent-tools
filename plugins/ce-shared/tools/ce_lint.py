@@ -9,6 +9,10 @@
   <major>.<minor>.md - warning when the folder exists without one (no folder: silent, CHANGELOG-only repo); CHANGELOG ("docs.changelog") mentions the current version - warning when not.
 - embedded tool copies (<tools_dir>, ce_sync.py): missing/edited = error, older than the plugin = warning.
 - repos without a copy (tools_version, 0.20): malformed pin or missing/edited ./ce loader = error, older = warning.
+- profile (0.32, `.ce-repo.json` > `"lint": {"profile": "rules"}`): for repos that ship the rules or the tools themselves
+  (Nexogen, ce-agent-tools). "rules" requires no AGENTS.md sections unless `docs.agent_sections` lists them (AGENTS.md or
+  CLAUDE.md must exist) and skips the embedded-copy/loader check unless `tools_version` or `tools_dir` is configured.
+  Unknown profile = error. Without a profile everything stays as before ("standard").
 Output: result line first, then one line per finding. Exit code 1 on errors (--strict: warnings too), 2 when the
 configuration is unusable.
 """
@@ -108,7 +112,31 @@ def check_embedded(root: Path, config: dict) -> list[tuple[str, str]]:
     return ce_sync.check(root, config, ce_sync.source_dir())
 
 
+PROFILES = ("standard", "rules")
+
+
+def profile_of(config: dict) -> str | None:
+    value = (config.get("lint") or {}).get("profile", "standard") if isinstance(config.get("lint"), dict) else "standard"
+    return value if value in PROFILES else None
+
+
+def check_rules_sections(root: Path, config: dict) -> list[tuple[str, str]]:
+    """Profile "rules": AGENTS.md or CLAUDE.md exists; sections only if docs.agent_sections names them."""
+    if not ((root / "AGENTS.md").is_file() or (root / "CLAUDE.md").is_file()):
+        return [("error", "AGENTS.md and CLAUDE.md missing")]
+    if "agent_sections" in (config.get("docs") or {}):
+        return check_sections(root, config)
+    return []
+
+
 def lint(root: Path, config: dict) -> list[tuple[str, str]]:
+    profile = profile_of(config)
+    if profile is None:
+        return [("error", f"lint.profile {config['lint'].get('profile')!r} unknown (allowed: {', '.join(PROFILES)})")]
+    if profile == "rules":
+        embedded = check_embedded(root, config) if ("tools_version" in config or "tools_dir" in config) else []
+        return (check_limits(root, config) + check_rules_sections(root, config) + check_note_files(root)
+                + check_versions(root, config) + embedded)
     return (check_limits(root, config) + check_sections(root, config) + check_note_files(root) + check_versions(root, config)
             + check_embedded(root, config))
 

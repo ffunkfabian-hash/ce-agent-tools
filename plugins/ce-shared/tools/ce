@@ -1,6 +1,6 @@
 #!/bin/sh
 # ce - one entry for the shared tools of a repo (0.5.0): ./ce <command> [args]
-#   check [--full|--nightly]   session reserve|patch|topics|mail|say|who   codex quota|cloud|judge
+#   check [--full|--nightly]   session reserve|patch|topics|mail|say|who   codex quota|cloud|judge   (0.32: judge wählt Codex/--api nach Kontingent)
 #   evidence clip|sheet|still|diff   search query|index|status   lock <resource>|status   docs   report   api login|status|budget|ask
 #   plugins check|fix [--apply] [--user-only]   (0.16: Claude-Code-Installationen von ce-shared auf einer Version)
 #   tidy [--apply|--nightly] [--json] [--category K]   (0.18: Reste fertiger Sitzungen, Probelauf ohne --apply)
@@ -26,7 +26,7 @@ case "$cmd" in
       patch) exec "$py" "$tools/ce_session_name.py" --reserve --patch "$@";;
       mail) exec "$py" "$tools/ce_await_mail.py" "$@";;
       say|who) exec "$py" "$tools/ce_postfach.py" "$sub" "$@";;
-      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] [--follow] [--also-pr] | say [--to <Empfänger>[,…]] [--freigabe commit,push,pr --zitat …] <Thema> [Zeilen] | who"; exit 2;;
+      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] [--follow] [--also-pr] | say [--to <Empfänger>[,…]] [--freigabe commit,push,pr --zitat …] <Thema> [Zeilen] | say --frage \"<A oder B?>\" --standard A [--frist 60m] | who"; exit 2;;
     esac;;
   codex)
     sub="${1:-help}"; [ $# -gt 0 ] && shift

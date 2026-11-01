@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.32.0 „Tripwire“ – unveröffentlicht (01.11.2026)
+
+- **Richter wählt den Weg selbst** (Panorama 4): `./ce judge` liest `ce_codex_quota.route()` – unter 15 % Rest in einem Fenster oder Limit erreicht → `--api` (Opus), sonst Codex; Stand unbekannt oder Leser kaputt → Codex (fail-open). Zeile „Weg:“ nennt den Grund, `--codex` erzwingt Codex, `--api`/`--opus`/`--model` bleiben ausdrücklich. `ce_codex_quota.py` ist importierbar (`summary()`, `route()`) und hat erstmals Tests (`test_codex_quota.py`).
+- **`--api` ohne abgeschnittene Abschnitte:** Abschnitte 20 KB statt 40 (höchstens 12), jede Anfrage trägt Dateiliste mit +/− und die Doku im Diff; Abschnitt am `max_tokens` bleibt Nachbessern; Test mit großem Diff (keine Zeile geht beim Teilen verloren).
+- **Entscheidungsfragen** (Panorama 8): `./ce session say --frage "<A oder B?>" --standard A --frist 60m` – Thema `Entscheidung nötig: …`, Zeilen `Standard:` und `Frist: … bis <UTC>`, Hinweis „ohne Antwort des Nutzers entscheidet niemand“; der Wächter stellt `ENTSCHEIDUNGSFRAGE (Standard, Frist, noch n min / abgelaufen)` voran. Nur Format und Anzeige.
+- **Selbstprüfung** (Panorama 7): `.github/workflows/check.yml` (Linux, `unittest discover`, `concurrency`, 20 min, `paths-ignore` Doku); `ce_lint`-Profil `rules` für Regel-Repos (`.ce-repo.json › lint.profile`), ce-agent-tools selbst lint-grün; `ce_sync` bleibt (Lader und `ce_lint` rufen es auf), die toten `scripts/ce_tools`-Freigaben stehen nur in `~/.claude/settings.json` des Nutzers, nicht in einem Repo.
+- **`./ce docs` warnt vor Veraltetem** (Panorama 5): `Agent Tools 0.<n>` unter 0.30, `cubeescape-rules`, `heavy-run.lock`, „eingebettet in jedem Repo“, `Standardbranch` ≠ origin/HEAD – nur Warnung, Exit unverändert.
+- **`ce_report` am Stop** (Panorama 2): Hinweis „über 150 Nachrichten, 0 Unteragenten“.
+- Keine Regel in `rules/` geändert (nur ein Satz im Text von `heavy-unlocked`), kein Guard-Muster berührt. Tests: neu `test_codex_quota`, `test_decision`, `test_docs_stale` und Ergänzungen in `test_judge_api`, `test_tools`, `test_report_usage`. [Version](docs/versions/0.32.md).
+
 ## 0.31.0 „Crossover“ – unveröffentlicht (31.10.2026)
 
 - **Werkzeuge laufen unter Windows, macOS-Zweige unverändert** (Auftrag Sightline 31.10.2026, Nutzer: „Ich will, dass alles auf Mac und Windows läuft“; Grundlage Bestandsliste Postfach 6545955158). `heavy_lock.py` ist die eigenständige Plattformschicht: Sperre unter Windows per `LockFileEx` (geteilt/exklusiv wie `flock`, ein Byte bei 2^62, damit die Halterzeile lesbar bleibt), Prozessgruppe als Job-Objekt (angehalten gestartet, Kill-on-Close, Breakaway erlaubt; Ctrl+C/Ctrl+Break gehen als Ctrl+Break weiter, ein zweites Signal beendet den Job), Freigabe erst bei leerer Gruppe wie bisher; `cache_dir()` (macOS/Linux `~/Library/Caches/CubeEscape`, Windows `%LOCALAPPDATA%\CubeEscape`) für alle Cache-Pfade; `pid_alive`, `process_started`, `process_table` (Win32_Process), `script_argv` (Shell-/Python-Skripte über Git Bash bzw. diese Python, WinError 193), `posix_shell` (nie `System32\bash.exe` = WSL).

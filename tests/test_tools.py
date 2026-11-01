@@ -337,6 +337,42 @@ class LintTests(RepoCase):
         write(self.root, "AGENTS.md", GOOD_AGENTS.replace("## Regeln", "## Regeln und Verbote"))
         self.assertEqual(self.lint()[0], 0)
 
+    def test_rules_profile_needs_no_sections_and_no_embedded_copy(self):
+        """0.32 (Panorama 7): Nexogen and ce-agent-tools carry the rules/tools themselves."""
+        write(self.root, "AGENTS.md", "# X\n\nnur Text\n")
+        self.assertEqual(self.lint()[0], 1, "standard profile still demands the sections")
+        self.set_config(dict(self.config, lint={"profile": "rules"}))
+        code, out = self.lint()
+        self.assertEqual((code, out.strip()), (0, "demo lint: ok"))
+
+    def test_rules_profile_keeps_the_other_checks(self):
+        self.set_config(dict(self.config, lint={"profile": "rules"}))
+        write(self.root, "CLAUDE.md", "line\n" * 25)
+        write(self.root, "VERSION_0.5_NOTES.md", "x")
+        code, out = self.lint()
+        self.assertEqual(code, 1)
+        self.assertIn("CLAUDE.md: 25 lines, limit 20", out)
+        self.assertIn("VERSION_0.5_NOTES.md", out)
+        (self.root / "AGENTS.md").unlink()
+        (self.root / "CLAUDE.md").unlink()
+        self.assertIn("AGENTS.md and CLAUDE.md missing", self.lint()[1])
+
+    def test_rules_profile_honours_listed_sections_and_a_pin(self):
+        write(self.root, "AGENTS.md", "## Projekt\n")
+        docs = dict(self.config.get("docs") or {}, agent_sections=["Projekt", "Regeln"])
+        self.set_config(dict(self.config, lint={"profile": "rules"}, docs=docs))
+        self.assertIn("'## Regeln' missing", self.lint()[1])
+        self.set_config(dict(self.config, lint={"profile": "rules"}, tools_version="0.20.0 abc"))
+        code, out = self.lint()
+        self.assertEqual(code, 1)
+        self.assertIn("tools_version muss", out)        # the loader check runs again once a pin is configured
+
+    def test_unknown_profile_is_an_error(self):
+        self.set_config(dict(self.config, lint={"profile": "wild"}))
+        code, out = self.lint()
+        self.assertEqual(code, 1)
+        self.assertIn("lint.profile 'wild' unknown", out)
+
     def test_note_files_in_main_folder(self):
         write(self.root, "VERSION_0.5_NOTES.md", "x")
         write(self.root, "docs/FOO_PROGRESS.md", "fine here, only the main folder counts")

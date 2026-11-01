@@ -224,7 +224,7 @@ def own_name(repo_dir: Path, agent: str = "auto") -> str:
     return sender_from_branch(sn_git(repo_dir, "branch", "--show-current"), abbrev, place)
 
 
-KNOWN_SAY_VALUED = {"--to", "--name", "--model", "--agent", "--repo", "--freigabe", "--zitat", "--zeit"}
+KNOWN_SAY_VALUED = {"--to", "--name", "--model", "--agent", "--repo", "--freigabe", "--zitat", "--zeit", "--frage", "--standard", "--frist"}
 KNOWN_SAY_FLAGS = {"--dry-run", "--no-cc", "-h", "--help"}
 
 
@@ -279,7 +279,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     say = sub.add_parser("say", help="Nachricht ins Postfach")
-    say.add_argument("topic", help="Thema (eine Zeile)")
+    say.add_argument("topic", nargs="?", default="", help="Thema (eine Zeile); mit --frage entfällt es")
     say.add_argument("lines", nargs="*", help=f"höchstens {MAX_LINES} weitere Zeilen")
     say.add_argument("--to", action="append", default=[],
                      help="Empfänger: Sitzungsname, Rolle oder `alle` (Standard Sightline); mehrfach oder mit Komma für mehrere")
@@ -287,6 +287,9 @@ def main(argv=None) -> int:
     say.add_argument("--freigabe", default="", help="nur Sightline: Freigabe per Post für diese Schritte (commit, push, pr)")
     say.add_argument("--zitat", default="", help="mit --freigabe: wörtliches Zitat des Nutzers")
     say.add_argument("--zeit", default="", help="mit --freigabe: Zeit des Ja in UTC (Standard: jetzt)")
+    say.add_argument("--frage", default="", help="Entscheidungsfrage (eine Zeile, z. B. 'A oder B?'): Thema `Entscheidung nötig: …`; mit --standard, --frist")
+    say.add_argument("--standard", default="", help="mit --frage: vorgeschlagene Antwort (Pflicht), z. B. A")
+    say.add_argument("--frist", default="60m", help="mit --frage: Frist (Standard 60m; 1 min bis 24 h); danach nur noch ein Hinweis, keine Automatik")
     say.add_argument("--name", default="", help="eigener Sitzungsname; Standard: aus dem Branch")
     say.add_argument("--model", default="", help="Modell und Aufwand, z. B. 'Opus 5.5, high'")
     say.add_argument("--agent", choices=("auto", "claude", "codex", "gemini"), default="auto")
@@ -312,6 +315,22 @@ def main(argv=None) -> int:
             print(f"keine Anmeldung in den letzten {args.days:g} Tagen")
         return 0
 
+    if args.frage:
+        if args.topic:
+            args.lines = [args.topic, *args.lines]      # with --frage the first positional is just another line
+        try:
+            decision, _deadline = am.decision_lines(args.standard, args.frist)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
+        args.topic = f"{am.DECISION_TOPIC}: {args.frage.strip()}"
+        args.lines = [*decision, *args.lines]
+    elif args.standard:
+        print("--standard und --frist gehören zu --frage", file=sys.stderr)
+        return 2
+    elif not args.topic:
+        print("Thema fehlt (oder --frage \"<A oder B?>\" --standard A)", file=sys.stderr)
+        return 2
     sender = args.name or own_name(args.repo, args.agent)
     if not sender:
         print("Sitzungsname unbekannt (Branch ohne Version/Patch): --name \"<Repo> <Version> „<Name>“ · <Ort>\" angeben", file=sys.stderr)

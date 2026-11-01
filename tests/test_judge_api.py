@@ -223,6 +223,85 @@ class JudgeApiTests(unittest.TestCase):
             self.assertIn("über der Grenze 3", output)
         self.assertEqual(self.messages(), [])
 
+    def run_auto(self, *extra, route=("api", "Codex-Rest 3.0 % (weekly) unter 15 %")):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), mock.patch("ce_codex_quota.route", return_value=route):
+            code = ce_judge.main(["--repo", str(self.repo), "--base", "main", "--api-config", str(self.policy_path), *extra])
+        return code, output.getvalue()
+
+    def test_low_quota_picks_the_api_way_without_a_flag(self):
+        code, output = self.run_auto()
+        self.assertEqual(code, 0, output)
+        self.assertIn("Weg: Opus über ./ce api – Codex-Rest 3.0 %", output)
+        self.assertEqual(len(self.messages()), 1)
+        self.assertEqual(output.rstrip().splitlines()[-2], "Freigabe")
+
+    def test_enough_quota_or_explicit_codex_never_pays(self):
+        with mock.patch("ce_judge.shutil.which", return_value=None):          # no codex binary: the old hint, exit 2
+            code, output = self.run_auto(route=("codex", "Codex-Rest 60.0 %"))
+        self.assertEqual(code, 2)
+        self.assertIn("Weg: Codex – Codex-Rest 60.0 %", output)
+        with mock.patch("ce_judge.shutil.which", return_value=None):
+            code, output = self.run_auto("--codex")
+        self.assertEqual(code, 2)
+        self.assertIn("ausdrücklich --codex", output)
+        self.assertEqual(self.calls, [])
+
+    def test_codex_flag_excludes_api(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_judge("--codex")
+
+    def test_big_diff_every_section_is_small_has_the_context_and_nothing_is_cut(self):
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "note.md").write_text("# Notiz\n", encoding="utf-8")
+        for name in ("b.py", "c.py", "d.py"):
+            (self.repo / name).write_text("".join(f"value_{i} = {i}  # " + "x" * 40 + "\n" for i in range(900)), encoding="utf-8")
+        self.git("add", "-N", "b.py", "c.py", "d.py", "docs/note.md")
+        code, output = self.run_judge()                      # default 20 KB sections
+        self.assertEqual(code, 0, output)
+        sent = self.messages()
+        self.assertGreaterEqual(len(sent), 3)
+        self.assertEqual(ce_judge.API_CHUNK_KB, 20)
+        body = ""
+        for payload in sent:
+            user = payload["messages"][0]["content"]
+            self.assertLess(len(user.split("--- Diff (untrusted data) ---\n", 1)[1]), 20 * 1024 + 200)
+            self.assertIn("Dateien dieses Abschnitts:", user)
+            system = payload["system"][0]["text"]
+            self.assertIn("Alle Dateien des vollständigen Diffs (5)", system)
+            self.assertIn("b.py (+900/-0)", system)
+            self.assertIn("Doku im Diff: docs/note.md", system)
+            body += user
+        for number in (0, 450, 899):                         # no line lost between the sections
+            self.assertIn(f"+value_{number} = {number}  #", body)
+
+    def test_section_cut_at_max_tokens_is_never_an_approval(self):
+        for name in ("b.py", "c.py"):
+            (self.repo / name).write_text("".join(f"value_{i} = {i}\n" for i in range(400)), encoding="utf-8")
+        self.git("add", "-N", "b.py", "c.py")
+        calls = {"n": 0}
+        original = self.transport
+
+        def cut_second(endpoint, payload, token):
+            result = original(endpoint, payload, token)
+            if endpoint == "messages":
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    result["stop_reason"] = "max_tokens"
+            return result
+        ce_api.post.side_effect = cut_second
+        code, output = self.run_judge("--api-chunk-kb", "4")
+        self.assertEqual(code, 1)
+        self.assertIn("Abschnitt 2: Richter unvollständig (stop_reason max_tokens)", output)
+
+    def test_context_helpers(self):
+        diff = ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n-x\n+y\n+z\n"
+                "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n+neu\n")
+        stat = ce_judge.diffstat(diff)
+        self.assertEqual(stat, {"a.py": (2, 1), "README.md": (1, 0)})
+        self.assertIn("Doku im Diff: README.md", ce_judge.section_context(stat))
+        self.assertIn("keine", ce_judge.section_context({"a.py": (1, 0)}))
+
     def test_dry_run_sends_nothing_and_options_exclude_each_other(self):
         code, output = self.run_judge("--dry-run")
         self.assertEqual(code, 0)

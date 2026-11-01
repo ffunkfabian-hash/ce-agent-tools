@@ -1,0 +1,31 @@
+# Selbstprüfung von ce-agent-tools (0.32 "Tripwire"): die Unit-Tests bei jedem PR und Push auf main.
+# Öffentliches Repo, Standard-Runner Linux (verbraucht kein privates Minutenkontingent). Doku allein löst nichts aus.
+name: check
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+  pull_request:
+    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # zsh: test_githooks prüft die Commit-Form auch unter zsh; node: test_ide_extension.js
+      - run: sudo apt-get install -y --no-install-recommends zsh
+      - run: python3 -m pip install -r requirements-dev.txt
+      - run: python3 -m unittest discover -s tests
