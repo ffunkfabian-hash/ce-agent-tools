@@ -54,19 +54,25 @@ def summary(best=None):
         minutes = w.get("window_minutes")
         name = {300: "5h", 10080: "weekly"}.get(minutes, "%smin" % minutes)
         used = float(w["used_percent"])
-        out[name] = {"used": used, "left": round(100 - used, 1), "resets": time.strftime("%H:%M %d.%m.", time.localtime(w["resets_at"]))}
+        out[name] = {"used": used, "left": round(100 - used, 1), "resets": time.strftime("%H:%M %d.%m.", time.localtime(w["resets_at"])),
+                     "resets_at": w["resets_at"]}
     return out
 
 
-def route(out=None, threshold=LOW_PERCENT):
+def route(out=None, threshold=LOW_PERCENT, now=None):
     """("codex"|"api", reason): the judge's way by quota. Unknown or unreadable quota keeps Codex (the old behavior)."""
     try:
         out = summary() if out is None else out
     except (OSError, ValueError, KeyError, TypeError):
         out = None
     windows = {name: o for name, o in (out or {}).items() if isinstance(o, dict)}
+    # A window whose reset time has passed was reset since the last Codex call: its old figure says nothing now. Without this an
+    # old low figure would send every review to --api, Codex would never run again and the figure would never be rewritten.
+    clock = time.time() if now is None else now
+    stale = [name for name, o in windows.items() if isinstance(o.get("resets_at"), (int, float)) and o["resets_at"] < clock]
+    windows = {name: o for name, o in windows.items() if name not in stale}
     if not windows:
-        return "codex", "Codex-Stand unbekannt"
+        return "codex", "Codex-Stand unbekannt" if not stale else "Codex-Stand veraltet (Reset seit %s vorbei)" % ", ".join(stale)
     name, low = min(windows.items(), key=lambda item: item[1]["left"])
     if low["left"] <= 0:
         return "api", "Codex-Limit erreicht (%s, Reset %s)" % (name, low["resets"])

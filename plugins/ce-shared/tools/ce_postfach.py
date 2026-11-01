@@ -315,6 +315,9 @@ def main(argv=None) -> int:
             print(f"keine Anmeldung in den letzten {args.days:g} Tagen")
         return 0
 
+    if args.frage and args.freigabe:
+        print("--frage und --freigabe schließen sich aus: eine Entscheidungsfrage ist keine Freigabe", file=sys.stderr)
+        return 2
     if args.frage:
         if args.topic:
             args.lines = [args.topic, *args.lines]      # with --frage the first positional is just another line

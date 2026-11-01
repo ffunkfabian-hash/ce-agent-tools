@@ -52,6 +52,22 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual((way, "Limit" in reason), ("api", True))
         self.assertEqual(ce_codex_quota.route(self.summary(primary=(99, 10080)), threshold=0.5)[0], "codex")
 
+    def test_window_already_reset_is_not_a_reason_for_the_api(self):
+        """Sightline's judge, finding 1: an old low figure must not pin every review to --api."""
+        old = ce_codex_quota.summary(("t", {"plan_type": "p", "primary": {"used_percent": 99, "window_minutes": 10080,
+                                                                           "resets_at": int(time.time()) - 3600}}, "p"))
+        self.assertEqual(old["weekly"]["left"], 1.0)
+        way, reason = ce_codex_quota.route(old)
+        self.assertEqual(way, "codex")
+        self.assertIn("veraltet", reason)
+        self.assertEqual(ce_codex_quota.route(old, now=time.time() - 7200)[0], "api")     # before the reset it still counts
+        # the other window decides if only one has passed
+        mixed = {"as_of": "t", "plan": "p", "5h": {"used": 99, "left": 1.0, "resets": "x", "resets_at": time.time() - 60},
+                 "weekly": {"used": 90, "left": 10.0, "resets": "y", "resets_at": time.time() + 60}}
+        self.assertEqual(ce_codex_quota.route(mixed)[0], "api")
+        mixed["weekly"]["left"] = 60.0
+        self.assertEqual(ce_codex_quota.route(mixed)[0], "codex")
+
     def test_unknown_or_broken_quota_keeps_codex(self):
         self.assertEqual(ce_codex_quota.route({"as_of": "x", "plan": None})[0], "codex")
         with mock.patch.object(ce_codex_quota, "newest", return_value=None):
