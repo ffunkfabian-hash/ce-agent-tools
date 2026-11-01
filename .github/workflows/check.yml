@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # zsh: test_githooks prüft die Commit-Form auch unter zsh; imagemagick + Schrift: montage -label braucht eine Schrift (test_tool_audit, test_tools); (node für test_ide_extension.js ist auf ubuntu-latest vorhanden)
+      # zsh: test_githooks prüft die Commit-Form auch unter zsh; imagemagick + DejaVu: test_tool_audit nutzt den ImageMagick-Weg (ce_media wählt die Schrift selbst, ohne Schrift fällt es auf Pillow zurück); (node für test_ide_extension.js ist auf ubuntu-latest vorhanden)
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh imagemagick fonts-dejavu-core
       # Tests legen Wegwerf-Repos mit Tags an (ce_release); der Runner hat keine Git-Identität
       - run: git config --global user.name ci && git config --global user.email ci@example.invalid
