@@ -175,7 +175,7 @@ STALE_PATTERNS = [
 ]
 AGENT_TOOLS = re.compile(r"(?:Agent[ -]Tools|ce-agent-tools|ce-shared)\s+v?0\.(\d+)(?:\.\d+)?", re.I)
 # a version named as a minimum, start or dated fact is no claim about today
-VERSION_CONTEXT = re.compile(r"(?:\b(?:ab|seit|since|from|aus|mit|mindestens|min|bis|nach|stand)\b\.?|[≥(])\s*$", re.I)
+VERSION_CONTEXT = re.compile(r"(?:\b(?:ab|seit|since|from|aus|mit|mindestens|min|bis|nach|stand)\b[.:]?|[≥(])\s*$", re.I)
 DATED = re.compile(r"\d{1,2}\.\d{1,2}\.(?:\d{2}){1,2}\b|\d{4}-\d\d-\d\d")
 
 

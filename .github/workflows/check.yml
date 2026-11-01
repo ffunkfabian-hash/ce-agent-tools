@@ -1,13 +1,13 @@
 # Selbstprüfung von ce-agent-tools (0.32 "Tripwire"): die Unit-Tests bei jedem PR und Push auf main.
-# Öffentliches Repo, Standard-Runner Linux (verbraucht kein privates Minutenkontingent). Doku allein löst nichts aus.
+# Öffentliches Repo, Standard-Runner Linux (verbraucht kein privates Minutenkontingent). Doku allein löst nichts aus; `plugins/**` (Regeln, Skills, Agenten als .md) zählt als Code. Reihenfolge der Muster zählt: das letzte treffende gewinnt.
 name: check
 
 on:
   push:
     branches: [main]
-    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+    paths: &code ["**", "!**/*.md", "!docs/**", "!LICENSE", "plugins/**"]
   pull_request:
-    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+    paths: *code
 
 concurrency:
   group: check-${{ github.ref }}

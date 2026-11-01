@@ -38,7 +38,7 @@ class StaleTests(unittest.TestCase):
             "Die Sperre `heavy-run.lock` schützt alles.": "heavy-run.lock",
             "Werkzeuge sind eingebettet in jedem Repo.": "Lader",
             "Wir nutzen Agent Tools 0.12 hier.": "Agent Tools 0.12",
-            "Stand: ce-agent-tools 0.5.0": "ce-agent-tools 0.5.0",
+            "Der Wert ce-agent-tools 0.5.0 gilt": "ce-agent-tools 0.5.0",
             "Plugin ce-shared 0.15.1 genügt": "ce-shared 0.15.1",
             "Agent-Tools 0.29": "Agent-Tools 0.29",
         }
@@ -53,8 +53,8 @@ class StaleTests(unittest.TestCase):
                      "Nur Agent Tools 1.0 und Agent Tools 0.100", "früher `cubeescape-rules`", "Ehemals heavy-run.lock",
                      "die alte gemeinsame Datei heavy-run.lock", "abgelöst: eingebettet in jedem Repo",
                      "Agent Tools 0.12 <!-- ce-docs: ok -->",
-                     "Mindestens (Agent Tools 0.27) nötig", "wirkt aus Agent Tools 0.27", "Abnahmestand am 22.10.2026 mit Agent Tools 0.11",
-                     "siehe [Agent Tools 0.13 #11](x)", "| Agent Tools 0.14 „Crosstalk“ (Anmeldung) | gemergt |", "Wird übersetzt, nicht ersetzt",
+                     "Mindestens (Agent Tools 0.27) nötig", "Stand: ce-agent-tools 0.5.0", "Stand ce-agent-tools 0.5.0", "wirkt aus Agent Tools 0.27", "Abnahmestand am 22.10.2026 mit Agent Tools 0.11", "Am 22.10.2026 lief Agent Tools 0.11",
+                     "siehe [Agent Tools 0.13 #11](x)", "| Agent Tools 0.14 „Crosstalk“ (Anmeldung) | gemergt |", "Wird nicht ersetzt, Agent Tools 0.12 bleibt (ce-docs: ok)",
                      "mit Agent Tools 0.27 oder neuer", "nach Agent Tools 0.20 bleibt es", "ce-docs: ok Agent Tools 0.12", "Agent Tools Version 0.12 (kein Muster)",
                      "eingebettet im Repo", "cubeescape-nexogen und rules"):
             with self.subTest(text=text):
