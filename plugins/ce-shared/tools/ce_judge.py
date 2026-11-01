@@ -396,7 +396,8 @@ def main(argv: list[str]) -> int:
         return 2
     way, way_reason = pick_way(args)
     if not args.api:
-        print(f"ce_judge: Weg: {'Opus über ./ce api' if way == 'api' else 'Codex'} – {way_reason}")
+        label = "Opus-Unteragent (Prompt unten)" if args.opus else "Opus über ./ce api" if way == "api" else "Codex"
+        print(f"ce_judge: Weg: {label} – {way_reason}")
     args.api = way == "api"
     automatic_model, routing_reason = _route(diff, names, cwd)
     model = args.model or automatic_model
