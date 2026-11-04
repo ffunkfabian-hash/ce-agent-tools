@@ -862,8 +862,14 @@ class RuleTextTests(unittest.TestCase):
     ]
 
     def test_executable_text_is_still_judged(self):
+        """Blocks read the full line anyway; the point here is the filter: run the same rules' regex conditions
+        through rule_text (filtered=True, as a warning would) and they still hold (judge round 4)."""
+        by_name = {rule["name"]: rule for rule in RULES}
         for command, rule in self.EXECUTABLE:
             self.assertIn(rule, names(bash(command)), command)
+            regex = [c for c in by_name[rule]["conditions"] if c.get("operator", "regex_match") == "regex_match"]
+            self.assertTrue(all(guard.condition_holds(c, "Bash", {"command": command}, filtered=True) for c in regex),
+                            ("the warning filter would hide executable text", command))
         for command in self.STILL_DATA:
             self.assertEqual(names(bash(command)), set(), command)
         self.assertEqual(guard.rule_text("cat <<EOF\na $(x) b `y`\nEOF\nls"), "cat <<EOF\n$(x)\n`y`\nls")
