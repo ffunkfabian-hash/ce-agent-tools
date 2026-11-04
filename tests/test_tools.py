@@ -974,6 +974,15 @@ class ReportAndSessionHookTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
                 payload = {"hook_event_name": "PostToolUse", "transcript_path": str(transcript), "session_id": "p-1"}
                 self.assertEqual(session.transcript_measure(transcript), (20, 163000))
+                # judge 0.33, 4.1: a nested usage object with blanks, as newer transcripts write it
+                nested = ('{"type": "assistant", "message": {"usage": {"input_tokens": 10, "cache_creation_input_tokens": 20, '
+                          '"cache_read_input_tokens": 160000, "cache_creation": {"ephemeral_5m_input_tokens": 20}, '
+                          '"output_tokens": 1}}}')
+                other = transcript.with_name("nested.jsonl")
+                other.write_text("\n".join(records * 3 + [nested, '{"type":"user","message":{"content":"x"}}']) + "\n", encoding="utf-8")
+                self.assertEqual(session.transcript_measure(other), (8, 160030), "the last usage object counts, parsed as JSON")
+                other.write_text('{"type":"user","message":{"content":"usage: none"}}\n', encoding="utf-8")
+                self.assertEqual(session.transcript_measure(other), (1, 0), "no usage object: 0")
                 first = session.pulse(payload)
                 self.assertIn("163,000 Input-Tokens", first["hookSpecificOutput"]["additionalContext"])
                 self.assertNotIn("über 300", first["hookSpecificOutput"]["additionalContext"])

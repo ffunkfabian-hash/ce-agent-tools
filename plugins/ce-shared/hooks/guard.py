@@ -115,7 +115,9 @@ def field_value(field, tool, data, cwd=None, facts=None):
 # `sudo`, `timeout 5` …) and any quote holding a command substitution (`echo "$(unity mcp)"`). Operators, program
 # names, flags and single-line arguments stay as written, so `codex exec "$(cat pruefung.md)"` or
 # `unity mcp --project-path x` are read as before. A comment (`# …`) is copied as it is and never read as a heredoc
-# operator. Here-strings (`<<<`) are not heredocs. A heredoc without terminator runs to the end of the text, as in bash.
+# operator; `<<` inside `$((…))`/`((…))` is a shift. An unquoted delimiter (`<<EOF`) lets the shell expand the body, so its
+# `$(…)` and `…` substitutions stay in the text. Here-strings (`<<<`) are not heredocs. A heredoc without terminator
+# runs to the end of the text, as in bash.
 
 TEXT_PROGRAMS = ("echo", "printf", "grep", "egrep", "fgrep", "rg", "pgrep", "pkill", "ag")
 SHELL_PROGRAMS = ("bash", "sh", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "exec", "xargs", "ssh")
@@ -128,7 +130,8 @@ def segment_kind(head):
     """What the words before a quote or heredoc run: "shell" (a shell or `eval`/`source`, also behind `env`, `sudo -u x`,
     `timeout 5` …: its text is executable), "text" (a program that only prints or searches: its quoted arguments are
     data) or "" (anything else). NAME=value prefixes do not count."""
-    names = [os.path.basename(word) for word in head.strip().split() if not ASSIGNMENT.match(word)]
+    names = [os.path.basename(word.replace("'", "").replace('"', "")) for word in head.strip().split()
+             if not ASSIGNMENT.match(word)]  # 'bash' -c … names bash (judge 0.33, 7.3)
     if not names:
         return ""
     if names[0] in SHELL_PROGRAMS:
@@ -142,48 +145,87 @@ def segment_kind(head):
 
 
 def heredoc_word(text, i):
-    """(delimiter, dash, end) of a heredoc operator at i (`<<`, `<<-`, blanks, a word that may mix quotes: E"OF",
-    'EOF', \\EOF), or None when no word follows."""
+    """(delimiter, dash, end, quoted) of a heredoc operator at i (`<<`, `<<-`, blanks, a word that may mix quotes:
+    E"OF", 'EOF', \\EOF), or None when no word follows. quoted: the shell expands nothing in the body."""
     i += 2
     dash = text.startswith("-", i)
     i += dash
     while i < len(text) and text[i] in " \t":
         i += 1
-    word, start = [], i
+    word, quoted = [], False
     while i < len(text):
         c = text[i]
         if c == "'":
             end = text.find("'", i + 1)
             end = len(text) if end < 0 else end
             word.append(text[i + 1:end])
-            i = end + 1
+            i, quoted = end + 1, True
         elif c == '"':
             end = text.find('"', i + 1)
             end = len(text) if end < 0 else end
             word.append(text[i + 1:end].replace('\\"', '"'))
-            i = end + 1
+            i, quoted = end + 1, True
         elif c == "\\" and i + 1 < len(text):
             word.append(text[i + 1])
-            i += 2
+            i, quoted = i + 2, True
         elif c in " \t\n;&|<>()":
             break
         else:
             word.append(c)
             i += 1
     delimiter = "".join(word)
-    return (delimiter, dash, i) if delimiter else None
+    return (delimiter, dash, i, quoted) if delimiter else None
+
+
+def expansions(body):
+    """The command substitutions of an unquoted heredoc body - `$(…)` (nested parentheses counted) and `…` - which
+    the shell runs (judge 0.33, 7.1); joined by newlines, "" without any."""
+    found, i, n = [], 0, len(body)
+    while i < n:
+        if body.startswith("$(", i):
+            depth, j = 0, i + 1
+            while j < n:
+                depth += body[j] == "("
+                depth -= body[j] == ")"
+                if depth == 0:
+                    break
+                j += 1
+            found.append(body[i:j + 1])
+            i = j + 1
+        elif body[i] == "`":
+            end = body.find("`", i + 1)
+            end = n if end < 0 else end
+            found.append(body[i:end + 1])
+            i = end + 1
+        else:
+            i += 1
+    return "\n".join(found)
+
+
+def arithmetic_end(text, i):
+    """Index after the `))` that closes the arithmetic expansion `$((…))` or command `((…))` starting at i (`<<` is
+    a shift there, no heredoc - judge 0.33, 7.2); len(text) when it never closes."""
+    depth, j = 0, i + (text[i] == "$")
+    while j < len(text):
+        depth += text[j] == "("
+        depth -= text[j] == ")"
+        if depth == 0:
+            return j + 1
+        j += 1
+    return len(text)
 
 
 def skip_heredoc_body(text, i, word, dash):
-    """Index after the terminator line of a heredoc body that starts at i (len(text) without a terminator)."""
+    """(index after the terminator line, body) of a heredoc body that starts at i (to len(text) without a terminator)."""
+    start = i
     while i < len(text):
         end = text.find("\n", i)
         end = len(text) if end < 0 else end
         line = text[i:end].rstrip("\r")
         if (line.lstrip("\t") if dash else line) == word:
-            return min(end + 1, len(text))
+            return min(end + 1, len(text)), text[start:i]
         i = end + 1
-    return len(text)
+    return len(text), text[start:]
 
 
 def rule_text(command):
@@ -227,6 +269,11 @@ def rule_text(command):
             out.append(comment)
             i += len(comment)
             continue
+        if command.startswith("$((", i) or command.startswith("((", i):
+            end = arithmetic_end(command, i)  # a shift inside is no heredoc operator
+            out.append(command[i:end])
+            i = end
+            continue
         if command.startswith("<<<", i):
             out.append("<<<")
             i += 3
@@ -234,9 +281,9 @@ def rule_text(command):
         if command.startswith("<<", i):
             found = heredoc_word(command, i)
             if found:
-                word, dash, end = found
+                word, dash, end, quoted = found
                 if segment_kind("".join(out[segment_start:])) != "shell":
-                    pending.append((word, dash))
+                    pending.append((word, dash, quoted))
                 out.append(command[i:end])
                 i = end
                 continue
@@ -244,8 +291,10 @@ def rule_text(command):
             out.append(c)
             i += 1
             while pending:
-                word, dash = pending.pop(0)
-                i = skip_heredoc_body(command, i, word, dash)
+                word, dash, quoted = pending.pop(0)
+                i, body = skip_heredoc_body(command, i, word, dash)
+                if not quoted and expansions(body):  # the shell runs these before the body is data
+                    out.append(expansions(body) + "\n")
             segment_start = len(out)
             continue
         if c in ";|&(":

@@ -807,11 +807,35 @@ class RuleTextTests(unittest.TestCase):
         ("cat <<E\"OF\"\nbody\nEOF\ngit push " + F + " origin x", "git-kein-force-push"),
         ("cat <<'EO'F\nbody\nEOF\nunity list", "unity-cli-ziel-nennen"),
         ("cat <<\\EOF\nbody\nEOF\ngit stash", "git-stash-geteilt"),
+        # round 2: an unquoted delimiter lets the shell expand the body - its substitutions run
+        ("cat <<EOF\n$(git push " + F + " origin main)\nEOF", "git-kein-force-push"),
+        ("cat <<EOF\ntext `unity list` text\nEOF", "unity-cli-ziel-nennen"),
+        ("cat <<EOF\n$(echo $(unity list))\nEOF", "unity-cli-ziel-nennen"),
+        # round 2: `<<` inside arithmetic is a shift, the next line is a command
+        ("echo $((1 << 2))\ngit push " + F + " origin main", "git-kein-force-push"),
+        ("(( x = 1 << 3 ))\ngit stash", "git-stash-geteilt"),
+        # round 2: a quoted program name is still that program
+        ("'bash' -c '\ngit push " + F + " origin main\n'", "git-kein-force-push"),
+        ("\"zsh\" <<EOF\nunity list\nEOF", "unity-cli-ziel-nennen"),
+    ]
+    STILL_DATA = [  # the same forms with a quoted delimiter or inside a quoted body are data
+        "cat <<'EOF'\n$(git push " + F + " origin main)\nEOF",
+        "cat <<\"EOF\"\n`git stash`\nEOF",
+        "cat <<EOF\nplain git push " + F + " origin main\nEOF",
+        "echo $((1 << 2))",
     ]
 
     def test_executable_text_is_still_judged(self):
         for command, rule in self.EXECUTABLE:
             self.assertIn(rule, names(bash(command)), command)
+        for command in self.STILL_DATA:
+            self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
+        self.assertEqual(guard.rule_text("cat <<EOF\na $(x) b `y`\nEOF\nls"), "cat <<EOF\n$(x)\n`y`\nls")
+        self.assertEqual(guard.rule_text("echo $((1 << 2)) && ls"), "echo $((1 << 2)) && ls")
+        self.assertEqual(guard.segment_kind("'bash' -c"), "shell")
+        self.assertEqual(guard.segment_kind("sudo -u me timeout 5 zsh"), "shell")
+        self.assertEqual(guard.segment_kind("X=1 \"echo\""), "text")
+        self.assertEqual(guard.segment_kind("python3 -"), "")
         self.assertEqual(guard.rule_text("cat <<EOF\nbody\n"), "cat <<EOF\n", "no terminator: the body runs to the end")
 
     def test_comments_and_composed_delimiters_are_read_like_the_shell(self):
@@ -819,8 +843,9 @@ class RuleTextTests(unittest.TestCase):
         self.assertEqual(guard.rule_text("ls #<<EOF x\ngit status"), "ls #<<EOF x\ngit status")
         self.assertEqual(guard.rule_text("cat <<E\"OF\"\nbody\nEOF\nls"), "cat <<E\"OF\"\nls")
         self.assertEqual(guard.rule_text("cat <<-'EOF'\n\tbody\n\tEOF\nls"), "cat <<-'EOF'\nls")
-        self.assertEqual(guard.heredoc_word("<<E\"OF\" x", 0), ("EOF", False, 7))
-        self.assertEqual(guard.heredoc_word("<<- 'E'OF\n", 0), ("EOF", True, 9))
+        self.assertEqual(guard.heredoc_word("<<E\"OF\" x", 0), ("EOF", False, 7, True))
+        self.assertEqual(guard.heredoc_word("<<- 'E'OF\n", 0), ("EOF", True, 9, True))
+        self.assertEqual(guard.heredoc_word("<<EOF\n", 0), ("EOF", False, 5, False))
         self.assertIsNone(guard.heredoc_word("<< \n", 0))
         self.assertEqual(guard.rule_text("x=1 && bash <<EOF\nrun\nEOF"), "x=1 && bash <<EOF\nrun\nEOF",
                          "a shell heredoc stays whole")

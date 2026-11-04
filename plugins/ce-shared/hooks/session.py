@@ -36,9 +36,9 @@ PULSE_EVERY = 20              # PostToolUse: look at the transcript every 20th t
 MESSAGE_LIMIT = int(os.environ.get("CE_MESSAGE_LIMIT") or 300)  # records (user + assistant) per session (› Sitzungen kurz halten); the variable is a probe aid
 INPUT_LIMIT = 150_000         # input tokens of one request (ce_report.MAX_CONTEXT_TOKENS)
 TAIL_BYTES = 512 * 1024       # the last requests of the transcript are enough for the current input
-RECORD_MARKS = (b'"type":"user"', b'"type":"assistant"')
-USAGE = re.compile(rb'"usage":\{([^{}]*)\}')
-TOKEN = re.compile(rb'"(input_tokens|cache_creation_input_tokens|cache_read_input_tokens)":(\d+)')
+RECORD_MARK = re.compile(rb'"type":\s*"(user|assistant)"')  # a record line, with or without blanks after the colon
+USAGE_MARK = b'"usage"'
+INPUT_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 CHECK_HINT = ("Code/Assets geändert, aber kein ./check oder Testlauf in dieser Sitzung (check-before-stop, DoD 2): "
               "jetzt `./ce check quick` plus gezielte Prüfung ausführen oder im Bericht begründen.")
 
@@ -167,26 +167,34 @@ def session_start(payload: dict) -> dict:
 # ------------------------------------------------------------------------------------------------- PostToolUse
 
 def transcript_measure(path: Path) -> tuple:
-    """(records, input tokens of the last request) of a transcript - a byte scan, no JSON parsing: the record count is
-    the number of user/assistant lines (as ce_report counts them), the input the sum of input, cache-creation and
-    cache-read tokens of the last usage block in the tail of the file. (0, 0) when unreadable."""
+    """(records, input tokens of the last request) of a transcript: the record count is a byte scan for user/assistant
+    lines (as ce_report counts them); the input is read from the last record of the tail that carries a usage object
+    (parsed as JSON, so nested `cache_creation` objects or blanks do not matter - judge 0.33, 4.1): input +
+    cache-creation + cache-read tokens. (0, 0) when unreadable."""
     try:
         size = path.stat().st_size
         records = 0
         with open(path, "rb") as handle:
             for line in handle:
-                if any(mark in line for mark in RECORD_MARKS):
+                if RECORD_MARK.search(line):
                     records += 1
             handle.seek(max(0, size - TAIL_BYTES))
             tail = handle.read()
     except OSError:
         return 0, 0
-    last_input = 0
-    for match in USAGE.finditer(tail):
-        tokens = {name.decode(): int(value) for name, value in TOKEN.findall(match.group(1))}
-        if tokens:
-            last_input = sum(tokens.values())
-    return records, last_input
+    for line in reversed(tail.splitlines()):
+        if USAGE_MARK not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:  # the cut first line of the tail, or no record
+            continue
+        message = record.get("message") if isinstance(record, dict) else None
+        usage = (message or {}).get("usage") if isinstance(message, dict) else None
+        usage = usage if isinstance(usage, dict) else record.get("usage") if isinstance(record, dict) else None
+        if isinstance(usage, dict):
+            return records, sum(int(usage.get(f) or 0) for f in INPUT_FIELDS if isinstance(usage.get(f), (int, float)))
+    return records, 0
 
 
 def due(payload: dict, key: str, every: int = 0) -> bool:
