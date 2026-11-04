@@ -45,7 +45,8 @@ Flags und einzeilige Argumente bleiben, ebenso alles, was eine Shell ausführt: 
 (sie wird selbst wie eine Zeile gelesen – Claudes `git commit -m "$(cat <<'EOF' … EOF)"` verliert nur den Nachrichtentext).
 Kommentare bleiben Text, `<<` darin ist kein Operator, in `$((…))`/`((…))` ein Shift; Trenner dürfen zusammengesetzt
 sein (`E"OF"`, `\EOF`). Bei unzitiertem Trenner (`<<EOF`) expandiert die Shell den Inhalt – seine `$(…)` und `…`
-bleiben deshalb in der geprüften Zeile; `'bash' -c` zählt wie `bash`.
+bleiben deshalb in der geprüften Zeile; `'bash' -c` zählt wie `bash`, und liest irgendein Befehl der Heredoc-Zeile als
+Shell (`cat <<'EOF' | bash`, `if x; then sh <<'EOF'`), bleibt der ganze Inhalt stehen.
 `not_contains` liest die ganze Zeile, eine Erwähnung irgendwo entschuldigt also weiterhin. Trimline (Nexogen 1.24) zählte 31 Blocks auf Regeltexte in Heredocs, Doku und `pgrep`-Mustern – kein echter
 Treffer. Die Vorabprüfung von `commit-on-main` liest nach wie vor nur feste Wörter (ein Heredoc-Inhalt war nie ein Commit).
 **Zustellung (0.33):** In Claude Code erreicht eine `systemMessage` nur den Nutzer (Probe 04.11.2026 mit headless-Sitzung:

@@ -944,8 +944,6 @@ class ReportAndSessionHookTests(unittest.TestCase):
             self.assertEqual(session.lessons(root), "", "imported one level down (AGENTS.md): not loaded twice")
             (root / "AGENTS.md").write_text("# Regeln\nSiehe docs/LESSONS.md (kein Import)\n", encoding="utf-8")
             self.assertIn("**x** → y", session.lessons(root), "a mention is no import")
-            (root / "CLAUDE.md").write_text("@AGENTS.md\n@Docs/LESSONS.md\n", encoding="utf-8")
-            self.assertEqual(session.lessons(root), "", "Cube Escape's form: Docs/ with a capital D")
             # judge 0.33, 6: an import resolves relative to the importing file, not the repo
             (root / "CLAUDE.md").unlink()
             (root / ".claude").mkdir()
@@ -960,6 +958,13 @@ class ReportAndSessionHookTests(unittest.TestCase):
             self.assertIn("**x** → y", session.lessons(root), "names .claude/docs/LESSONS.md: loaded")
             (root / ".claude" / "CLAUDE.md").write_text("@~/x/LESSONS.md\n@/docs/LESSONS.md\n", encoding="utf-8")
             self.assertIn("**x** → y", session.lessons(root), "home and absolute paths are not the repo's file")
+        with tempfile.TemporaryDirectory() as tmp:  # Cube Escape's form: Docs/ with a capital D - a real folder, so the
+            root = Path(tmp)                         # case holds on a case-sensitive file system too (judge, round 3)
+            (root / "Docs").mkdir(); (root / "Docs" / "LESSONS.md").write_text("# Lehren\n- **x** → y\n", encoding="utf-8")
+            (root / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root))
+            (root / "CLAUDE.md").write_text("@AGENTS.md\n@Docs/LESSONS.md\n", encoding="utf-8")
+            self.assertEqual(session.lessons(root), "")
 
     def test_post_tool_use_pulse_hints_on_the_session_limits_once(self):
         import tempfile

@@ -111,8 +111,9 @@ def field_value(field, tool, data, cwd=None, facts=None):
 # `<<-`, quoted or composed words like E"OF"), quoted literals that span lines (a script for `python3 -c`, a document,
 # a commit message) and the quoted arguments of programs that only print or search text (TEXT_PROGRAMS:
 # `echo 'git push --force'`, `pgrep -f "heavy_lock.py run"`). Executable text stays (judge 0.33, 7.1): a heredoc or a
-# multi-line quote fed to a shell (SHELL_PROGRAMS: `bash <<EOF`, `sh -c '…'`, `eval`, `source`, also behind `env`,
-# `sudo`, `timeout 5` …) and any quote holding a command substitution (`echo "$(unity mcp)"`). Operators, program
+# multi-line quote fed to a shell (SHELL_PROGRAMS: `bash <<EOF`, `cat <<EOF | bash`, `if x; then sh <<EOF`, `sh -c '…'`,
+# `eval`, `source`, also behind `env`, `sudo`, `timeout 5` …) and any quote holding a command substitution
+# (`echo "$(unity mcp)"`). Operators, program
 # names, flags and single-line arguments stay as written, so `codex exec "$(cat pruefung.md)"` or
 # `unity mcp --project-path x` are read as before. A comment (`# …`) is copied as it is and never read as a heredoc
 # operator; `<<` inside `$((…))`/`((…))` is a shift. An unquoted delimiter (`<<EOF`) lets the shell expand the body, so its
@@ -142,6 +143,23 @@ def segment_kind(head):
         rest = [n for n in names[1:] if not (n in SHELL_WRAPPERS or n.startswith("-") or n.isdigit())]
         return "text" if rest and rest[0] in TEXT_PROGRAMS else ""
     return "text" if names[0] in TEXT_PROGRAMS else ""
+
+
+CONTROL_WORDS = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until", "case", "esac", "{", "}", "!",
+                 "time", "do")
+LINE_SPLIT = re.compile(r"\|\|?|&&|;|\(|\)")
+
+
+def line_runs_shell(line):
+    """True when any simple command of the heredoc's line is a shell (judge 0.33, round 3): `cat <<'EOF' | bash`,
+    `if true; then bash <<'EOF'`, `x=1 && sh <<EOF`. Control words before a command are skipped."""
+    for part in LINE_SPLIT.split(line):
+        words = part.strip().split()
+        while words and words[0].replace("'", "").replace('"', "") in CONTROL_WORDS:
+            words = words[1:]
+        if words and segment_kind(" ".join(words)) == "shell":
+            return True
+    return False
 
 
 def heredoc_word(text, i):
@@ -184,11 +202,19 @@ def expansions(body):
     while i < n:
         if body.startswith("$(", i):
             depth, j = 0, i + 1
-            while j < n:
-                depth += body[j] == "("
-                depth -= body[j] == ")"
-                if depth == 0:
-                    break
+            while j < n:  # parentheses inside quotes do not count (judge 0.33, round 3: `$(printf ')' ; x)`)
+                if body[j] == "'":
+                    end = body.find("'", j + 1)
+                    j = n if end < 0 else end
+                elif body[j] == '"':
+                    j += 1
+                    while j < n and body[j] != '"':
+                        j += 2 if body[j] == "\\" else 1
+                else:
+                    depth += body[j] == "("
+                    depth -= body[j] == ")"
+                    if depth == 0:
+                        break
                 j += 1
             found.append(body[i:j + 1])
             i = j + 1
@@ -232,7 +258,7 @@ def rule_text(command):
     """The shell line without heredoc bodies, multi-line quoted literals and quoted arguments of text programs - the
     executable parts of the line stay (see the section comment)."""
     out, i, n = [], 0, len(command)
-    pending, quote, quote_start, segment_start = [], None, 0, 0
+    pending, quote, quote_start, segment_start, line_start = [], None, 0, 0, 0
     while i < n:
         c = command[i]
         if quote:
@@ -282,20 +308,22 @@ def rule_text(command):
             found = heredoc_word(command, i)
             if found:
                 word, dash, end, quoted = found
-                if segment_kind("".join(out[segment_start:])) != "shell":
-                    pending.append((word, dash, quoted))
+                pending.append((word, dash, quoted))
                 out.append(command[i:end])
                 i = end
                 continue
         if c == "\n":
             out.append(c)
             i += 1
+            executable = bool(pending) and line_runs_shell("".join(out[line_start:]))
             while pending:
                 word, dash, quoted = pending.pop(0)
                 i, body = skip_heredoc_body(command, i, word, dash)
-                if not quoted and expansions(body):  # the shell runs these before the body is data
+                if executable:  # a shell reads the body: it is judged as written
+                    out.append(body)
+                elif not quoted and expansions(body):  # the shell runs these before the body is data
                     out.append(expansions(body) + "\n")
-            segment_start = len(out)
+            segment_start = line_start = len(out)
             continue
         if c in ";|&(":
             segment_start = len(out) + 1
