@@ -791,6 +791,41 @@ class RuleTextTests(unittest.TestCase):
         for command, rule in self.STILL_HIT:
             self.assertIn(rule, names(bash(command)), command)
 
+    EXECUTABLE = [  # judge 0.33, 7.1/7.2: text a shell runs is no data text - every line still trips its rule
+        ("bash <<'EOF'\ngit push " + F + " origin x\nEOF", "git-kein-force-push"),
+        ("sh <<EOF\npython3 Tools/" + LOCK_RUN + " -- x\nEOF", "heavy-resource"),
+        ("env CE_X=1 bash <<EOF\ngit push " + F + " origin x\nEOF", "git-kein-force-push"),
+        ("sudo -u me timeout 5 zsh <<EOF\nunity list\nEOF", "unity-cli-ziel-nennen"),
+        ("bash -c '\ngit push " + F + " origin x\n'", "git-kein-force-push"),
+        ("zsh -c \"\nunity mcp\n\"", "unity-cli-ziel-nennen"),
+        ("eval 'a=1\nunity list'", "unity-cli-ziel-nennen"),
+        ("echo \"$(unity mcp)\"", "unity-cli-ziel-nennen"),
+        ("echo `unity list`", "unity-cli-ziel-nennen"),
+        ("grep -c \"$(git stash)\" f", "git-stash-geteilt"),
+        ("# <<EOF\ngit push " + F + " origin x", "git-kein-force-push"),
+        ("ls # <<EOF\ngit stash", "git-stash-geteilt"),
+        ("cat <<E\"OF\"\nbody\nEOF\ngit push " + F + " origin x", "git-kein-force-push"),
+        ("cat <<'EO'F\nbody\nEOF\nunity list", "unity-cli-ziel-nennen"),
+        ("cat <<\\EOF\nbody\nEOF\ngit stash", "git-stash-geteilt"),
+    ]
+
+    def test_executable_text_is_still_judged(self):
+        for command, rule in self.EXECUTABLE:
+            self.assertIn(rule, names(bash(command)), command)
+        self.assertEqual(guard.rule_text("cat <<EOF\nbody\n"), "cat <<EOF\n", "no terminator: the body runs to the end")
+
+    def test_comments_and_composed_delimiters_are_read_like_the_shell(self):
+        self.assertEqual(guard.rule_text("# <<EOF\ngit status"), "# <<EOF\ngit status")
+        self.assertEqual(guard.rule_text("ls #<<EOF x\ngit status"), "ls #<<EOF x\ngit status")
+        self.assertEqual(guard.rule_text("cat <<E\"OF\"\nbody\nEOF\nls"), "cat <<E\"OF\"\nls")
+        self.assertEqual(guard.rule_text("cat <<-'EOF'\n\tbody\n\tEOF\nls"), "cat <<-'EOF'\nls")
+        self.assertEqual(guard.heredoc_word("<<E\"OF\" x", 0), ("EOF", False, 7))
+        self.assertEqual(guard.heredoc_word("<<- 'E'OF\n", 0), ("EOF", True, 9))
+        self.assertIsNone(guard.heredoc_word("<< \n", 0))
+        self.assertEqual(guard.rule_text("x=1 && bash <<EOF\nrun\nEOF"), "x=1 && bash <<EOF\nrun\nEOF",
+                         "a shell heredoc stays whole")
+        self.assertEqual(guard.rule_text("python3 - <<EOF\nrun\nEOF"), "python3 - <<EOF\n", "an interpreter heredoc is data")
+
     def test_rule_text_keeps_operators_flags_and_single_line_arguments(self):
         self.assertEqual(guard.rule_text("cat > x.json <<'EOF'\n{\"a\": 1}\nEOF\n"), "cat > x.json <<'EOF'\n")
         self.assertEqual(guard.rule_text("cat <<EOF | tee out\nbody\nEOF\necho done"), "cat <<EOF | tee out\necho done")

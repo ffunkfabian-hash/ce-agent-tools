@@ -40,8 +40,11 @@ Format wie hookify (`event: bash|file|mcp|all`, `conditions` mit `field` command
 **Datentext zählt nicht (0.33 „Earshot“):** Bedingungen auf `command` lesen `guard.rule_text()` – die Zeile ohne
 Heredoc-Inhalte (`<<EOF … EOF`, `<<-`, zitierte Wörter), ohne mehrzeilige Zitate (`python3 -c '…'`, Commit-Text) und ohne
 die zitierten Argumente von Textprogrammen (`echo`, `printf`, `grep`, `rg`, `pgrep`, `pkill`). Operatoren, Programmnamen,
-Flags und einzeilige Argumente bleiben; `not_contains` liest die ganze Zeile, eine Erwähnung irgendwo entschuldigt also
-weiterhin. Trimline (Nexogen 1.24) zählte 31 Blocks auf Regeltexte in Heredocs, Doku und `pgrep`-Mustern – kein echter
+Flags und einzeilige Argumente bleiben, ebenso alles, was eine Shell ausführt: ein Heredoc oder mehrzeiliges Zitat für
+`bash`/`sh`/`zsh`/`eval`/`source` (auch hinter `env`, `sudo`, `timeout 5`), eine Befehlsersetzung `$(…)` in einem Zitat
+(sie wird selbst wie eine Zeile gelesen – Claudes `git commit -m "$(cat <<'EOF' … EOF)"` verliert nur den Nachrichtentext).
+Kommentare bleiben Text, `<<` darin ist kein Operator; Trenner dürfen zusammengesetzt sein (`E"OF"`, `\EOF`).
+`not_contains` liest die ganze Zeile, eine Erwähnung irgendwo entschuldigt also weiterhin. Trimline (Nexogen 1.24) zählte 31 Blocks auf Regeltexte in Heredocs, Doku und `pgrep`-Mustern – kein echter
 Treffer. Die Vorabprüfung von `commit-on-main` liest nach wie vor nur feste Wörter (ein Heredoc-Inhalt war nie ein Commit).
 **Zustellung (0.33):** In Claude Code erreicht eine `systemMessage` nur den Nutzer (Probe 04.11.2026 mit headless-Sitzung:
 `hook_system_message` im Transkript, nichts beim Modell). Warnungen gehen deshalb als `hookSpecificOutput.additionalContext`

@@ -946,6 +946,20 @@ class ReportAndSessionHookTests(unittest.TestCase):
             self.assertIn("**x** → y", session.lessons(root), "a mention is no import")
             (root / "CLAUDE.md").write_text("@AGENTS.md\n@Docs/LESSONS.md\n", encoding="utf-8")
             self.assertEqual(session.lessons(root), "", "Cube Escape's form: Docs/ with a capital D")
+            # judge 0.33, 6: an import resolves relative to the importing file, not the repo
+            (root / "CLAUDE.md").unlink()
+            (root / ".claude").mkdir()
+            (root / ".claude" / "CLAUDE.md").write_text("@docs/LESSONS.md\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root), ".claude/docs/LESSONS.md is another file: loaded")
+            (root / ".claude" / "CLAUDE.md").write_text("@../docs/LESSONS.md\n", encoding="utf-8")
+            self.assertEqual(session.lessons(root), "", "the repo's file, named relative to .claude/: not loaded twice")
+            (root / ".claude" / "CLAUDE.md").write_text("@rules.md\n", encoding="utf-8")
+            (root / ".claude" / "rules.md").write_text("@../docs/LESSONS.md\n", encoding="utf-8")
+            self.assertEqual(session.lessons(root), "", "one level down, relative to that file")
+            (root / ".claude" / "rules.md").write_text("@docs/LESSONS.md\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root), "names .claude/docs/LESSONS.md: loaded")
+            (root / ".claude" / "CLAUDE.md").write_text("@~/x/LESSONS.md\n@/docs/LESSONS.md\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root), "home and absolute paths are not the repo's file")
 
     def test_post_tool_use_pulse_hints_on_the_session_limits_once(self):
         import tempfile

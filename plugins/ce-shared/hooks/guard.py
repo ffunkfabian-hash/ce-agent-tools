@@ -20,8 +20,9 @@ must never wedge a session.
 
 The command-field rules (0.33) read `rule_text(command)`: the shell line without heredoc bodies, multi-line quoted
 literals and the quoted arguments of text programs (echo, grep, pgrep …), so a rule text quoted in a document, a script
-fed to python3 or a `pgrep -f` pattern never trips a block again (31 such false alarms in 26 days). `not_contains` reads
-the whole line, so a mention anywhere still excuses.
+fed to python3 or a `pgrep -f` pattern never trips a block again (31 such false alarms in 26 days). Executable text -
+a heredoc or multi-line quote for a shell, a command substitution - stays. `not_contains` reads the whole line, so a
+mention anywhere still excuses.
 """
 import fnmatch
 import json
@@ -107,14 +108,70 @@ def field_value(field, tool, data, cwd=None, facts=None):
 # ------------------------------------------------------------------------------------------------- rule text
 #
 # rule_text (0.33): the part of a shell line the command-field rules judge. Blanked are heredoc bodies (`<<EOF … EOF`,
-# `<<-`, quoted words), quoted literals that span lines (a script for `python3 -c`, a document, a commit message) and
-# the quoted arguments of programs that only print or search text (TEXT_PROGRAMS: `echo 'git push --force'`,
-# `pgrep -f "heavy_lock.py run"`). Operators, program names, flags and single-line arguments stay as written, so
-# `codex exec "$(cat pruefung.md)"` or `unity mcp --project-path x` are read as before. Here-strings (`<<<`) are not
-# heredocs. A heredoc without terminator runs to the end of the line.
+# `<<-`, quoted or composed words like E"OF"), quoted literals that span lines (a script for `python3 -c`, a document,
+# a commit message) and the quoted arguments of programs that only print or search text (TEXT_PROGRAMS:
+# `echo 'git push --force'`, `pgrep -f "heavy_lock.py run"`). Executable text stays (judge 0.33, 7.1): a heredoc or a
+# multi-line quote fed to a shell (SHELL_PROGRAMS: `bash <<EOF`, `sh -c '…'`, `eval`, `source`, also behind `env`,
+# `sudo`, `timeout 5` …) and any quote holding a command substitution (`echo "$(unity mcp)"`). Operators, program
+# names, flags and single-line arguments stay as written, so `codex exec "$(cat pruefung.md)"` or
+# `unity mcp --project-path x` are read as before. A comment (`# …`) is copied as it is and never read as a heredoc
+# operator. Here-strings (`<<<`) are not heredocs. A heredoc without terminator runs to the end of the text, as in bash.
 
 TEXT_PROGRAMS = ("echo", "printf", "grep", "egrep", "fgrep", "rg", "pgrep", "pkill", "ag")
-HEREDOC = re.compile(r"<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|(\\?[^\s;&|<>()'\"]+))")
+SHELL_PROGRAMS = ("bash", "sh", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "exec", "xargs", "ssh")
+SHELL_WRAPPERS = ("env", "command", "time", "nohup", "sudo", "nice", "timeout", "caffeinate", "doas")
+SUBSTITUTION = re.compile(r"\$\(|`")
+COMMENT = re.compile(r"[^\n]*")
+
+
+def segment_kind(head):
+    """What the words before a quote or heredoc run: "shell" (a shell or `eval`/`source`, also behind `env`, `sudo -u x`,
+    `timeout 5` …: its text is executable), "text" (a program that only prints or searches: its quoted arguments are
+    data) or "" (anything else). NAME=value prefixes do not count."""
+    names = [os.path.basename(word) for word in head.strip().split() if not ASSIGNMENT.match(word)]
+    if not names:
+        return ""
+    if names[0] in SHELL_PROGRAMS:
+        return "shell"
+    if names[0] in SHELL_WRAPPERS:
+        if any(name in SHELL_PROGRAMS for name in names[1:]):
+            return "shell"
+        rest = [n for n in names[1:] if not (n in SHELL_WRAPPERS or n.startswith("-") or n.isdigit())]
+        return "text" if rest and rest[0] in TEXT_PROGRAMS else ""
+    return "text" if names[0] in TEXT_PROGRAMS else ""
+
+
+def heredoc_word(text, i):
+    """(delimiter, dash, end) of a heredoc operator at i (`<<`, `<<-`, blanks, a word that may mix quotes: E"OF",
+    'EOF', \\EOF), or None when no word follows."""
+    i += 2
+    dash = text.startswith("-", i)
+    i += dash
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    word, start = [], i
+    while i < len(text):
+        c = text[i]
+        if c == "'":
+            end = text.find("'", i + 1)
+            end = len(text) if end < 0 else end
+            word.append(text[i + 1:end])
+            i = end + 1
+        elif c == '"':
+            end = text.find('"', i + 1)
+            end = len(text) if end < 0 else end
+            word.append(text[i + 1:end].replace('\\"', '"'))
+            i = end + 1
+        elif c == "\\" and i + 1 < len(text):
+            word.append(text[i + 1])
+            i += 2
+        elif c in " \t\n;&|<>()":
+            break
+        else:
+            word.append(c)
+            i += 1
+    delimiter = "".join(word)
+    return (delimiter, dash, i) if delimiter else None
 
 
 def skip_heredoc_body(text, i, word, dash):
@@ -130,7 +187,8 @@ def skip_heredoc_body(text, i, word, dash):
 
 
 def rule_text(command):
-    """The shell line without heredoc bodies, multi-line quoted literals and quoted arguments of text programs."""
+    """The shell line without heredoc bodies, multi-line quoted literals and quoted arguments of text programs - the
+    executable parts of the line stay (see the section comment)."""
     out, i, n = [], 0, len(command)
     pending, quote, quote_start, segment_start = [], None, 0, 0
     while i < n:
@@ -142,11 +200,13 @@ def rule_text(command):
                 continue
             if c == quote:
                 content = "".join(out[quote_start:])
-                head = "".join(out[segment_start:quote_start - 1]).strip().split()
-                program = os.path.basename(head[0]) if head else ""
-                if "\n" in content or program in TEXT_PROGRAMS:
+                kind = segment_kind("".join(out[segment_start:quote_start - 1]))
+                data = ("\n" in content and kind != "shell") or kind == "text"
+                if data:
                     del out[quote_start:]
-                    out.append(" ")
+                    # a substitution inside the quote is a command line of its own and is judged like one: Claude's
+                    # `git commit -m "$(cat <<'EOF' … EOF)"` loses only the message body, `echo "$(unity mcp)"` nothing
+                    out.append(rule_text(content) if quote == '"' and SUBSTITUTION.search(content) else " ")
                 out.append(c)
                 quote = None
             else:
@@ -162,17 +222,23 @@ def rule_text(command):
             out.append(c)
             i += 1
             continue
+        if c == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
+            comment = COMMENT.match(command, i).group(0)  # copied as it is, never read as an operator
+            out.append(comment)
+            i += len(comment)
+            continue
         if command.startswith("<<<", i):
             out.append("<<<")
             i += 3
             continue
         if command.startswith("<<", i):
-            match = HEREDOC.match(command, i)
-            if match:
-                word = next(group for group in match.groups()[1:] if group is not None).lstrip("\\")
-                pending.append((word, match.group(1) == "-"))
-                out.append(match.group(0))
-                i = match.end()
+            found = heredoc_word(command, i)
+            if found:
+                word, dash, end = found
+                if segment_kind("".join(out[segment_start:])) != "shell":
+                    pending.append((word, dash))
+                out.append(command[i:end])
+                i = end
                 continue
         if c == "\n":
             out.append(c)

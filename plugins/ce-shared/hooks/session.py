@@ -32,7 +32,6 @@ TOOL_LINE = ("Werkzeuge dieser Sitzung (Pflicht, globale Regeln): `ce_search` (M
              "Bericht = PR-Beschreibung, Ist-Zeit als Warten/Rechnen/Lesen/Umsetzen.")
 CLAUDE_FILES = ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md"))
 IMPORT = re.compile(r"^\s*@(\S+)", re.MULTILINE)
-LESSONS_IMPORT = re.compile(r"^(\./)?[Dd]ocs/LESSONS\.md$")
 PULSE_EVERY = 20              # PostToolUse: look at the transcript every 20th tool call
 MESSAGE_LIMIT = int(os.environ.get("CE_MESSAGE_LIMIT") or 300)  # records (user + assistant) per session (› Sitzungen kurz halten); the variable is a probe aid
 INPUT_LIMIT = 150_000         # input tokens of one request (ce_report.MAX_CONTEXT_TOKENS)
@@ -81,24 +80,43 @@ def imports(path: Path) -> list:
     return IMPORT.findall(text)
 
 
-def lessons_imported(root: Path) -> bool:
-    """True when the repo's CLAUDE.md (or CLAUDE.local.md, .claude/CLAUDE.md) imports docs/LESSONS.md itself or
-    through a file it imports (one level, e.g. AGENTS.md) - then the file is in the start context already."""
+def resolved(path: Path, entry: str):
+    """The file an `@entry` of `path` names: relative to the importing file's folder, as Claude Code reads it;
+    None for `~` and absolute paths (outside the repo)."""
+    if entry.startswith(("/", "~")):
+        return None
+    try:
+        return (path.parent / entry).resolve()
+    except OSError:
+        return None
+
+
+def lessons_imported(root: Path, target: Path) -> bool:
+    """True when the repo's CLAUDE.md (or CLAUDE.local.md, .claude/CLAUDE.md) imports `target` (the LESSONS file)
+    itself or through a file it imports (one level, e.g. AGENTS.md) - then it is in the start context already.
+    Imports resolve relative to the importing file (judge 0.33, 6): `.claude/CLAUDE.md` with `@docs/LESSONS.md`
+    names `.claude/docs/LESSONS.md`, not the repo's."""
+    def same(path) -> bool:  # by inode: a case-insensitive file system or a link names the same file differently
+        try:
+            return path is not None and os.path.samefile(path, target)
+        except OSError:
+            return False
     for name in CLAUDE_FILES:
-        first = imports(root / name)
-        if any(LESSONS_IMPORT.match(entry) for entry in first):
-            return True
-        for entry in first:
-            if not entry.startswith(("/", "~")) and any(LESSONS_IMPORT.match(e) for e in imports(root / entry)):
+        path = root / name
+        for entry in imports(path):
+            first = resolved(path, entry)
+            if same(first):
+                return True
+            if first is not None and any(same(resolved(first, e)) for e in imports(first)):
                 return True
     return False
 
 
 def lessons(root: Path) -> str:
-    if lessons_imported(root):
-        return ""
     for candidate in (root / "docs" / "LESSONS.md", root / "Docs" / "LESSONS.md"):
         if candidate.is_file():
+            if lessons_imported(root, candidate):
+                return ""
             text = candidate.read_text(encoding="utf-8", errors="replace")
             return f"===== {candidate.relative_to(root)} (Lehren, immer geladen) =====\n{text[:12000]}"
     return ""
