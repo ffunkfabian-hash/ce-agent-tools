@@ -10,6 +10,9 @@ conditions:
   - field: command
     operator: not_contains
     pattern: --resource
+  - field: command
+    operator: not_contains
+    pattern: --help
 ---
 
 **`heavy_lock.py run` ohne `--resource unity|blender|gpu`** landet auf der alten gemeinsamen Sperre und wartet hinter allem

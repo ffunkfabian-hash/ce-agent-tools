@@ -629,6 +629,14 @@ class PrecommitHookTests(RepoCase):
     def payload(self, command="git commit -m x"):
         return {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.root)}
 
+    def hint(self, result):
+        """0.33: the warning goes to the model as additionalContext, never as a block, never as a user-only message."""
+        specific = result["hookSpecificOutput"]
+        self.assertEqual(specific["hookEventName"], "PreToolUse")
+        self.assertNotIn("permissionDecision", specific, "warns, never blocks")
+        self.assertNotIn("systemMessage", result, "a systemMessage reaches only the user")
+        return specific["additionalContext"]
+
     def test_command_detection(self):
         for command in ("git commit -m x", "cd a && git commit -am 'x'", "git -C /r commit --amend"):
             self.assertTrue(precommit.is_commit(command), command)
@@ -638,10 +646,10 @@ class PrecommitHookTests(RepoCase):
     def test_warns_when_committed_docs_break_the_lint(self):
         write(self.root, "AGENTS.md", "## Projekt\n")
         git(self.root, "add", "AGENTS.md")
-        result = precommit.decide(self.payload())
-        self.assertIn("vor-commit-doku", result["systemMessage"])
-        self.assertIn("missing", result["systemMessage"])
-        self.assertNotIn("hookSpecificOutput", result, "warns, never blocks")
+        message = self.hint(precommit.decide(self.payload()))
+        self.assertIn("vor-commit-doku", message)
+        self.assertIn("missing", message)
+        self.assertIn("--amend", message, "tells the model what to do with the running commit")
 
     def test_silent_for_code_only_commit_and_for_clean_docs(self):
         write(self.root, "code.py", "x = 1\n")
@@ -654,22 +662,21 @@ class PrecommitHookTests(RepoCase):
     def test_commit_all_considers_unstaged_tracked_docs(self):
         write(self.root, "AGENTS.md", "## Projekt\n")
         self.assertEqual(precommit.decide(self.payload("git commit -m x")), {})
-        self.assertIn("vor-commit-doku", precommit.decide(self.payload("git commit -am x"))["systemMessage"])
+        self.assertIn("vor-commit-doku", self.hint(precommit.decide(self.payload("git commit -am x"))))
 
     def test_runs_the_repo_own_check_skills(self):
         write(self.root, ".agents/skills/check_skills.py", "import sys; print('skill broken: ce-x'); sys.exit(1)\n")
         write(self.root, "README.md", "r\n")
         git(self.root, "add", "-A")
-        message = precommit.decide(self.payload())["systemMessage"]
+        message = self.hint(precommit.decide(self.payload()))
         self.assertIn(".agents/skills/check_skills.py", message)
         self.assertIn("skill broken: ce-x", message)
-        self.assertNotIn("hookSpecificOutput", precommit.decide(self.payload()))
 
     def test_runs_the_repo_own_check_docs_and_ignores_other_tools(self):
         write(self.root, "Tools/check_docs.py", "import sys; print('docs broken: x.md'); sys.exit(1)\n")
         write(self.root, "README.md", "r\n")
         git(self.root, "add", "-A")
-        message = precommit.decide(self.payload())["systemMessage"]
+        message = self.hint(precommit.decide(self.payload()))
         self.assertIn("Tools/check_docs.py", message)
         self.assertIn("docs broken: x.md", message)
         self.assertEqual(precommit.decide({"tool_name": "Edit", "tool_input": {}}), {})
@@ -888,19 +895,86 @@ class ReportAndSessionHookTests(unittest.TestCase):
             context = json.loads(start)["hookSpecificOutput"]["additionalContext"]
             self.assertIn("ce_search", context); self.assertIn("TG Auftrag", context); self.assertIn("**x** → y", context)
             transcript = self.transcript(root)
-            stop = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript)}),
-                                  capture_output=True, text=True, encoding="utf-8", env=env).stdout
-            message = json.loads(stop).get("systemMessage", "")
-            self.assertIn("ohne model", message)
-            self.assertIn("Sitzung:", (root / "report.md").read_text(encoding="utf-8"))
-            # code changed but checks ran: no check-before-stop warning; remove the checks -> warning
-            self.assertNotIn("check-before-stop", message)
+            env["CE_HOOK_STATE"] = str(root / "state")
+            base = {"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript), "session_id": "s-1",
+                    "stop_hook_active": False}
+
+            def stop_hook(**extra):
+                out = subprocess.run([sys.executable, str(hook)], input=json.dumps(dict(base, **extra)),
+                                     capture_output=True, text=True, encoding="utf-8", env=env).stdout
+                return json.loads(out)
+            result = stop_hook()
+            # 0.33: the Stop hints go to report.md (the measurement), no longer as a systemMessage only the user sees
+            self.assertNotIn("systemMessage", result)
+            report = (root / "report.md").read_text(encoding="utf-8")
+            self.assertIn("Sitzung:", report)
+            self.assertIn("ohne model", report)
+            # code changed but checks ran: no check-before-stop hint; remove the checks -> hint for the model
+            self.assertEqual(result, {})
             lines = [json.loads(l) for l in transcript.read_text(encoding="utf-8").splitlines()]
             lines = [l for l in lines if not (l["type"] == "assistant" and l["message"]["content"][0]["input"].get("command") == "./check")]
             transcript.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
-            stop = subprocess.run([sys.executable, str(hook)], input=json.dumps({"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript)}),
-                                  capture_output=True, text=True, encoding="utf-8", env=env).stdout
-            self.assertIn("check-before-stop", json.loads(stop)["systemMessage"])
+            result = stop_hook()
+            self.assertIn("check-before-stop", result["hookSpecificOutput"]["additionalContext"])
+            self.assertEqual(result["hookSpecificOutput"]["hookEventName"], "Stop")
+            self.assertNotIn("systemMessage", result)
+            self.assertNotIn("decision", result, "a hint, never a block")
+            # the model answers once more after a Stop context (probe 04.11.2026): never again while stop_hook_active,
+            # and only once per session - a repeated hint would loop
+            self.assertEqual(stop_hook(stop_hook_active=True), {})
+            self.assertEqual(stop_hook(), {})
+            self.assertIn("check-before-stop", stop_hook(session_id="s-2")["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("check-before-stop", (root / "report.md").read_text(encoding="utf-8"), "report.md keeps every hint")
+
+    def test_session_start_skips_lessons_the_repo_imports_itself(self):
+        import tempfile
+        sys.path.insert(0, str(PLUGIN / "hooks"))
+        import session
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir(); (root / "docs" / "LESSONS.md").write_text("# Lehren\n- **x** → y\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root), "no CLAUDE.md: the hook loads the lessons")
+            (root / "CLAUDE.md").write_text("# Repo\n\n@AGENTS.md\n\nText\n", encoding="utf-8")
+            (root / "AGENTS.md").write_text("# Regeln\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root), "CLAUDE.md without the import: loaded")
+            (root / "CLAUDE.md").write_text("# Repo\n\n@AGENTS.md\n@docs/LESSONS.md\n", encoding="utf-8")
+            self.assertEqual(session.lessons(root), "", "CLAUDE.md imports the file itself: not loaded twice")
+            (root / "CLAUDE.md").write_text("# Repo\n\n@AGENTS.md\n", encoding="utf-8")
+            (root / "AGENTS.md").write_text("# Regeln\n@./docs/LESSONS.md\n", encoding="utf-8")
+            self.assertEqual(session.lessons(root), "", "imported one level down (AGENTS.md): not loaded twice")
+            (root / "AGENTS.md").write_text("# Regeln\nSiehe docs/LESSONS.md (kein Import)\n", encoding="utf-8")
+            self.assertIn("**x** → y", session.lessons(root), "a mention is no import")
+            (root / "CLAUDE.md").write_text("@AGENTS.md\n@Docs/LESSONS.md\n", encoding="utf-8")
+            self.assertEqual(session.lessons(root), "", "Cube Escape's form: Docs/ with a capital D")
+
+    def test_post_tool_use_pulse_hints_on_the_session_limits_once(self):
+        import tempfile
+        sys.path.insert(0, str(PLUGIN / "hooks"))
+        import session
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            transcript = root / "t.jsonl"
+            usage = '"usage":{"input_tokens":1000,"cache_creation_input_tokens":2000,"cache_read_input_tokens":160000,"output_tokens":5}'
+            records = ['{"type":"user","message":{"content":"x"}}', '{"type":"assistant","message":{' + usage + '}}']
+            transcript.write_text("\n".join(records * 10) + "\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
+                payload = {"hook_event_name": "PostToolUse", "transcript_path": str(transcript), "session_id": "p-1"}
+                self.assertEqual(session.transcript_measure(transcript), (20, 163000))
+                first = session.pulse(payload)
+                self.assertIn("163,000 Input-Tokens", first["hookSpecificOutput"]["additionalContext"])
+                self.assertNotIn("über 300", first["hookSpecificOutput"]["additionalContext"])
+                self.assertEqual(first["hookSpecificOutput"]["hookEventName"], "PostToolUse")
+                for _ in range(session.PULSE_EVERY - 1):
+                    self.assertEqual(session.pulse(payload), {}, "between two looks nothing is read")
+                transcript.write_text("\n".join(records * 200) + "\n", encoding="utf-8")
+                second = session.pulse(payload)
+                text = second["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("über 300 Nachrichten (400)", text)
+                self.assertNotIn("Input-Tokens", text, "the input hint came already")
+                for _ in range(session.PULSE_EVERY):
+                    self.assertEqual(session.pulse(payload), {}, "same threshold step: no repeat")
+                self.assertNotEqual(session.pulse(dict(payload, session_id="p-2")), {}, "another session: its own hints")
+                self.assertEqual(session.pulse({"hook_event_name": "PostToolUse"}), {}, "no transcript: nothing")
 
 
 class MediaAndJudgeTests(unittest.TestCase):

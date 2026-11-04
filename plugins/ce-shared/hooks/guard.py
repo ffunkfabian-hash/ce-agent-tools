@@ -10,8 +10,18 @@ Two jobs, one hook:
    .claude/agent-guard.json, Bash commands must match its allow list and Edit/Write paths its edit list - tools of a
    subagent stay as narrow as its job (test runner: run and read, never commit; doc keeper: only docs).
 
-Output follows hookify: warnings as systemMessage, blocks as permissionDecision "deny". Any internal error lets the
-call through with a message - a broken guard must never wedge a session.
+Output: blocks as permissionDecision "deny" (plus systemMessage for the user). Warnings depend on the client (0.33 Earshot):
+`decide(payload, rules)` - the adapters' path - renders them as systemMessage, which Codex, Antigravity and Vibe hand to
+their model. `decide(payload, rules, client="claude")` - Claude Code's own hook - renders them as
+hookSpecificOutput.additionalContext, the one channel that reaches Claude's model (probe 04.11.2026: a systemMessage
+reaches only the user), once per session and rule (hint_state), and drops the pre-check note of commit-on-main
+(700 notes in 26 days that nobody acted on). Any internal error lets the call through with a message - a broken guard
+must never wedge a session.
+
+The command-field rules (0.33) read `rule_text(command)`: the shell line without heredoc bodies, multi-line quoted
+literals and the quoted arguments of text programs (echo, grep, pgrep …), so a rule text quoted in a document, a script
+fed to python3 or a `pgrep -f` pattern never trips a block again (31 such false alarms in 26 days). `not_contains` reads
+the whole line, so a mention anywhere still excuses.
 """
 import fnmatch
 import json
@@ -25,6 +35,12 @@ PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolv
 RULES_DIR = PLUGIN_ROOT / "rules"
 PROFILE_FILE = Path(".claude") / "agent-guard.json"
 FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+HINT_REPEAT = 25  # Claude Code: a warning reaches the model at its first hit in a session, then at every 25th
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import hint_state  # noqa: E402
+except Exception:  # noqa: BLE001 - without the throttle every hint is due
+    hint_state = None
 
 
 # --------------------------------------------------------------------------------------------------------- rules
@@ -88,11 +104,99 @@ def field_value(field, tool, data, cwd=None, facts=None):
     return None
 
 
+# ------------------------------------------------------------------------------------------------- rule text
+#
+# rule_text (0.33): the part of a shell line the command-field rules judge. Blanked are heredoc bodies (`<<EOF … EOF`,
+# `<<-`, quoted words), quoted literals that span lines (a script for `python3 -c`, a document, a commit message) and
+# the quoted arguments of programs that only print or search text (TEXT_PROGRAMS: `echo 'git push --force'`,
+# `pgrep -f "heavy_lock.py run"`). Operators, program names, flags and single-line arguments stay as written, so
+# `codex exec "$(cat pruefung.md)"` or `unity mcp --project-path x` are read as before. Here-strings (`<<<`) are not
+# heredocs. A heredoc without terminator runs to the end of the line.
+
+TEXT_PROGRAMS = ("echo", "printf", "grep", "egrep", "fgrep", "rg", "pgrep", "pkill", "ag")
+HEREDOC = re.compile(r"<<(-?)\s*(?:'([^']*)'|\"([^\"]*)\"|(\\?[^\s;&|<>()'\"]+))")
+
+
+def skip_heredoc_body(text, i, word, dash):
+    """Index after the terminator line of a heredoc body that starts at i (len(text) without a terminator)."""
+    while i < len(text):
+        end = text.find("\n", i)
+        end = len(text) if end < 0 else end
+        line = text[i:end].rstrip("\r")
+        if (line.lstrip("\t") if dash else line) == word:
+            return min(end + 1, len(text))
+        i = end + 1
+    return len(text)
+
+
+def rule_text(command):
+    """The shell line without heredoc bodies, multi-line quoted literals and quoted arguments of text programs."""
+    out, i, n = [], 0, len(command)
+    pending, quote, quote_start, segment_start = [], None, 0, 0
+    while i < n:
+        c = command[i]
+        if quote:
+            if quote == '"' and c == "\\" and i + 1 < n:
+                out.append(command[i:i + 2])
+                i += 2
+                continue
+            if c == quote:
+                content = "".join(out[quote_start:])
+                head = "".join(out[segment_start:quote_start - 1]).strip().split()
+                program = os.path.basename(head[0]) if head else ""
+                if "\n" in content or program in TEXT_PROGRAMS:
+                    del out[quote_start:]
+                    out.append(" ")
+                out.append(c)
+                quote = None
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            quote, quote_start = c, len(out) + 1
+            out.append(c)
+            i += 1
+            continue
+        if command.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        if command.startswith("<<", i):
+            match = HEREDOC.match(command, i)
+            if match:
+                word = next(group for group in match.groups()[1:] if group is not None).lstrip("\\")
+                pending.append((word, match.group(1) == "-"))
+                out.append(match.group(0))
+                i = match.end()
+                continue
+        if c == "\n":
+            out.append(c)
+            i += 1
+            while pending:
+                word, dash = pending.pop(0)
+                i = skip_heredoc_body(command, i, word, dash)
+            segment_start = len(out)
+            continue
+        if c in ";|&(":
+            segment_start = len(out) + 1
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def condition_holds(condition, tool, data, cwd=None, facts=None):
-    value = field_value(condition.get("field", ""), tool, data, cwd, facts)
+    field = condition.get("field", "")
+    value = field_value(field, tool, data, cwd, facts)
     if value is None:
         return False
     pattern, operator = condition.get("pattern", ""), condition.get("operator", "regex_match")
+    if tool == "Bash" and field == "command" and operator != "not_contains":
+        value = rule_text(value)
     if operator == "regex_match":
         try:
             return re.search(pattern, value, re.IGNORECASE) is not None
@@ -673,7 +777,21 @@ def agent_problem(payload):
 
 # ------------------------------------------------------------------------------------------------------- output
 
-def decide(payload, rules=None):
+def claude_hints(payload, warnings):
+    """Claude Code's rendering of the warnings (0.33): additionalContext for the model, each rule once per session and
+    then every HINT_REPEAT-th hit (hint_state); nothing for the user. Without hint_state every warning is due."""
+    session = str(payload.get("session_id") or "")
+    due = [text for name, text in warnings
+           if hint_state is None or hint_state.due(session, "rule:" + name, HINT_REPEAT)]
+    if not due:
+        return {}
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n\n".join(due)}}
+
+
+def decide(payload, rules=None, client="adapter"):
+    """The verdict of one tool call. client "adapter" (Codex, Antigravity, Vibe through client_adapter) gets warnings
+    and the commit pre-check notes as systemMessage; client "claude" gets the warnings as additionalContext (throttled)
+    and no notes. Blocks are the same for every client."""
     rules = load_rules() if rules is None else rules
     tool, data = payload.get("tool_name", ""), payload.get("tool_input") or {}
     cwd = payload.get("cwd")
@@ -681,8 +799,8 @@ def decide(payload, rules=None):
     facts = commit_facts(data.get("command", ""), cwd or os.getcwd()) if tool == "Bash" and commit_rules else None
     hits = matching_rules(rules, tool, data, cwd, facts)
     blocks = [f"**[{r['name']}]**\n{r['message']}" for r in hits if r.get("action") == "block"]
-    warnings = [f"**[{r['name']}]**\n{r['message']}" for r in hits if r.get("action") != "block"]
-    warnings += [f"**[{commit_rules[0]}]**\n{note}" for note in (facts.notes if facts else [])]
+    warnings = [(r["name"], f"**[{r['name']}]**\n{r['message']}") for r in hits if r.get("action") != "block"]
+    notes = [f"**[{commit_rules[0]}]**\n{note}" for note in (facts.notes if facts else [])]
     problem = agent_problem(payload)
     if problem:
         blocks.append(problem)
@@ -690,8 +808,10 @@ def decide(payload, rules=None):
         message = "\n\n".join(blocks)
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                        "permissionDecisionReason": message}, "systemMessage": message}
-    if warnings:
-        return {"systemMessage": "\n\n".join(warnings)}
+    if client == "claude":
+        return claude_hints(payload, warnings)
+    if warnings or notes:
+        return {"systemMessage": "\n\n".join([text for _, text in warnings] + notes)}
     return {}
 
 
@@ -704,7 +824,7 @@ def main():
                 pass
     try:
         payload = json.load(sys.stdin)
-        print(json.dumps(decide(payload)))
+        print(json.dumps(decide(payload, client="claude")))
     except Exception as error:  # never wedge a session
         print(json.dumps({"systemMessage": f"ce-shared guard error: {error}"}))
     return 0

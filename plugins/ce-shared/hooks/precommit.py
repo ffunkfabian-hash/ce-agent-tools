@@ -3,7 +3,9 @@
 
 When the commit contains a *.md file or a skill (SKILL.md, .agents/skills/**), it runs tools/ce_lint.py for the repo
 (if the repo has a .ce-repo.json) and the repo's own check_docs.py (Tools/, tools/ or scripts/), and reports their
-result lines as a systemMessage. Any error, timeout or missing tool lets the commit through silently - it only warns.
+result lines. 0.33 (Earshot): as hookSpecificOutput.additionalContext, which reaches the model (a systemMessage only
+reached the user: 18 warnings in 26 days, none acted on); the commit still runs, the model is told to fix and amend.
+Any error, timeout or missing tool lets the commit through silently - it only warns.
 """
 import json
 import os
@@ -80,8 +82,9 @@ def decide(payload):
             notes.append(f"{SKILL_CHECK}: " + "\n".join(lines[-12:]))
     if not notes:
         return {}
-    return {"systemMessage": "**[vor-commit-doku]** Docs/Skills im Commit, Prüfung meldet:\n" + "\n\n".join(notes)
-            + "\nNur eine Warnung - der Commit läuft."}
+    text = ("**[vor-commit-doku]** Docs/Skills im Commit, Prüfung meldet:\n" + "\n\n".join(notes)
+            + "\nDer Commit läuft trotzdem: Befund beheben und mit `git commit --amend` nachziehen (oder begründen).")
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}
 
 
 def main():

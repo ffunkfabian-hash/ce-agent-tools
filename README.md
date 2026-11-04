@@ -9,12 +9,14 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | Teil | Wirkung |
 |---|---|
 | `plugins/ce-shared/rules/*.md` | gemeinsame Regeln im hookify-Format (siehe unten), ausgewertet bei jedem Bash-/Datei-Werkzeug |
-| `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents |
+| `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents. 0.33 „Earshot“: Warnungen gehen als `additionalContext` an das Modell (einmal je Sitzung und Regel, dann jeder 25. Treffer; `hint_state.py`), nicht mehr als `systemMessage` (die sah nur der Nutzer); der Vorabhinweis von `commit-on-main` entfällt in Claude Code (Codex, Antigravity, Vibe bekommen ihn weiter). Regeln auf `command` lesen `rule_text()`: ohne Heredoc-Inhalte, mehrzeilige Zitate und zitierte Argumente von Textprogrammen (`echo`, `grep`, `pgrep` …) |
 | `plugins/ce-shared/hooks/codex_guard.py`, `antigravity_guard.py`, `vibe_guard.py` | derselbe Wächter als Codex-/Antigravity-/Vibe-User-Hook (dünne Adapter über `client_adapter.py`, siehe „Andere Clients“; Vibe ab 0.27) |
 | `plugins/ce-shared/githooks/ce_githooks.py` | Git-Netz pre-commit/pre-push je Repo, umkehrbar (siehe „Git-Netz“) |
 | `plugins/ce-shared/hooks/postfach_watch.py` | zwei Stop-Hooks (0.15): `watch` (async + asyncRewake) startet für eine reservierte Sitzung den Postfach-Wächter und weckt sie bei einer Nachricht; `remind` hält als Rückfall das Anhalten einmal an (höchstens alle 2 h, nie ohne `gh`) |
 | `plugins/ce-shared/hooks/postfach_inbox.py` | PostToolUse-Hook (0.21): Post an eine reservierte Sitzung kommt mitten in der Arbeit als `additionalContext` (Codex über `codex_guard.py`). Bei leerem Postfach nur zwei Dateilesungen, kein Netz, kein Kontext; höchstens alle 3 min (`CE_INBOX_EVERY`) ein abgelöster Lesezugriff, dessen Ergebnis der nächste Werkzeugaufruf zustellt; zählt als `pending` wie ein Wecken des Stop-Wächters, der das Zugestellte überspringt. `CE_INBOX=0` schaltet ab, Fehler geben nichts aus |
-| `plugins/ce-shared/hooks/precommit.py` | PreToolUse vor `git commit`: bei geänderten Docs/Skills `ce_lint.py` + repo-eigenes `check_docs.py`, nur Warnung |
+| `plugins/ce-shared/hooks/precommit.py` | PreToolUse vor `git commit`: bei geänderten Docs/Skills `ce_lint.py` + repo-eigenes `check_docs.py`, nur Warnung – 0.33 als `additionalContext` für das Modell (Befund beheben, `--amend`) |
+| `plugins/ce-shared/hooks/session.py` | SessionStart (Werkzeugzeile, Sitzungsname, `docs/LESSONS.md` – 0.33 nur, wenn `CLAUDE.md` die Datei nicht selbst per `@` importiert), PostToolUse (0.33: alle 20 Aufrufe ein Blick auf das Transkript, über 300 Nachrichten oder über 150 000 Input-Tokens je Anfrage ein Hinweis als `additionalContext`, je Schwelle einmal) und Stop (`ce_report`-Zeile und Hinweise nach `report.md`; `check-before-stop` 0.33 einmal je Sitzung als `additionalContext`, nie bei `stop_hook_active` – das Modell antwortet darauf genau einmal mehr; keine `systemMessage` mehr) |
+| `plugins/ce-shared/hooks/hint_state.py` | Drossel der Hinweise (0.33): eine kleine JSON-Datei je Sitzung unter `heavy_lock.cache_dir("hooks")` (`CE_HOOK_STATE` überschreibt den Ordner), 14 Tage aufbewahrt; ohne Sitzungs-ID oder bei Fehlern ist jeder Hinweis fällig |
 | `plugins/ce-shared/tools/` | gemeinsame Werkzeuge (siehe „Werkzeuge“), lesen `.ce-repo.json` des Repos |
 | `tests/test_guard.py` | jede Regel mit treffenden und nicht treffenden Befehlen, Gleichstand mit den ersetzten hookify-Regeln, Profile |
 
@@ -28,13 +30,23 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | `unity-nie-auf-checkout` | blockiert | Unity oder die Unity-CLI mit einem Cube-Escape-Checkout als Projekt (`-projectPath`, `--project-path`, `unity open/run/build`); 0.31: jeder Pfad `…/Claude/Cube Escape` auch in Windows-Form (`G:\Claude\…`, `/g/Claude/…`, `~/Claude/…`, `C:\Users\…\Claude` als Verbindung) |
 | `unity-cli-ziel-nennen` | blockiert | `unity mcp/command/list/job/eval/pipeline install` ohne `--project-path` (die CLI nähme sonst irgendeinen Editor) |
 | `commit-on-main` | blockiert | ein einfacher `git commit` (auch hinter einem führenden `cd <Pfad> &&`), dessen Repo auf `main`/`master` steht (Feld `git_commit`, unten), und `--allow-empty-message`; andere zusammengesetzte Zeilen nur mit Hinweis, dort entscheidet das Git-Netz |
-| `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` |
-| `heavy-unlocked`, `output-cap`, `judge-template` | warnt | schwerer Lauf ohne sichtbare Sperre; ganze JSON-/Log-Datei ausgeben; `codex exec` ohne Checkliste |
+| `heavy-resource` | blockiert | `heavy_lock.py run` ohne `--resource` (0.33: `--help` ausgenommen) |
+| `heavy-unlocked`, `output-cap`, `judge-template` | warnt | schwerer Lauf ohne sichtbare Sperre; ganze JSON-/Log-Datei ausgeben (0.33: `cat > x.json <<EOF` ist keine Ausgabe); `codex exec` ohne Checkliste (neun Prüfpunkte) |
 | `merge-nur-sightline` | blockiert | 0.22: `gh pr merge` (auch `--auto`), `gh api … PUT …/pulls/N/merge`, GraphQL `mergePullRequest`/`enablePullRequestAutoMerge` (auch nach `NAME=wert`, `env`, `bash -c`, `eval`) und die GitHub-MCP-Werkzeuge `merge_pull_request`/`enable_pr_auto_merge` – außer in der Sitzung Sightline (reservierter Name `Sightline` in `<git-dir>/ce-session.json` oder `CE_ROLE=sightline`). `git merge origin/main` (main einholen), `gh pr view/create` und `gh pr merge --help` bleiben frei. Feld `merge_attempt`, Ereignis `all`, Logik nur in `guard.py`; ein Lesefehler lässt durch |
 | `actions-sparsam` | warnt | Bearbeiten eines GitHub-Workflows: globale Regel „GitHub Actions sparsam“ |
 
 Format wie hookify (`event: bash|file|mcp|all`, `conditions` mit `field` command/file_path/content/new_text/old_text, Operatoren
 `regex_match` (ohne Groß/klein), `contains`, `not_contains`, `equals`, `starts_with`, `ends_with`; `action: warn|block`).
+**Datentext zählt nicht (0.33 „Earshot“):** Bedingungen auf `command` lesen `guard.rule_text()` – die Zeile ohne
+Heredoc-Inhalte (`<<EOF … EOF`, `<<-`, zitierte Wörter), ohne mehrzeilige Zitate (`python3 -c '…'`, Commit-Text) und ohne
+die zitierten Argumente von Textprogrammen (`echo`, `printf`, `grep`, `rg`, `pgrep`, `pkill`). Operatoren, Programmnamen,
+Flags und einzeilige Argumente bleiben; `not_contains` liest die ganze Zeile, eine Erwähnung irgendwo entschuldigt also
+weiterhin. Trimline (Nexogen 1.24) zählte 31 Blocks auf Regeltexte in Heredocs, Doku und `pgrep`-Mustern – kein echter
+Treffer. Die Vorabprüfung von `commit-on-main` liest nach wie vor nur feste Wörter (ein Heredoc-Inhalt war nie ein Commit).
+**Zustellung (0.33):** In Claude Code erreicht eine `systemMessage` nur den Nutzer (Probe 04.11.2026 mit headless-Sitzung:
+`hook_system_message` im Transkript, nichts beim Modell). Warnungen gehen deshalb als `hookSpecificOutput.additionalContext`
+(PreToolUse, erprobt), einmal je Sitzung und Regel, dann jeder 25. Treffer (`HINT_REPEAT`); Blocks unverändert. Die Adapter
+(Codex, Antigravity, Vibe) rendern Warnungen weiter in ihrem Format, dort erreichen sie das Modell ohnehin.
 Zusätzlich `merge_attempt` (Bash und `mcp__…`-Werkzeuge, siehe `merge-nur-sightline`) und `git_commit` (nur Bash), die **begrenzte Vorabprüfung** von `commit-on-main`: Beurteilt wird nur eine Zeile,
 die als Ganzes ein einziger einfacher Befehl `git [Optionen] commit …` aus festen Wörtern ist. Quotes, Backslashes,
 Zeilenfortsetzung und Kommentare werden wie in der Shell gelesen, auch innerhalb eines Worts (`'gi't commit`,

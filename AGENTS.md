@@ -33,6 +33,11 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
   README › Regeln, Feld `git_commit`); alles andere Zusammengesetzte geht mit Hinweis an das Git-Netz. Keine
   Shell-Nachbildung in `guard.py` – neue Gegenbeispiele werden Laufzeittests des Netzes (`PrecheckBoundaryTests`); eine
   weitere vorab beurteilte Form nur mit Nutzerentscheid und Laufzeitbeleg mit echter Shell.
+- **Zustellung (0.33):** In Claude Code sieht das Modell keine `systemMessage`; Hinweise für das Modell gehen als
+  `additionalContext` (PreToolUse/PostToolUse erprobt; Stop lässt das Modell genau einmal weiterantworten, darum nur ohne
+  `stop_hook_active` und einmal je Sitzung), gedrosselt über `hooks/hint_state.py`. Eine Warnung, die niemand liest, wird
+  gestrichen statt gehalten. Blocks lesen `guard.rule_text()` (kein Heredoc-/Datentext); Codex/Antigravity/Vibe behalten
+  ihre Texte über die Adapter.
 - **Fail-open:** Adapter antworten immer mit Exit 0 und gültigem Clientformat, auch wenn `guard.py` oder `client_adapter.py` nicht lädt; eingetragene
   Befehle reichen nur eine Antwort mit Exit 0 durch, sonst eine Meldung ohne Block (fehlendes Skript, Syntax-/Importfehler;
   Exit 2 hieße in Codex: alles sperren). Git-Wrapper: nur Exitcode `REJECT` ist eine Ablehnung, alles andere ein Startfehler.
