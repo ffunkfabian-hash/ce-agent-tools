@@ -10,8 +10,19 @@ Two jobs, one hook:
    .claude/agent-guard.json, Bash commands must match its allow list and Edit/Write paths its edit list - tools of a
    subagent stay as narrow as its job (test runner: run and read, never commit; doc keeper: only docs).
 
-Output follows hookify: warnings as systemMessage, blocks as permissionDecision "deny". Any internal error lets the
-call through with a message - a broken guard must never wedge a session.
+Output: blocks as permissionDecision "deny" (plus systemMessage for the user). Warnings depend on the client (0.33 Earshot):
+`decide(payload, rules)` - the adapters' path - renders them as systemMessage, which Codex, Antigravity and Vibe hand to
+their model. `decide(payload, rules, client="claude")` - Claude Code's own hook - renders them as
+hookSpecificOutput.additionalContext, the one channel that reaches Claude's model (probe 04.11.2026: a systemMessage
+reaches only the user), once per session and rule (hint_state), and drops the pre-check note of commit-on-main
+(700 notes in 26 days that nobody acted on). Any internal error lets the call through with a message - a broken guard
+must never wedge a session.
+
+The command-field rules (0.33) read `rule_text(command)`: the shell line without heredoc bodies, multi-line quoted
+literals and the quoted arguments of text programs (echo, grep, pgrep …), so a rule text quoted in a document, a script
+fed to python3 or a `pgrep -f` pattern never trips a block again (31 such false alarms in 26 days). Executable text -
+a heredoc or multi-line quote for a shell, a command substitution - stays. `not_contains` reads the whole line, so a
+mention anywhere still excuses.
 """
 import fnmatch
 import json
@@ -25,6 +36,12 @@ PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolv
 RULES_DIR = PLUGIN_ROOT / "rules"
 PROFILE_FILE = Path(".claude") / "agent-guard.json"
 FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+HINT_REPEAT = 25  # Claude Code: a warning reaches the model at its first hit in a session, then at every 25th
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import hint_state  # noqa: E402
+except Exception:  # noqa: BLE001 - without the throttle every hint is due
+    hint_state = None
 
 
 # --------------------------------------------------------------------------------------------------------- rules
@@ -88,11 +105,241 @@ def field_value(field, tool, data, cwd=None, facts=None):
     return None
 
 
+# ------------------------------------------------------------------------------------------------- rule text
+#
+# rule_text (0.33): the part of a shell line the command-field rules judge. Blanked are heredoc bodies (`<<EOF … EOF`,
+# `<<-`, quoted or composed words like E"OF"), quoted literals that span lines (a script for `python3 -c`, a document,
+# a commit message) and the quoted arguments of programs that only print or search text (TEXT_PROGRAMS:
+# `echo 'git push --force'`, `pgrep -f "heavy_lock.py run"`). Executable text stays (judge 0.33, 7.1): a heredoc or a
+# multi-line quote fed to a shell (SHELL_PROGRAMS: `bash <<EOF`, `cat <<EOF | bash`, `if x; then sh <<EOF`, `sh -c '…'`,
+# `eval`, `source`, also behind `env`, `sudo`, `timeout 5` …) and any quote holding a command substitution
+# (`echo "$(unity mcp)"`). Operators, program
+# names, flags and single-line arguments stay as written, so `codex exec "$(cat pruefung.md)"` or
+# `unity mcp --project-path x` are read as before. A comment (`# …`) is copied as it is and never read as a heredoc
+# operator; `<<` inside `$((…))`/`((…))` is a shift. An unquoted delimiter (`<<EOF`) lets the shell expand the body, so its
+# `$(…)` and `…` substitutions stay in the text. Here-strings (`<<<`) are not heredocs. A heredoc without terminator
+# runs to the end of the text, as in bash.
+
+TEXT_PROGRAMS = ("echo", "printf", "grep", "egrep", "fgrep", "rg", "pgrep", "pkill", "ag")
+SHELL_PROGRAMS = ("bash", "sh", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "exec", "xargs", "ssh")
+SHELL_WRAPPERS = ("env", "command", "time", "nohup", "sudo", "nice", "timeout", "caffeinate", "doas")
+SUBSTITUTION = re.compile(r"\$\(|`")
+COMMENT = re.compile(r"[^\n]*")
+
+
+def segment_kind(head):
+    """What the words before a quote or heredoc run: "shell" (a shell or `eval`/`source`, also behind `env`, `sudo -u x`,
+    `timeout 5` …: its text is executable), "text" (a program that only prints or searches: its quoted arguments are
+    data) or "" (anything else). NAME=value prefixes do not count."""
+    names = [os.path.basename(word.replace("'", "").replace('"', "")) for word in head.strip().split()
+             if not ASSIGNMENT.match(word)]  # 'bash' -c … names bash (judge 0.33, 7.3)
+    if not names:
+        return ""
+    if names[0] in SHELL_PROGRAMS:
+        return "shell"
+    if names[0] in SHELL_WRAPPERS:
+        if any(name in SHELL_PROGRAMS for name in names[1:]):
+            return "shell"
+        rest = [n for n in names[1:] if not (n in SHELL_WRAPPERS or n.startswith("-") or n.isdigit())]
+        return "text" if rest and rest[0] in TEXT_PROGRAMS else ""
+    return "text" if names[0] in TEXT_PROGRAMS else ""
+
+
+CONTROL_WORDS = ("if", "then", "else", "elif", "fi", "do", "done", "while", "until", "case", "esac", "{", "}", "!",
+                 "time", "do")
+LINE_SPLIT = re.compile(r"\|\|?|&&|;|\(|\)")
+
+
+def line_runs_shell(line):
+    """True when any simple command of the heredoc's line is a shell (judge 0.33, round 3): `cat <<'EOF' | bash`,
+    `if true; then bash <<'EOF'`, `x=1 && sh <<EOF`. Control words before a command are skipped."""
+    for part in LINE_SPLIT.split(line):
+        words = part.strip().split()
+        while words and words[0].replace("'", "").replace('"', "") in CONTROL_WORDS:
+            words = words[1:]
+        if words and segment_kind(" ".join(words)) == "shell":
+            return True
+    return False
+
+
+def heredoc_word(text, i):
+    """(delimiter, dash, end, quoted) of a heredoc operator at i (`<<`, `<<-`, blanks, a word that may mix quotes:
+    E"OF", 'EOF', \\EOF), or None when no word follows. quoted: the shell expands nothing in the body."""
+    i += 2
+    dash = text.startswith("-", i)
+    i += dash
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    word, quoted = [], False
+    while i < len(text):
+        c = text[i]
+        if c == "'":
+            end = text.find("'", i + 1)
+            end = len(text) if end < 0 else end
+            word.append(text[i + 1:end])
+            i, quoted = end + 1, True
+        elif c == '"':
+            end = text.find('"', i + 1)
+            end = len(text) if end < 0 else end
+            word.append(text[i + 1:end].replace('\\"', '"'))
+            i, quoted = end + 1, True
+        elif c == "\\" and i + 1 < len(text):
+            word.append(text[i + 1])
+            i, quoted = i + 2, True
+        elif c in " \t\n;&|<>()":
+            break
+        else:
+            word.append(c)
+            i += 1
+    delimiter = "".join(word)
+    return (delimiter, dash, i, quoted) if delimiter else None
+
+
+def expansions(body):
+    """The command substitutions of an unquoted heredoc body - `$(…)` (nested parentheses counted) and `…` - which
+    the shell runs (judge 0.33, 7.1); joined by newlines, "" without any."""
+    found, i, n = [], 0, len(body)
+    while i < n:
+        if body.startswith("$(", i):
+            depth, j = 0, i + 1
+            while j < n:  # parentheses inside quotes do not count (judge 0.33, round 3: `$(printf ')' ; x)`)
+                if body[j] == "'":
+                    end = body.find("'", j + 1)
+                    j = n if end < 0 else end
+                elif body[j] == '"':
+                    j += 1
+                    while j < n and body[j] != '"':
+                        j += 2 if body[j] == "\\" else 1
+                else:
+                    depth += body[j] == "("
+                    depth -= body[j] == ")"
+                    if depth == 0:
+                        break
+                j += 1
+            found.append(body[i:j + 1])
+            i = j + 1
+        elif body[i] == "`":
+            end = body.find("`", i + 1)
+            end = n if end < 0 else end
+            found.append(body[i:end + 1])
+            i = end + 1
+        else:
+            i += 1
+    return "\n".join(found)
+
+
+def arithmetic_end(text, i):
+    """Index after the `))` that closes the arithmetic expansion `$((…))` or command `((…))` starting at i (`<<` is
+    a shift there, no heredoc - judge 0.33, 7.2); len(text) when it never closes."""
+    depth, j = 0, i + (text[i] == "$")
+    while j < len(text):
+        depth += text[j] == "("
+        depth -= text[j] == ")"
+        if depth == 0:
+            return j + 1
+        j += 1
+    return len(text)
+
+
+def skip_heredoc_body(text, i, word, dash):
+    """(index after the terminator line, body) of a heredoc body that starts at i (to len(text) without a terminator)."""
+    start = i
+    while i < len(text):
+        end = text.find("\n", i)
+        end = len(text) if end < 0 else end
+        line = text[i:end].rstrip("\r")
+        if (line.lstrip("\t") if dash else line) == word:
+            return min(end + 1, len(text)), text[start:i]
+        i = end + 1
+    return len(text), text[start:]
+
+
+def rule_text(command):
+    """The shell line without heredoc bodies, multi-line quoted literals and quoted arguments of text programs - the
+    executable parts of the line stay (see the section comment)."""
+    out, i, n = [], 0, len(command)
+    pending, quote, quote_start, segment_start, line_start = [], None, 0, 0, 0
+    while i < n:
+        c = command[i]
+        if quote:
+            if quote == '"' and c == "\\" and i + 1 < n:
+                out.append(command[i:i + 2])
+                i += 2
+                continue
+            if c == quote:
+                content = "".join(out[quote_start:])
+                kind = segment_kind("".join(out[segment_start:quote_start - 1]))
+                data = ("\n" in content and kind != "shell") or kind == "text"
+                if data:
+                    del out[quote_start:]
+                    # a substitution inside the quote is a command line of its own and is judged like one: Claude's
+                    # `git commit -m "$(cat <<'EOF' … EOF)"` loses only the message body, `echo "$(unity mcp)"` nothing
+                    out.append(rule_text(content) if quote == '"' and SUBSTITUTION.search(content) else " ")
+                out.append(c)
+                quote = None
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if c in "'\"":
+            quote, quote_start = c, len(out) + 1
+            out.append(c)
+            i += 1
+            continue
+        if c == "#" and (i == 0 or command[i - 1] in " \t\n;&|("):
+            comment = COMMENT.match(command, i).group(0)  # copied as it is, never read as an operator
+            out.append(comment)
+            i += len(comment)
+            continue
+        if command.startswith("$((", i) or command.startswith("((", i):
+            end = arithmetic_end(command, i)  # a shift inside is no heredoc operator
+            out.append(command[i:end])
+            i = end
+            continue
+        if command.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        if command.startswith("<<", i):
+            found = heredoc_word(command, i)
+            if found:
+                word, dash, end, quoted = found
+                pending.append((word, dash, quoted))
+                out.append(command[i:end])
+                i = end
+                continue
+        if c == "\n":
+            out.append(c)
+            i += 1
+            executable = bool(pending) and line_runs_shell("".join(out[line_start:]))
+            while pending:
+                word, dash, quoted = pending.pop(0)
+                i, body = skip_heredoc_body(command, i, word, dash)
+                if executable:  # a shell reads the body: it is judged as written
+                    out.append(body)
+                elif not quoted and expansions(body):  # the shell runs these before the body is data
+                    out.append(expansions(body) + "\n")
+            segment_start = line_start = len(out)
+            continue
+        if c in ";|&(":
+            segment_start = len(out) + 1
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def condition_holds(condition, tool, data, cwd=None, facts=None):
-    value = field_value(condition.get("field", ""), tool, data, cwd, facts)
+    field = condition.get("field", "")
+    value = field_value(field, tool, data, cwd, facts)
     if value is None:
         return False
     pattern, operator = condition.get("pattern", ""), condition.get("operator", "regex_match")
+    if tool == "Bash" and field == "command" and operator != "not_contains":
+        value = rule_text(value)
     if operator == "regex_match":
         try:
             return re.search(pattern, value, re.IGNORECASE) is not None
@@ -673,7 +920,21 @@ def agent_problem(payload):
 
 # ------------------------------------------------------------------------------------------------------- output
 
-def decide(payload, rules=None):
+def claude_hints(payload, warnings):
+    """Claude Code's rendering of the warnings (0.33): additionalContext for the model, each rule once per session and
+    then every HINT_REPEAT-th hit (hint_state); nothing for the user. Without hint_state every warning is due."""
+    session = str(payload.get("session_id") or "")
+    due = [text for name, text in warnings
+           if hint_state is None or hint_state.due(session, "rule:" + name, HINT_REPEAT)]
+    if not due:
+        return {}
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n\n".join(due)}}
+
+
+def decide(payload, rules=None, client="adapter"):
+    """The verdict of one tool call. client "adapter" (Codex, Antigravity, Vibe through client_adapter) gets warnings
+    and the commit pre-check notes as systemMessage; client "claude" gets the warnings as additionalContext (throttled)
+    and no notes. Blocks are the same for every client."""
     rules = load_rules() if rules is None else rules
     tool, data = payload.get("tool_name", ""), payload.get("tool_input") or {}
     cwd = payload.get("cwd")
@@ -681,8 +942,8 @@ def decide(payload, rules=None):
     facts = commit_facts(data.get("command", ""), cwd or os.getcwd()) if tool == "Bash" and commit_rules else None
     hits = matching_rules(rules, tool, data, cwd, facts)
     blocks = [f"**[{r['name']}]**\n{r['message']}" for r in hits if r.get("action") == "block"]
-    warnings = [f"**[{r['name']}]**\n{r['message']}" for r in hits if r.get("action") != "block"]
-    warnings += [f"**[{commit_rules[0]}]**\n{note}" for note in (facts.notes if facts else [])]
+    warnings = [(r["name"], f"**[{r['name']}]**\n{r['message']}") for r in hits if r.get("action") != "block"]
+    notes = [f"**[{commit_rules[0]}]**\n{note}" for note in (facts.notes if facts else [])]
     problem = agent_problem(payload)
     if problem:
         blocks.append(problem)
@@ -690,8 +951,10 @@ def decide(payload, rules=None):
         message = "\n\n".join(blocks)
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                        "permissionDecisionReason": message}, "systemMessage": message}
-    if warnings:
-        return {"systemMessage": "\n\n".join(warnings)}
+    if client == "claude":
+        return claude_hints(payload, warnings)
+    if warnings or notes:
+        return {"systemMessage": "\n\n".join([text for _, text in warnings] + notes)}
     return {}
 
 
@@ -704,7 +967,7 @@ def main():
                 pass
     try:
         payload = json.load(sys.stdin)
-        print(json.dumps(decide(payload)))
+        print(json.dumps(decide(payload, client="claude")))
     except Exception as error:  # never wedge a session
         print(json.dumps({"systemMessage": f"ce-shared guard error: {error}"}))
     return 0

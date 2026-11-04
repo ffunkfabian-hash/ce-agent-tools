@@ -15,5 +15,5 @@ conditions:
     pattern: Checkliste
 ---
 
-**Richter ohne Checkliste:** Codex-Prüfungen bekommen immer die Vorlage `~/.claude/templates/pruefung.md` (acht Prüfpunkte,
+**Richter ohne Checkliste:** Codex-Prüfungen bekommen immer die Vorlage `~/.claude/templates/pruefung.md` (neun Prüfpunkte,
 Tabelle, Schlusszeile) – sonst prüft der Richter, was ihm einfällt (globale Regel › Richter und Selbstkorrektur). `ce_judge.py` kapselt das.

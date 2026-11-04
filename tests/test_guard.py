@@ -748,5 +748,226 @@ class HookProcessTests(unittest.TestCase):
         self.assertIn("PreToolUse", hooks["hooks"])
 
 
+F = "--" + "force"               # written apart: the installed 0.32 guard reads this test file's heredocs as data text
+LOCK_RUN = "heavy_lock" + ".py run"
+
+
+class RuleTextTests(unittest.TestCase):
+    """0.33 Earshot: the command-field rules read the line without heredoc bodies, multi-line quoted literals and the
+    quoted arguments of text programs (Trimline: 31 false alarms in 26 days, every one a rule text inside data)."""
+
+    HEREDOC_DATA = [  # (line, rule the old guard tripped) - today none of them trips any rule
+        ("cat > rules/git-kein-force-push.md <<'EOF'\n---\nname: x\n---\n**Kein Force-Push:** nie `git push " + F + "`\nEOF",
+         "git-kein-force-push"),
+        ("python3 - <<'PY'\nprint('python3 Tools/" + LOCK_RUN + " -- x')\nPY", "heavy-resource"),
+        ("python3 - <<'PY'\nopen('Doc.cs','w').write('// unity command eval ...')\nPY", "unity-cli-ziel-nennen"),
+        ("cat <<-EOF\n\tgit stash\n\tgit stash pop\n\tEOF", "git-stash-geteilt"),
+        ("cat > note.md <<EOF\nclaude --teleport abc\nEOF\nls", "teleport-nur-frisch"),
+        ("python3 -c 'import subprocess\nsubprocess.run([\"python3\", \"Tools/" + LOCK_RUN + "\"])'", "heavy-resource"),
+        ("pgrep -f \"" + LOCK_RUN + "\"", "heavy-resource"),
+        ("pkill -f 'unity mcp'", "unity-cli-ziel-nennen"),
+        ("echo 'git push " + F + " origin main'", "git-kein-force-push"),
+        ("grep -rn 'unity command eval' Docs/ | head", "unity-cli-ziel-nennen"),
+        ("python3 Tools/" + LOCK_RUN + " --help", "heavy-resource"),
+        ("cat > x.json <<'EOF'\n{\"a\": 1}\nEOF", "output-cap"),
+        ("git commit -m \"$(cat <<'EOF'\nSubject\n\nnie git push " + F + "\nEOF\n)\"", "git-kein-force-push"),
+    ]
+    STILL_HIT = [  # the command itself, before, after or beside a heredoc, is still judged
+        ("cat <<EOF\nnotes\nEOF\ngit push " + F + " origin x", "git-kein-force-push"),
+        ("git push " + F + " origin x <<EOF\nignored\nEOF", "git-kein-force-push"),
+        ("python3 Tools/" + LOCK_RUN + " -- cat <<EOF\nx\nEOF", "heavy-resource"),
+        ("unity command eval 'return 1;'", "unity-cli-ziel-nennen"),
+        ("cat logs/x.json", "output-cap"),
+        ("cat x.json <<EOF\nbody\nEOF", "output-cap"),
+    ]
+
+    def test_rule_text_in_heredocs_and_quoted_data_trips_no_rule(self):
+        for command, rule in self.HEREDOC_DATA:
+            result = guard.decide(bash(command), RULES)
+            self.assertFalse(denied(result), (command, result))
+            self.assertNotIn(rule, names(bash(command)), command)
+
+    def test_the_command_around_a_heredoc_is_still_judged(self):
+        for command, rule in self.STILL_HIT:
+            self.assertIn(rule, names(bash(command)), command)
+
+    EXECUTABLE = [  # judge 0.33, 7.1/7.2: text a shell runs is no data text - every line still trips its rule
+        ("bash <<'EOF'\ngit push " + F + " origin x\nEOF", "git-kein-force-push"),
+        ("sh <<EOF\npython3 Tools/" + LOCK_RUN + " -- x\nEOF", "heavy-resource"),
+        ("env CE_X=1 bash <<EOF\ngit push " + F + " origin x\nEOF", "git-kein-force-push"),
+        ("sudo -u me timeout 5 zsh <<EOF\nunity list\nEOF", "unity-cli-ziel-nennen"),
+        ("bash -c '\ngit push " + F + " origin x\n'", "git-kein-force-push"),
+        ("zsh -c \"\nunity mcp\n\"", "unity-cli-ziel-nennen"),
+        ("eval 'a=1\nunity list'", "unity-cli-ziel-nennen"),
+        ("echo \"$(unity mcp)\"", "unity-cli-ziel-nennen"),
+        ("echo `unity list`", "unity-cli-ziel-nennen"),
+        ("grep -c \"$(git stash)\" f", "git-stash-geteilt"),
+        ("# <<EOF\ngit push " + F + " origin x", "git-kein-force-push"),
+        ("ls # <<EOF\ngit stash", "git-stash-geteilt"),
+        ("cat <<E\"OF\"\nbody\nEOF\ngit push " + F + " origin x", "git-kein-force-push"),
+        ("cat <<'EO'F\nbody\nEOF\nunity list", "unity-cli-ziel-nennen"),
+        ("cat <<\\EOF\nbody\nEOF\ngit stash", "git-stash-geteilt"),
+        # round 2: an unquoted delimiter lets the shell expand the body - its substitutions run
+        ("cat <<EOF\n$(git push " + F + " origin main)\nEOF", "git-kein-force-push"),
+        ("cat <<EOF\ntext `unity list` text\nEOF", "unity-cli-ziel-nennen"),
+        ("cat <<EOF\n$(echo $(unity list))\nEOF", "unity-cli-ziel-nennen"),
+        # round 2: `<<` inside arithmetic is a shift, the next line is a command
+        ("echo $((1 << 2))\ngit push " + F + " origin main", "git-kein-force-push"),
+        ("(( x = 1 << 3 ))\ngit stash", "git-stash-geteilt"),
+        # round 2: a quoted program name is still that program
+        ("'bash' -c '\ngit push " + F + " origin main\n'", "git-kein-force-push"),
+        ("\"zsh\" <<EOF\nunity list\nEOF", "unity-cli-ziel-nennen"),
+        # round 3: the shell that reads the heredoc may stand behind a pipe or a control word
+        ("cat <<'EOF' | bash\nunity list\nEOF", "unity-cli-ziel-nennen"),
+        ("if true; then bash <<'EOF'\nunity list\nEOF\nfi", "unity-cli-ziel-nennen"),
+        ("x=1 && sh <<EOF\ngit push " + F + " origin main\nEOF", "git-kein-force-push"),
+        ("cat <<'EOF' | tee x | sudo zsh\nunity list\nEOF", "unity-cli-ziel-nennen"),
+        # round 3: parentheses inside quotes do not end a substitution
+        ("cat <<EOF\n$(printf ')' ; unity list)\nEOF", "unity-cli-ziel-nennen"),
+        ("cat <<EOF\n$(echo \")\" && unity list)\nEOF", "unity-cli-ziel-nennen"),
+    ]
+    STILL_DATA = [  # the same forms with a quoted delimiter or inside a quoted body are data
+        "cat <<'EOF'\n$(git push " + F + " origin main)\nEOF",
+        "cat <<\"EOF\"\n`git stash`\nEOF",
+        "cat <<EOF\nplain git push " + F + " origin main\nEOF",
+        "echo $((1 << 2))",
+        "cat <<'EOF' | tee x\nunity list\nEOF",
+        "if true; then cat <<'EOF'\nunity list\nEOF\nfi",
+    ]
+
+    def test_executable_text_is_still_judged(self):
+        for command, rule in self.EXECUTABLE:
+            self.assertIn(rule, names(bash(command)), command)
+        for command in self.STILL_DATA:
+            self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
+        self.assertEqual(guard.rule_text("cat <<EOF\na $(x) b `y`\nEOF\nls"), "cat <<EOF\n$(x)\n`y`\nls")
+        self.assertEqual(guard.rule_text("echo $((1 << 2)) && ls"), "echo $((1 << 2)) && ls")
+        self.assertEqual(guard.segment_kind("'bash' -c"), "shell")
+        self.assertEqual(guard.segment_kind("sudo -u me timeout 5 zsh"), "shell")
+        self.assertEqual(guard.segment_kind("X=1 \"echo\""), "text")
+        self.assertEqual(guard.segment_kind("python3 -"), "")
+        self.assertTrue(guard.line_runs_shell("cat <<'EOF' | bash"))
+        self.assertTrue(guard.line_runs_shell("if true; then bash <<'EOF'"))
+        self.assertFalse(guard.line_runs_shell("cat <<'EOF' | tee x"))
+        self.assertEqual(guard.expansions("$(printf ')' ; x) y"), "$(printf ')' ; x)")
+        self.assertEqual(guard.expansions("$(echo \")\" ; x)"), "$(echo \")\" ; x)")
+        self.assertEqual(guard.rule_text("cat <<EOF\nbody\n"), "cat <<EOF\n", "no terminator: the body runs to the end")
+
+    def test_comments_and_composed_delimiters_are_read_like_the_shell(self):
+        self.assertEqual(guard.rule_text("# <<EOF\ngit status"), "# <<EOF\ngit status")
+        self.assertEqual(guard.rule_text("ls #<<EOF x\ngit status"), "ls #<<EOF x\ngit status")
+        self.assertEqual(guard.rule_text("cat <<E\"OF\"\nbody\nEOF\nls"), "cat <<E\"OF\"\nls")
+        self.assertEqual(guard.rule_text("cat <<-'EOF'\n\tbody\n\tEOF\nls"), "cat <<-'EOF'\nls")
+        self.assertEqual(guard.heredoc_word("<<E\"OF\" x", 0), ("EOF", False, 7, True))
+        self.assertEqual(guard.heredoc_word("<<- 'E'OF\n", 0), ("EOF", True, 9, True))
+        self.assertEqual(guard.heredoc_word("<<EOF\n", 0), ("EOF", False, 5, False))
+        self.assertIsNone(guard.heredoc_word("<< \n", 0))
+        self.assertEqual(guard.rule_text("x=1 && bash <<EOF\nrun\nEOF"), "x=1 && bash <<EOF\nrun\n",
+                         "a shell heredoc keeps its body (the terminator line is no command)")
+        self.assertEqual(guard.rule_text("python3 - <<EOF\nrun\nEOF"), "python3 - <<EOF\n", "an interpreter heredoc is data")
+
+    def test_rule_text_keeps_operators_flags_and_single_line_arguments(self):
+        self.assertEqual(guard.rule_text("cat > x.json <<'EOF'\n{\"a\": 1}\nEOF\n"), "cat > x.json <<'EOF'\n")
+        self.assertEqual(guard.rule_text("cat <<EOF | tee out\nbody\nEOF\necho done"), "cat <<EOF | tee out\necho done")
+        self.assertEqual(guard.rule_text("cat <<-EOF\n\tbody\n\tEOF\ngit status"), "cat <<-EOF\ngit status")
+        self.assertEqual(guard.rule_text("cat <<EOF\nno terminator"), "cat <<EOF\n")
+        self.assertEqual(guard.rule_text("cat <<< 'here string'"), "cat <<< 'here string'")
+        self.assertEqual(guard.rule_text("unity mcp --project-path \"/x y\""), "unity mcp --project-path \"/x y\"")
+        self.assertEqual(guard.rule_text("codex exec \"$(cat pruefung.md)\" < d.txt"), "codex exec \"$(cat pruefung.md)\" < d.txt")
+        self.assertEqual(guard.rule_text("python3 -c 'a\nb'"), "python3 -c ' '")
+        self.assertEqual(guard.rule_text("echo 'text' && unity list"), "echo ' ' && unity list")
+        self.assertEqual(guard.rule_text("x=1; grep -n 'unity list' f | head"), "x=1; grep -n ' ' f | head")
+        self.assertEqual(guard.rule_text('git commit -m "a\\"b"'), 'git commit -m "a\\"b"')
+
+    def test_not_contains_reads_the_whole_line(self):
+        """An exclusion mentioned anywhere still excuses: a judge prompt in a heredoc names the checklist."""
+        self.assertNotIn("judge-template", names(bash("codex exec - <<'EOF'\nPrüfe nach pruefung.md\nEOF")))
+        self.assertIn("judge-template", names(bash("codex exec - <<'EOF'\nPrüfe den Diff\nEOF")))
+
+    def test_a_write_heredoc_is_no_whole_file_output(self):
+        self.assertNotIn("output-cap", names(bash("cat > out/report.json <<'EOF'\n{}\nEOF")))
+        self.assertNotIn("output-cap", names(bash("cat >> run.log <<EOF\nline\nEOF")))
+        self.assertIn("output-cap", names(bash("cat out/report.json")))
+
+    def test_the_commit_block_never_reads_a_heredoc_body(self):
+        text = "cat > doc.md <<'EOF'\nmain git commit --allow-empty-message\nEOF"
+        self.assertFalse(denied(guard.decide(bash(text), RULES)))
+
+
+class ClaudeRenderingTests(unittest.TestCase):
+    """0.33 Earshot: in Claude Code a warning reaches the model as additionalContext, once per session and rule
+    (then every HINT_REPEAT-th hit); no systemMessage (it reaches only the user); the commit pre-check note is dropped.
+    The adapters (Codex, Antigravity, Vibe) keep warnings and notes as systemMessage, blocks are the same everywhere."""
+    WARN = "cat logs/toolgen_report.json"
+    NOTE = "git add . && git commit -m x"
+    BLOCK = "git push " + F + " origin main"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="ce-hints-")
+        self.env = mock.patch.dict(os.environ, {"CE_HOOK_STATE": self.tmp.name})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def claude(self, command, session="s-1"):
+        return guard.decide(bash(command, session_id=session), RULES, client="claude")
+
+    def test_a_warning_is_model_context_in_claude_and_a_system_message_for_the_adapters(self):
+        result = self.claude(self.WARN)
+        self.assertEqual(result["hookSpecificOutput"]["hookEventName"], "PreToolUse")
+        self.assertIn("[output-cap]", result["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("permissionDecision", result["hookSpecificOutput"])
+        self.assertNotIn("systemMessage", result)
+        adapter = guard.decide(bash(self.WARN), RULES)
+        self.assertEqual(list(adapter), ["systemMessage"])
+        self.assertIn("[output-cap]", adapter["systemMessage"])
+
+    def test_the_commit_precheck_note_goes_to_the_adapters_only(self):
+        self.assertIn("Vorabprüfung", guard.decide(bash(self.NOTE), RULES)["systemMessage"])
+        self.assertEqual(self.claude(self.NOTE), {})
+
+    def test_blocks_are_the_same_for_every_client(self):
+        for client in ("claude", "adapter"):
+            result = guard.decide(bash(self.BLOCK, session_id="s-1"), RULES, client=client)
+            self.assertTrue(denied(result), client)
+            self.assertIn("[git-kein-force-push]", result["systemMessage"], client)
+        self.assertTrue(denied(self.claude(self.BLOCK)), "a block is never throttled")
+
+    def test_a_warning_reaches_the_model_once_per_session_and_rule(self):
+        self.assertIn("[output-cap]", self.claude(self.WARN)["hookSpecificOutput"]["additionalContext"])
+        for _ in range(guard.HINT_REPEAT - 1):
+            self.assertEqual(self.claude(self.WARN), {})
+        self.assertIn("[output-cap]", self.claude(self.WARN)["hookSpecificOutput"]["additionalContext"],
+                      "again at every HINT_REPEAT-th hit")
+        self.assertIn("[output-cap]", self.claude(self.WARN, session="s-2")["hookSpecificOutput"]["additionalContext"],
+                      "another session starts fresh")
+        other = "bash .agents/skills/ce-testing/scripts/verify.sh run --full"
+        self.assertIn("[heavy-unlocked]", self.claude(other)["hookSpecificOutput"]["additionalContext"],
+                      "the throttle is per rule")
+        self.assertIn("[output-cap]", self.claude(self.WARN, session="")["hookSpecificOutput"]["additionalContext"],
+                      "no session id: every hint is due")
+        self.assertIn("[output-cap]", self.claude(self.WARN, session="")["hookSpecificOutput"]["additionalContext"])
+
+    def test_the_hook_script_renders_for_claude(self):
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN), CE_HOOK_STATE=self.tmp.name)
+        script = PLUGIN / "hooks" / "guard.py"
+        out = subprocess.run([sys.executable, str(script)], input=json.dumps(bash(self.WARN, session_id="s-9")),
+                             text=True, capture_output=True, env=env, check=True).stdout
+        self.assertIn("[output-cap]", json.loads(out)["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("systemMessage", json.loads(out))
+        out = subprocess.run([sys.executable, str(script)], input=json.dumps(bash(self.NOTE, session_id="s-9")),
+                             text=True, capture_output=True, env=env, check=True).stdout
+        self.assertEqual(json.loads(out), {})
+
+    def test_hint_state_fails_open(self):
+        import hint_state
+        with mock.patch.dict(os.environ, {"CE_HOOK_STATE": os.path.join(self.tmp.name, "a file", "x")}):
+            Path(self.tmp.name, "a file").write_text("not a folder")
+            self.assertTrue(hint_state.due("s", "k"))
+            self.assertTrue(hint_state.due("s", "k"), "no state: every hint is due")
+
+
 if __name__ == "__main__":
     unittest.main()
