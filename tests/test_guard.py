@@ -750,28 +750,61 @@ class HookProcessTests(unittest.TestCase):
 
 F = "--" + "force"               # written apart: the installed 0.32 guard reads this test file's heredocs as data text
 LOCK_RUN = "heavy_lock" + ".py run"
+UL = "unity " + "list"       # likewise
 
 
 class RuleTextTests(unittest.TestCase):
-    """0.33 Earshot: the command-field rules read the line without heredoc bodies, multi-line quoted literals and the
-    quoted arguments of text programs (Trimline: 31 false alarms in 26 days, every one a rule text inside data)."""
+    """0.33 Earshot: the warning rules read the line without heredoc bodies, multi-line quoted literals and the quoted
+    arguments of text programs (Trimline: 31 false alarms in 26 days, every one a rule text inside data). The blocking
+    rules read the full command (user decision 04.11.2026 after three judge rounds each found a new gap in rule_text):
+    a data text may silence a hint, never a block."""
 
-    HEREDOC_DATA = [  # (line, rule the old guard tripped) - today none of them trips any rule
+    BLOCK_DATA = [  # (line, blocking rule) - a rule text inside data: blocked as before 0.33, by decision
         ("cat > rules/git-kein-force-push.md <<'EOF'\n---\nname: x\n---\n**Kein Force-Push:** nie `git push " + F + "`\nEOF",
          "git-kein-force-push"),
         ("python3 - <<'PY'\nprint('python3 Tools/" + LOCK_RUN + " -- x')\nPY", "heavy-resource"),
         ("python3 - <<'PY'\nopen('Doc.cs','w').write('// unity command eval ...')\nPY", "unity-cli-ziel-nennen"),
-        ("cat <<-EOF\n\tgit stash\n\tgit stash pop\n\tEOF", "git-stash-geteilt"),
+        ("cat <<-EOF\n\tunity list\n\tEOF", "unity-cli-ziel-nennen"),
         ("cat > note.md <<EOF\nclaude --teleport abc\nEOF\nls", "teleport-nur-frisch"),
-        ("python3 -c 'import subprocess\nsubprocess.run([\"python3\", \"Tools/" + LOCK_RUN + "\"])'", "heavy-resource"),
         ("pgrep -f \"" + LOCK_RUN + "\"", "heavy-resource"),
-        ("pkill -f 'unity mcp'", "unity-cli-ziel-nennen"),
         ("echo 'git push " + F + " origin main'", "git-kein-force-push"),
-        ("grep -rn 'unity command eval' Docs/ | head", "unity-cli-ziel-nennen"),
-        ("python3 Tools/" + LOCK_RUN + " --help", "heavy-resource"),
-        ("cat > x.json <<'EOF'\n{\"a\": 1}\nEOF", "output-cap"),
         ("git commit -m \"$(cat <<'EOF'\nSubject\n\nnie git push " + F + "\nEOF\n)\"", "git-kein-force-push"),
     ]
+    WARN_DATA = [  # (line, warning rule) - the same kind of data text raises no hint
+        ("cat > x.json <<'EOF'\n{\"a\": 1}\nEOF", "output-cap"),
+        ("cat <<'EOF' | tee x\nbash verify.sh run --full\nEOF", "heavy-unlocked"),
+        ("echo 'bash verify.sh run --full' > note.md", "heavy-unlocked"),
+        ("python3 -c 'x = 1\nprint(\"verify.sh run --full\")'", "heavy-unlocked"),
+        ("cat <<'EOF'\ncodex exec -m gpt-6-luna Pruefe den Diff\nEOF", "judge-template"),
+        ("grep -rn 'codex exec' docs/ | head", "judge-template"),
+        ("python3 Tools/" + LOCK_RUN + " --help", "heavy-resource"),  # a block, excused by the rule's own --help
+    ]
+
+    def test_blocks_read_the_full_text_and_warnings_the_rule_text(self):
+        for command, rule in self.BLOCK_DATA:
+            self.assertIn(rule, names(bash(command)), command)
+            self.assertTrue(denied(guard.decide(bash(command), RULES)), command)
+            self.assertNotIn(rule, {r["name"] for r in RULES if r["action"] != "block"})
+        for command, rule in self.WARN_DATA:
+            self.assertNotIn(rule, names(bash(command)), command)
+            self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
+
+    def test_a_block_fires_on_a_command_disguised_as_data(self):
+        """Requested with the decision: whatever rule_text would blank, a block still sees."""
+        disguised = [("cat <<'EOF' | bash\nunity list\nEOF", "unity-cli-ziel-nennen"),
+                     ("'bash' -c '\ngit push " + F + " origin main\n'", "git-kein-force-push"),
+                     ("cat > doc.md <<'EOF'\ngit push " + F + " origin x\nEOF", "git-kein-force-push"),
+                     ("python3 - <<'PY'\nimport os; os.system('" + UL + "')\nPY", "unity-cli-ziel-nennen")]
+        for command, rule in disguised:
+            self.assertTrue(denied(guard.decide(bash(command), RULES)), command)
+            self.assertIn(rule, names(bash(command)), command)
+        blanked = guard.rule_text(disguised[2][0])
+        self.assertNotIn("push " + F, blanked, "rule_text would hide it - the block does not read rule_text")
+        self.assertNotIn(UL, guard.rule_text(disguised[3][0]))
+        filtered = guard.condition_holds({"field": "command", "operator": "regex_match", "pattern": "push " + F},
+                                         "Bash", {"command": disguised[2][0]}, filtered=True)
+        self.assertFalse(filtered, "the same condition as a warning would stay silent")
+
     STILL_HIT = [  # the command itself, before, after or beside a heredoc, is still judged
         ("cat <<EOF\nnotes\nEOF\ngit push " + F + " origin x", "git-kein-force-push"),
         ("git push " + F + " origin x <<EOF\nignored\nEOF", "git-kein-force-push"),
@@ -780,12 +813,6 @@ class RuleTextTests(unittest.TestCase):
         ("cat logs/x.json", "output-cap"),
         ("cat x.json <<EOF\nbody\nEOF", "output-cap"),
     ]
-
-    def test_rule_text_in_heredocs_and_quoted_data_trips_no_rule(self):
-        for command, rule in self.HEREDOC_DATA:
-            result = guard.decide(bash(command), RULES)
-            self.assertFalse(denied(result), (command, result))
-            self.assertNotIn(rule, names(bash(command)), command)
 
     def test_the_command_around_a_heredoc_is_still_judged(self):
         for command, rule in self.STILL_HIT:
@@ -826,20 +853,25 @@ class RuleTextTests(unittest.TestCase):
         ("cat <<EOF\n$(printf ')' ; unity list)\nEOF", "unity-cli-ziel-nennen"),
         ("cat <<EOF\n$(echo \")\" && unity list)\nEOF", "unity-cli-ziel-nennen"),
     ]
-    STILL_DATA = [  # the same forms with a quoted delimiter or inside a quoted body are data
-        "cat <<'EOF'\n$(git push " + F + " origin main)\nEOF",
-        "cat <<\"EOF\"\n`git stash`\nEOF",
-        "cat <<EOF\nplain git push " + F + " origin main\nEOF",
+    STILL_DATA = [  # data text in a warning rule's eyes: quoted delimiter, text program, arithmetic
+        "cat <<'EOF'\n$(bash verify.sh run --full)\nEOF",
+        "cat <<\"EOF\"\n`bash verify.sh run --full`\nEOF",
+        "cat <<EOF\nplain bash verify.sh run --full\nEOF",
         "echo $((1 << 2))",
-        "cat <<'EOF' | tee x\nunity list\nEOF",
-        "if true; then cat <<'EOF'\nunity list\nEOF\nfi",
+        "if true; then cat <<'EOF'\nbash verify.sh run --full\nEOF\nfi",
     ]
 
     def test_executable_text_is_still_judged(self):
+        """Blocks read the full line anyway; the point here is the filter: run the same rules' regex conditions
+        through rule_text (filtered=True, as a warning would) and they still hold (judge round 4)."""
+        by_name = {rule["name"]: rule for rule in RULES}
         for command, rule in self.EXECUTABLE:
             self.assertIn(rule, names(bash(command)), command)
+            regex = [c for c in by_name[rule]["conditions"] if c.get("operator", "regex_match") == "regex_match"]
+            self.assertTrue(all(guard.condition_holds(c, "Bash", {"command": command}, filtered=True) for c in regex),
+                            ("the warning filter would hide executable text", command))
         for command in self.STILL_DATA:
-            self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
+            self.assertEqual(names(bash(command)), set(), command)
         self.assertEqual(guard.rule_text("cat <<EOF\na $(x) b `y`\nEOF\nls"), "cat <<EOF\n$(x)\n`y`\nls")
         self.assertEqual(guard.rule_text("echo $((1 << 2)) && ls"), "echo $((1 << 2)) && ls")
         self.assertEqual(guard.segment_kind("'bash' -c"), "shell")

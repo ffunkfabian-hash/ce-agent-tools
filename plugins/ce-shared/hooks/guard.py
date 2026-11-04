@@ -18,11 +18,12 @@ reaches only the user), once per session and rule (hint_state), and drops the pr
 (700 notes in 26 days that nobody acted on). Any internal error lets the call through with a message - a broken guard
 must never wedge a session.
 
-The command-field rules (0.33) read `rule_text(command)`: the shell line without heredoc bodies, multi-line quoted
+The warning rules (0.33) read `rule_text(command)`: the shell line without heredoc bodies, multi-line quoted
 literals and the quoted arguments of text programs (echo, grep, pgrep …), so a rule text quoted in a document, a script
-fed to python3 or a `pgrep -f` pattern never trips a block again (31 such false alarms in 26 days). Executable text -
-a heredoc or multi-line quote for a shell, a command substitution - stays. `not_contains` reads the whole line, so a
-mention anywhere still excuses.
+fed to python3 or a `pgrep -f` pattern raises no hint. Executable text - a heredoc or multi-line quote for a shell, a
+command substitution - stays. `not_contains` reads the whole line, so a mention anywhere still excuses. The blocking
+rules read the full command as before 0.33 (user decision 04.11.2026 after three judge rounds each found a new gap in
+rule_text): a data text may silence a hint, never a block - a false block costs one retry, a missed block a repository.
 """
 import fnmatch
 import json
@@ -332,13 +333,15 @@ def rule_text(command):
     return "".join(out)
 
 
-def condition_holds(condition, tool, data, cwd=None, facts=None):
+def condition_holds(condition, tool, data, cwd=None, facts=None, filtered=False):
+    """filtered (0.33, user decision after three judge rounds): only the warning rules read rule_text(command) - a
+    data text may silence a hint, never a block. Blocking rules read the full command as before 0.33."""
     field = condition.get("field", "")
     value = field_value(field, tool, data, cwd, facts)
     if value is None:
         return False
     pattern, operator = condition.get("pattern", ""), condition.get("operator", "regex_match")
-    if tool == "Bash" and field == "command" and operator != "not_contains":
+    if filtered and tool == "Bash" and field == "command" and operator != "not_contains":
         value = rule_text(value)
     if operator == "regex_match":
         try:
@@ -359,7 +362,8 @@ def matching_rules(rules, tool, data, cwd=None, facts=None):
     if event is None:
         return []
     return [rule for rule in rules if rule.get("event", "all") in (event, "all")
-            and all(condition_holds(c, tool, data, cwd, facts) for c in rule["conditions"])]
+            and all(condition_holds(c, tool, data, cwd, facts, filtered=rule.get("action") != "block")
+                    for c in rule["conditions"])]
 
 
 # ---------------------------------------------------------------------------------------------- git commit field

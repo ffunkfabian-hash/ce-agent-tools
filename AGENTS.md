@@ -36,8 +36,9 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
 - **Zustellung (0.33):** In Claude Code sieht das Modell keine `systemMessage`; Hinweise für das Modell gehen als
   `additionalContext` (PreToolUse/PostToolUse erprobt; Stop lässt das Modell genau einmal weiterantworten, darum nur ohne
   `stop_hook_active` und einmal je Sitzung), gedrosselt über `hooks/hint_state.py`. Eine Warnung, die niemand liest, wird
-  gestrichen statt gehalten. Blocks lesen `guard.rule_text()` (kein Heredoc-/Datentext); Codex/Antigravity/Vibe behalten
-  ihre Texte über die Adapter.
+  gestrichen statt gehalten. Warnregeln lesen `guard.rule_text()` (kein Heredoc-/Datentext), Blockregeln den vollen
+  Befehl – Datentext darf einen Hinweis verschlucken, nie einen Block; Codex/Antigravity/Vibe behalten ihre Texte über
+  die Adapter.
 - **Fail-open:** Adapter antworten immer mit Exit 0 und gültigem Clientformat, auch wenn `guard.py` oder `client_adapter.py` nicht lädt; eingetragene
   Befehle reichen nur eine Antwort mit Exit 0 durch, sonst eine Meldung ohne Block (fehlendes Skript, Syntax-/Importfehler;
   Exit 2 hieße in Codex: alles sperren). Git-Wrapper: nur Exitcode `REJECT` ist eine Ablehnung, alles andere ein Startfehler.

@@ -9,7 +9,7 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 | Teil | Wirkung |
 |---|---|
 | `plugins/ce-shared/rules/*.md` | gemeinsame Regeln im hookify-Format (siehe unten), ausgewertet bei jedem Bash-/Datei-Werkzeug |
-| `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents. 0.33 „Earshot“: Warnungen gehen als `additionalContext` an das Modell (einmal je Sitzung und Regel, dann jeder 25. Treffer; `hint_state.py`), nicht mehr als `systemMessage` (die sah nur der Nutzer); der Vorabhinweis von `commit-on-main` entfällt in Claude Code (Codex, Antigravity, Vibe bekommen ihn weiter). Regeln auf `command` lesen `rule_text()`: ohne Heredoc-Inhalte, mehrzeilige Zitate und zitierte Argumente von Textprogrammen (`echo`, `grep`, `pgrep` …) |
+| `plugins/ce-shared/hooks/guard.py` | der eine PreToolUse-Hook: gemeinsame Regeln + Werkzeug-Profile der Subagents. 0.33 „Earshot“: Warnungen gehen als `additionalContext` an das Modell (einmal je Sitzung und Regel, dann jeder 25. Treffer; `hint_state.py`), nicht mehr als `systemMessage` (die sah nur der Nutzer); der Vorabhinweis von `commit-on-main` entfällt in Claude Code (Codex, Antigravity, Vibe bekommen ihn weiter). Warnregeln auf `command` lesen `rule_text()`: ohne Heredoc-Inhalte, mehrzeilige Zitate und zitierte Argumente von Textprogrammen (`echo`, `grep`, `pgrep` …); Blockregeln lesen den vollen Befehl |
 | `plugins/ce-shared/hooks/codex_guard.py`, `antigravity_guard.py`, `vibe_guard.py` | derselbe Wächter als Codex-/Antigravity-/Vibe-User-Hook (dünne Adapter über `client_adapter.py`, siehe „Andere Clients“; Vibe ab 0.27) |
 | `plugins/ce-shared/githooks/ce_githooks.py` | Git-Netz pre-commit/pre-push je Repo, umkehrbar (siehe „Git-Netz“) |
 | `plugins/ce-shared/hooks/postfach_watch.py` | zwei Stop-Hooks (0.15): `watch` (async + asyncRewake) startet für eine reservierte Sitzung den Postfach-Wächter und weckt sie bei einer Nachricht; `remind` hält als Rückfall das Anhalten einmal an (höchstens alle 2 h, nie ohne `gh`) |
@@ -37,7 +37,7 @@ Regeln bleiben als hookify-Dateien in `.claude/` des jeweiligen Repos.
 
 Format wie hookify (`event: bash|file|mcp|all`, `conditions` mit `field` command/file_path/content/new_text/old_text, Operatoren
 `regex_match` (ohne Groß/klein), `contains`, `not_contains`, `equals`, `starts_with`, `ends_with`; `action: warn|block`).
-**Datentext zählt nicht (0.33 „Earshot“):** Bedingungen auf `command` lesen `guard.rule_text()` – die Zeile ohne
+**Datentext zählt nicht – bei Warnungen (0.33 „Earshot“):** Bedingungen auf `command` lesen in Warnregeln `guard.rule_text()` – die Zeile ohne
 Heredoc-Inhalte (`<<EOF … EOF`, `<<-`, zitierte Wörter), ohne mehrzeilige Zitate (`python3 -c '…'`, Commit-Text) und ohne
 die zitierten Argumente von Textprogrammen (`echo`, `printf`, `grep`, `rg`, `pgrep`, `pkill`). Operatoren, Programmnamen,
 Flags und einzeilige Argumente bleiben, ebenso alles, was eine Shell ausführt: ein Heredoc oder mehrzeiliges Zitat für
@@ -47,7 +47,9 @@ Kommentare bleiben Text, `<<` darin ist kein Operator, in `$((…))`/`((…))` e
 sein (`E"OF"`, `\EOF`). Bei unzitiertem Trenner (`<<EOF`) expandiert die Shell den Inhalt – seine `$(…)` und `…`
 bleiben deshalb in der geprüften Zeile; `'bash' -c` zählt wie `bash`, und liest irgendein Befehl der Heredoc-Zeile als
 Shell (`cat <<'EOF' | bash`, `if x; then sh <<'EOF'`), bleibt der ganze Inhalt stehen.
-`not_contains` liest die ganze Zeile, eine Erwähnung irgendwo entschuldigt also weiterhin. Trimline (Nexogen 1.24) zählte 31 Blocks auf Regeltexte in Heredocs, Doku und `pgrep`-Mustern – kein echter
+`not_contains` liest die ganze Zeile, eine Erwähnung irgendwo entschuldigt also weiterhin. **Blockregeln lesen den vollen
+Befehl wie vor 0.33** (Nutzerentscheid 04.11.2026, nachdem drei Richterrunden je eine neue Lücke in `rule_text` fanden): Datentext
+kann einen Hinweis verschlucken, nie einen Block – ein Fehlblock kostet einen zweiten Versuch, ein verpasster Block ein Repo. Trimline (Nexogen 1.24) zählte 31 Blocks auf Regeltexte in Heredocs, Doku und `pgrep`-Mustern – kein echter
 Treffer. Die Vorabprüfung von `commit-on-main` liest nach wie vor nur feste Wörter (ein Heredoc-Inhalt war nie ein Commit).
 **Zustellung (0.33):** In Claude Code erreicht eine `systemMessage` nur den Nutzer (Probe 04.11.2026 mit headless-Sitzung:
 `hook_system_message` im Transkript, nichts beim Modell). Warnungen gehen deshalb als `hookSpecificOutput.additionalContext`
