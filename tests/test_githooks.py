@@ -90,6 +90,261 @@ class GitHookTestCase(unittest.TestCase):
         self.repo = Repo(self.base)
 
 
+# Assembled at run time: this file must not carry a secret-shaped string itself, the repository is public.
+RANDOM = "q7Zt2LmX9vKc4RbN8wYd1HsP6gJf3TaE5uQi0Woz"
+TOKENS = {"GitHub-Token": "gh" + "p_" + RANDOM[:36], "AWS-Zugangsschlüssel": "AK" + "IA" + "Q7ZT2LMX9VKC4RBN",
+          "Anthropic-Schlüssel": "sk-" + "ant-api03-" + RANDOM, "OpenAI-Schlüssel": "sk-" + "proj-" + RANDOM + RANDOM,
+          "Google-API-Schlüssel": "AI" + "za" + RANDOM[:35], "Slack-Token": "xo" + "xb-7184926035-" + RANDOM[:24],
+          "Stripe-Live-Schlüssel": "sk" + "_live_" + RANDOM[:24], "npm-Token": "np" + "m_" + RANDOM[:36],
+          "PyPI-Token": "py" + "pi-AgE" + RANDOM + RANDOM}
+KEY_HEADER = "-----BEGIN " + "RSA PRIVATE KEY-----"
+KEY_BODY = "MIIEpAIBAAKCAQEA" + RANDOM + RANDOM
+
+
+def diff(*added, path="src/a.py"):
+    return ["commit:abc1234", f"diff --git a/{path} b/{path}", "index 1..2 100644", "--- a/x", f"+++ b/{path}", "@@ -0,0 +1 @@",
+            *[f"+{line}" for line in added]]
+
+
+class SecretPatternTests(unittest.TestCase):
+    def test_every_format_is_found_also_inside_a_line(self):
+        for name, token in TOKENS.items():
+            for line in (token, f'TOKEN = "{token}"', f"url=https://x.test/?k={token}&a=1", f"export KEY={token}"):
+                self.assertIn(name, ce_githooks.secrets_in_line(line), line)
+
+    def test_placeholders_and_look_alikes_are_no_secrets(self):
+        lines = ["gh" + "p_" + "x" * 36, "gh" + "p_" + "0123456789" * 3 + "012345"[:6], "gh" + "p_" + "YOUR" + "TOKEN" * 7, "AK" + "IA" + "IOSFODNN7EXAMPLE",
+                 "sk-" + "ant-" + "your-key-here-your-key-here-your-key-here", "AI" + "za" + "SyEXAMPLE" + "a" * 26,
+                 "sk-" + "task-with-a-very-long-name-that-goes-on-and-on-and-on", "disk-" + RANDOM, "risk-" + RANDOM + RANDOM,
+                 "gh" + "p_short", "npm_install_" + RANDOM, "xo" + "xb-not-a-token", "password = hunter2", "api_key: abc123", RANDOM + RANDOM,
+                 "sha256:" + "ab12" * 16, "commit 0123456789abcdef0123456789abcdef01234567"]
+        for line in lines:
+            self.assertEqual(ce_githooks.secrets_in_line(line), [], line)
+
+    def test_only_added_lines_count_and_the_place_is_named(self):
+        token = TOKENS["GitHub-Token"]
+        hits, finished = ce_githooks.scan_diff(diff("ok", token, path="dir/b.env"))
+        self.assertTrue(finished)
+        self.assertEqual(hits, [("GitHub-Token", "dir/b.env", "abc1234")])
+        self.assertEqual(ce_githooks.scan_diff(["commit:a", "diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1 +0,0 @@", f"-{token}"])[0], [])
+
+    def test_a_private_key_needs_a_body(self):
+        self.assertEqual(ce_githooks.scan_diff(diff(KEY_HEADER, KEY_BODY))[0], [("privater Schlüssel", "src/a.py", "abc1234")])
+        self.assertEqual(ce_githooks.scan_diff(diff(f'"key": "{KEY_HEADER}\\n{KEY_BODY}\\n"'))[0], [("privater Schlüssel", "src/a.py", "abc1234")])
+        for lines in ((KEY_HEADER,), (KEY_HEADER, "..."), (f"Beginnt mit `{KEY_HEADER}`.", "Dann folgt der Inhalt."), (KEY_BODY,)):
+            self.assertEqual(ce_githooks.scan_diff(diff(*lines))[0], [], lines)
+
+    def test_a_diff_header_lookalike_in_added_text_and_overlong_lines(self):
+        self.assertEqual(ce_githooks.scan_diff(diff("++ b/fake.txt", TOKENS["npm-Token"]))[0], [("npm-Token", "src/a.py", "abc1234")])
+        self.assertEqual(ce_githooks.scan_diff(diff(TOKENS["npm-Token"] + " " * ce_githooks.LONGEST_LINE))[0], [])
+
+    def test_the_time_limit_stops_the_scan(self):
+        self.assertEqual(ce_githooks.scan_diff(diff("x"), deadline=0), ([], False))
+
+
+@unittest.skipIf(WINDOWS, "the gh stub is a shell script; subprocess cannot start it there")
+class PublicPushTests(GitHookTestCase):
+    """Real pushes through the hook. A stub gh answers the visibility, insteadOf points a GitHub URL at the local bare remote."""
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir()
+        self.answer = self.base / "visibility"
+        self.answer.write_text("public")
+        self.calls = self.base / "gh-calls"
+        stub = bin_dir / "gh"
+        stub.write_text(f'#!/bin/sh\necho "$*" >> "{posix(self.calls)}"\ncase "$*" in *pub*) echo public;; *) cat "{posix(self.answer)}";; esac\n')
+        stub.chmod(0o755)
+        self.repo.env["PATH"] = f"{bin_dir}{os.pathsep}{self.repo.env['PATH']}"
+        self.repo.run("config", f"url.{posix(self.repo.remote)}.insteadOf", "https://github.com/o/r.git")
+        self.repo.run("remote", "set-url", "origin", "https://github.com/o/r.git")
+        self.repo.tool("install")
+        self.repo.run("checkout", "-q", "-b", "claude/x")
+        self.repo.commit("begin")
+        self.assertEqual(self.push().returncode, 0)
+
+    def push(self, *args):
+        return self.repo.run("push", "-q", "origin", "claude/x", *args, check=False)
+
+    def add(self, name, data, message="add"):
+        path = self.repo.path / name
+        path.write_bytes(data)
+        self.repo.run("add", name)
+        self.repo.run("commit", "-q", "-m", message)
+
+    def test_a_big_binary_is_stopped_and_text_of_the_same_size_passes(self):
+        self.add("huge.txt", b"line of text\n" * 500_000)
+        self.assertEqual(self.push().returncode, 0)
+        self.add("big.bin", b"\0" * (ce_githooks.BIG_BINARY + 1))
+        result = self.push()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Binärdatei über 5 MB", result.stderr)
+        self.assertIn("big.bin", result.stderr)
+        self.assertIsNone(self.repo.remote_sha("refs/heads/does-not-exist"))
+
+    def test_a_binary_at_the_limit_passes(self):
+        self.add("ok.bin", b"\0" * ce_githooks.BIG_BINARY)
+        self.assertEqual(self.push().returncode, 0)
+
+    def test_a_binary_removed_again_is_still_in_the_pushed_history(self):
+        self.add("big.bin", b"\0" * (ce_githooks.BIG_BINARY + 1))
+        self.repo.run("rm", "-q", "big.bin")
+        self.repo.run("commit", "-q", "-m", "wieder weg")
+        self.assertIn("big.bin", self.push().stderr)
+
+    def test_a_secret_is_stopped_by_type_and_place_and_never_printed(self):
+        token = TOKENS["GitHub-Token"]
+        self.add("conf.py", f'TOKEN = "{token}"\n'.encode())
+        result = self.push()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GitHub-Token in `conf.py`", result.stderr)
+        self.assertNotIn(token, result.stderr)
+        self.assertNotIn(token[4:], result.stderr)
+
+    def test_a_new_branch_is_scanned_and_an_old_secret_on_the_remote_stops_nothing(self):
+        self.repo.run("checkout", "-q", "-b", "claude/y")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        self.assertNotEqual(self.repo.run("push", "-q", "origin", "claude/y", check=False).returncode, 0)
+        self.assertEqual(self.repo.run("push", "-q", "--no-verify", "origin", "claude/y").returncode, 0)
+        self.add("other.txt", b"harmlos")
+        self.assertEqual(self.repo.run("push", "-q", "origin", "claude/y").returncode, 0)
+
+    def test_a_secret_added_inside_a_merge_commit_is_found(self):
+        self.repo.run("checkout", "-q", "-b", "side")
+        self.add("side.txt", b"side")
+        self.repo.run("checkout", "-q", "claude/x")
+        self.add("main.txt", b"main")
+        self.repo.run("merge", "-q", "--no-commit", "--no-ff", "side")
+        (self.repo.path / "conf.py").write_text(TOKENS["npm-Token"])
+        self.repo.run("add", "conf.py")
+        self.repo.run("commit", "-q", "-m", "merge")
+        self.assertIn("npm-Token in `conf.py`", self.push().stderr)
+
+    def test_a_clean_merge_of_a_branch_is_no_false_alarm(self):
+        self.repo.run("checkout", "-q", "-b", "side")
+        self.add("side.txt", b"side")
+        self.repo.run("checkout", "-q", "claude/x")
+        self.add("main.txt", b"main")
+        self.repo.run("merge", "-q", "--no-edit", "side")
+        self.assertEqual(self.push().returncode, 0)
+
+    def test_a_git_that_cannot_show_the_diff_is_reported_not_passed_as_clean(self):
+        with mock.patch.object(ce_githooks.subprocess, "Popen", return_value=subprocess.Popen(
+                [sys.executable, "-c", "raise SystemExit(129)"], stdout=subprocess.PIPE, encoding="utf-8")):
+            with self.assertRaisesRegex(RuntimeError, "Exit 129"):
+                ce_githooks.diff_secrets(["HEAD"])
+
+    def test_private_repositories_and_empty_pushes_are_not_scanned(self):
+        self.calls.unlink()
+        self.assertEqual(self.push().returncode, 0)  # nothing new: no question to GitHub
+        self.assertFalse(self.calls.exists())
+        self.answer.write_text("private")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        self.add("big.bin", b"\0" * (ce_githooks.BIG_BINARY + 1))
+        result = self.push()
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertIn("repos/o/r", self.calls.read_text())
+
+    def test_no_answer_from_github_lets_the_push_through_with_a_message(self):
+        self.answer.write_text("")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        result = self.push()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Sichtbarkeit von o/r nicht lesbar", result.stderr)
+
+    def test_a_broken_scan_fails_open_and_the_ref_checks_still_block(self):
+        with mock.patch.object(ce_githooks, "public_problems", side_effect=RuntimeError("kaputt")), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(ce_githooks.check_hook("pre-push", io.StringIO("a 1 b 1\n")), 0)
+        self.assertIn("kaputt", err.getvalue())
+        self.add("conf.py", b"x")
+        self.assertIn("Push auf `main`", self.repo.run("push", "-q", "origin", "HEAD:main", check=False).stderr)
+
+    def test_the_wrapper_passes_the_remote_and_an_old_wrapper_still_means_origin(self):
+        self.assertIn('check pre-push "$@"', (self.repo.path / ".git" / "ce-hooks" / "pre-push").read_text())
+        self.repo.run("remote", "add", "mirror", "https://github.com/o/mirror.git")
+        self.repo.run("config", f"url.{posix(self.repo.remote)}.insteadOf", "https://github.com/o/mirror.git", )
+        self.add("x.txt", b"x")
+        self.calls.unlink()
+        self.repo.run("push", "-q", "mirror", "claude/x")
+        self.assertIn("repos/o/mirror", self.calls.read_text())
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.repo.path)
+        self.assertEqual(ce_githooks.remote_slugs("origin"), ["o/r"])
+
+    def test_only_github_urls_have_a_slug(self):
+        for url, slugs in (("https://github.com/o/r.git", ["o/r"]), ("git@github.com:o/r.git", ["o/r"]), ("ssh://git@github.com/o/r", ["o/r"]),
+                           ("https://github.com/o/r/", ["o/r"]), ("https://gitlab.com/o/r.git", []), ("/tmp/remote.git", [])):
+            self.assertEqual(ce_githooks.remote_slugs(url), slugs, url)
+
+    def test_a_private_fetch_url_with_a_public_pushurl_is_checked_as_public(self):
+        self.answer.write_text("private")
+        self.repo.run("config", f"url.{posix(self.repo.remote)}.insteadOf", "https://github.com/o/pub.git", )
+        self.repo.run("remote", "set-url", "--push", "origin", "https://github.com/o/pub.git")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        result = self.push()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("öffentlichem Repo o/pub", result.stderr)
+
+    def test_tracking_refs_of_a_private_fetch_url_do_not_hide_commits_from_a_public_pushurl(self):
+        self.answer.write_text("private")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        self.assertEqual(self.push().returncode, 0)  # now in origin/claude/x, the tracking ref of the private fetch URL
+        other = self.base / "public.git"
+        self.repo.git(self.base, "init", "-q", "--bare", str(other))
+        self.repo.run("config", f"url.{posix(other)}.insteadOf", "https://github.com/o/pub.git", )
+        self.repo.run("remote", "set-url", "--push", "origin", "https://github.com/o/pub.git")
+        result = self.push()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("npm-Token in `conf.py`", result.stderr)
+
+    def tracked_secret(self):
+        """A secret in a commit origin already has; the ref line of a first push of it to another target."""
+        self.answer.write_text("private")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        self.assertEqual(self.push().returncode, 0)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.repo.path)
+        return [f"refs/heads/claude/x {self.repo.head()} refs/heads/claude/x {'0' * 40}"]
+
+    def problems(self, lines, url=""):
+        """Called directly: these targets are GitHub URLs, so a real push would leave the machine."""
+        answers = {"o/pub": "public"}
+        with mock.patch.object(ce_githooks, "visibility", lambda slug: answers.get(slug, "private")):
+            return " ".join(ce_githooks.public_problems(lines, "origin", url))
+
+    def test_a_second_url_of_the_remote_is_a_target_the_tracking_refs_say_nothing_about(self):
+        lines = self.tracked_secret()
+        self.repo.run("remote", "set-url", "--add", "origin", "https://github.com/o/pub.git")
+        self.assertIn("npm-Token in `conf.py`", self.problems(lines, "https://github.com/o/pub.git"))
+        self.assertIn("npm-Token in `conf.py`", self.problems(lines))  # a wrapper from before 0.34 passes no URL
+
+    def test_push_instead_of_is_a_target_the_tracking_refs_say_nothing_about(self):
+        lines = self.tracked_secret()
+        self.repo.run("config", "url.https://github.com/o/pub.git.pushInsteadOf", "https://github.com/o/r.git")
+        self.assertIn("npm-Token in `conf.py`", self.problems(lines, "https://github.com/o/pub.git"))
+        self.assertIn("npm-Token in `conf.py`", self.problems(lines))
+
+    def test_with_one_target_the_tracking_refs_still_count(self):
+        lines = self.tracked_secret()
+        self.assertEqual(ce_githooks.ranges(lines, "origin")[0][1:], ["--not", "--remotes=origin"])
+        self.assertEqual(ce_githooks.ranges(lines, "https://github.com/o/pub.git")[0][1:], ["--not"])
+
+    def test_commits_a_private_remote_already_has_are_new_to_a_public_one(self):
+        self.answer.write_text("private")
+        self.add("conf.py", TOKENS["npm-Token"].encode())
+        self.assertEqual(self.push().returncode, 0)
+        other = self.base / "public.git"
+        self.repo.git(self.base, "init", "-q", "--bare", str(other))
+        self.repo.run("config", f"url.{posix(other)}.insteadOf", "https://github.com/o/pub.git", )
+        self.repo.run("remote", "add", "public", "https://github.com/o/pub.git")
+        result = self.repo.run("push", "-q", "public", "claude/x", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("npm-Token in `conf.py`", result.stderr)
+
+
 class CommitTests(GitHookTestCase):
     def setUp(self):
         super().setUp()
@@ -219,7 +474,7 @@ class PushTests(GitHookTestCase):
     def test_an_internal_error_lets_git_continue(self):
         with mock.patch.object(ce_githooks, "push_problems", side_effect=RuntimeError("kaputt")), \
                 redirect_stderr(io.StringIO()) as err:
-            code = ce_githooks.check_hook("pre-push", io.StringIO("x y z w\n"))
+            code = ce_githooks.check_hook("pre-push", io.StringIO("a 1 b 1\n"))
         self.assertEqual(code, 0)
         self.assertIn("Prüfung fehlgeschlagen", err.getvalue())
 

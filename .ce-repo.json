@@ -20,6 +20,15 @@
     "lessons": "README.md#erfahrungen",
     "versions": "docs/versions"
   },
+  "core_paths": [
+    "plugins/ce-shared/contracts/*.json",
+    "plugins/ce-shared/hooks/guard.py",
+    "plugins/ce-shared/hooks/hooks.json",
+    "plugins/ce-shared/githooks/ce_githooks.py",
+    "plugins/ce-shared/tools/ce_common.py",
+    "plugins/ce-shared/tools/ce_contract.py",
+    "plugins/ce-shared/tools/ce_loader.py"
+  ],
   "heavy_lock": false,
   "coordination": {
     "repo": "ffunkfabian-hash/cubeescape-nexogen",

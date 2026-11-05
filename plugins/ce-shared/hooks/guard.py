@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
@@ -733,10 +734,20 @@ def git_commits(command, cwd):
 # (catching up with main in a working branch). Sightline = CE_ROLE=sightline, or the name reserved in the git dir of the
 # session's folder (ce-session.json, written by `ce session reserve`). What cannot be read is not Sightline - except an
 # error while reading, which lets the call through (fail open).
+# 0.34 (Trimline 14): one more door. After the user's Ja a session may merge a pull request itself when `./ce merge-check`
+# is green: the receipt in the git dir (ce-merge-check.json, written only by a green run with --ja) names repo, PR and head,
+# and the line must be a plain `gh pr merge <PR> -R <repo> --match-head-commit <head>` - GitHub itself then refuses any other
+# head, so the guard needs no network, and the explicit repo binds the target whatever the folder or GH_REPO say. No --auto, no --admin, no gh api, no MCP tool, no shell around it. The receipt records the
+# user's words, it does not prove them, and it is a file: the guard is a net, not a boundary.
 
 MERGE_TOOLS = ("mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_merge")
 MERGE_MUTATIONS = ("mergePullRequest", "enablePullRequestAutoMerge")
 SESSION_FILE = "ce-session.json"
+RECEIPT_FILE = "ce-merge-check.json"
+RECEIPT_MAX_AGE = 30 * 60  # seconds: main and CI move, a green check does not stay true
+RECEIPT_VALUE_FLAGS = ("--match-head-commit", "-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--subject",
+                       "-A", "--author-email")
+RECEIPT_PLAIN_FLAGS = ("-s", "--squash", "-m", "--merge", "-r", "--rebase", "-d", "--delete-branch")
 SIGHTLINE = re.compile(r"sightline(\s|·|$)", re.IGNORECASE)
 WRAPPERS = ("env", "command", "exec", "time", "nohup")
 SHELLS = ("bash", "sh", "zsh")
@@ -779,32 +790,82 @@ def merge_line(command):
     return [True for words in segments if merge_words(words)]
 
 
+def session_json(cwd, name):
+    """A JSON object from the git dir of the session's folder, {} when there is none. Raises on a failed git call."""
+    git = trusted_git()
+    if git is None or not os.path.isdir(cwd):
+        return {}
+    result = subprocess.run([git, "rev-parse", "--absolute-git-dir"], cwd=cwd, capture_output=True, text=True,
+                            timeout=3, env=git_environment(os.environ))
+    if result.returncode != 0:
+        return {}
+    try:
+        data = json.loads((Path(result.stdout.strip()) / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def is_sightline(cwd):
     """True for the Sightline session. Raises on a failed read (the caller fails open)."""
     if os.environ.get("CE_ROLE", "").strip().lower() == "sightline":
         return True
-    git = trusted_git()
-    if git is None or not os.path.isdir(cwd):
-        return False
-    result = subprocess.run([git, "rev-parse", "--absolute-git-dir"], cwd=cwd, capture_output=True, text=True,
-                            timeout=3, env=git_environment(os.environ))
-    if result.returncode != 0:
-        return False
-    try:
-        name = json.loads((Path(result.stdout.strip()) / SESSION_FILE).read_text(encoding="utf-8")).get("name", "")
-    except (OSError, ValueError, AttributeError):
-        return False
+    name = session_json(cwd, SESSION_FILE).get("name", "")
     return isinstance(name, str) and SIGHTLINE.match(name.strip()) is not None
 
 
+def receipt_valid(receipt, now):
+    """True for a green, young receipt that carries the user's words."""
+    age = now - receipt["time"] if isinstance(receipt.get("time"), (int, float)) else -1
+    return (receipt.get("green") is True and 0 <= age <= RECEIPT_MAX_AGE and isinstance(receipt.get("pr"), int)
+            and isinstance(receipt.get("ja"), str) and bool(receipt["ja"].strip())
+            and isinstance(receipt.get("repo"), str) and re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("head"))) is not None)
+
+
+def receipt_covers(words, receipt):
+    """True when one segment is a plain `gh pr merge <PR> -R <repo> --match-head-commit <head>` of this receipt. Everything
+    the door does not know stays shut: expansions, assignments, a bare `gh pr merge`, --auto, --admin, unknown flags."""
+    if not all(literal for _, literal in words):
+        return False
+    words = [word for word, _ in words]
+    if len(words) < 3 or os.path.basename(words[0]) != "gh" or words[1:3] != ["pr", "merge"]:
+        return False
+    values, numbers, rest = {}, [], words[3:]
+    while rest:
+        word = rest.pop(0)
+        name, equals, value = word.partition("=")
+        if (name in RECEIPT_VALUE_FLAGS and equals) or (word in RECEIPT_VALUE_FLAGS and rest):
+            name, value = (name, value) if equals else (word, rest.pop(0))
+            name = "--repo" if name == "-R" else name
+            if name in values:  # gh takes the last one, this check would read the first
+                return False
+            values[name] = value
+        elif word.isdigit():
+            numbers.append(word)
+        elif word not in RECEIPT_PLAIN_FLAGS:
+            return False
+    repo = values.get("--repo", "")
+    return (numbers == [str(receipt["pr"])] and values.get("--match-head-commit") == receipt["head"]
+            and repo.lower() == receipt["repo"].lower())
+
+
+def receipt_allows(command, cwd):
+    """True when a valid receipt covers every merging segment of the line. Raises on a failed read (fails open)."""
+    receipt = session_json(cwd, RECEIPT_FILE)
+    if not receipt or not receipt_valid(receipt, time.time()):
+        return False
+    segments, _ = shell_segments(command)
+    return all(receipt_covers(words, receipt) for words in segments if merge_words(words))
+
+
 def merge_attempt(tool, data, cwd):
-    """"merge" for a PR merge by a session that is not Sightline, else ""."""
+    """"merge" for a PR merge by a session that is not Sightline and holds no receipt for it, else ""."""
     try:
         if tool == "Bash":
-            attempt = bool(merge_line(data.get("command", "")))
-        else:
-            attempt = tool in MERGE_TOOLS
-        return "merge" if attempt and not is_sightline(cwd) else ""
+            command = data.get("command", "")
+            attempt = bool(merge_line(command))
+            return "merge" if attempt and not is_sightline(cwd) and not receipt_allows(command, cwd) else ""
+        return "merge" if tool in MERGE_TOOLS and not is_sightline(cwd) else ""
     except Exception:  # never lose a call over this field
         return ""
 
