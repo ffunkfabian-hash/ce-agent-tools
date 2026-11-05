@@ -159,7 +159,8 @@ def gather(repo, number):
     versions = {"base": version_at(repo, spec, base), "head": version_at(repo, spec, head)} if spec else None
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
     compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}")
-    facts = {"repo": repo, "pr": pr, "files": files, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
+    runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
+    facts = {"repo": repo, "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "files": files, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
              "base_config": base_config, "head_config": head_config, "versions": versions, "changelog_name": changelog_name,
              "changelog": read_file(repo, changelog_name, head) if changelog_name else None}
     now = gh_json("pr", "view", str(number), "-R", repo, "--json", "headRefOid").get("headRefOid")
@@ -314,6 +315,9 @@ def evaluate(facts, expected_sha=""):
     elif mergeable != "MERGEABLE":
         reasons.append(f"Mergebarkeit unbekannt ({mergeable})")
     failed, pending = ci_state(pr.get("statusCheckRollup"))
+    pending += [name for name in facts.get("runs_open") or [] if name not in pending]  # a queued run has no check entry yet
+    if not pr.get("statusCheckRollup") and not pending:
+        warnings.append("Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen")
     if failed:
         reasons.append(f"CI rot: {', '.join(failed[:5])}")
     if pending:

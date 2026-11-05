@@ -45,7 +45,8 @@ class EvaluateTests(unittest.TestCase):
     def test_a_clean_small_pull_request_is_a_green_patch(self):
         result = mc.evaluate(facts())
         self.assertTrue(result["green"], result)
-        self.assertEqual((result["classification"], result["lines"], result["warnings"]), ("Patch", 35, []))
+        self.assertEqual((result["classification"], result["lines"]), ("Patch", 35))
+        self.assertEqual(result["warnings"], ["Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen"])
         self.assertEqual(mc.text_line(result), f"merge-check o/r#7 {HEAD[:7]}: grün · Einstufung Patch (35 Zeilen)")
 
     def test_the_text_line_of_a_red_result_names_the_reasons(self):
@@ -70,6 +71,13 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(mc.ci_state(bad), (["a", "b"], ["c", "d"]))
         self.assertIn("CI rot: a, b", self.reasons(pr={"statusCheckRollup": bad}))
         self.assertIn("CI läuft noch: c, d", self.reasons(pr={"statusCheckRollup": bad}))
+
+    def test_a_queued_run_without_a_check_entry_is_not_green(self):
+        self.assertIn("CI läuft noch: check", self.reasons(runs_open=["check"]))
+        done = [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        self.assertEqual(mc.evaluate(facts(pr={"statusCheckRollup": done}))["warnings"], [])
+        self.assertIn("CI läuft noch: tests", self.reasons(pr={"statusCheckRollup": [{"name": "tests", "status": "QUEUED"}]}, runs_open=["tests"]))
+        self.assertEqual(self.reasons(pr={"statusCheckRollup": [{"name": "tests", "status": "QUEUED"}]}, runs_open=["tests"]).count("tests"), 1)
 
     def test_files_over_the_limit_are_red_and_the_limit_is_exact(self):
         self.assertIn("big.bin (5.0 MB)", self.reasons(sizes={"big.bin": mc.BIG_FILE + 1}))
@@ -211,6 +219,8 @@ class FakeGh:
         target = args[-1]
         if "/files?" in target:
             return json.dumps(self.answers["files"] if "page=1" in target else [])
+        if "/actions/runs" in target:
+            return json.dumps({"workflow_runs": self.answers.get("runs", [])})
         if "/compare/" in target:
             return json.dumps({"behind_by": self.answers["behind"]})
         ref = target.rsplit("ref=", 1)[-1]
@@ -267,6 +277,11 @@ class GatherTests(unittest.TestCase):
         fake = FakeGh(pr=[json.dumps(pr), json.dumps({**pr, "headRefOid": "d" * 40})])
         with mock.patch.object(mc, "gh", fake), self.assertRaisesRegex(mc.NotCheckable, "während der Prüfung"):
             mc.gather("o/r", 7)
+
+    def test_open_workflow_runs_of_the_head_are_read(self):
+        fake = FakeGh(runs=[{"name": "check", "status": "queued"}, {"name": "alt", "status": "completed"}])
+        with mock.patch.object(mc, "gh", fake):
+            self.assertEqual(mc.gather("o/r", 7)["runs_open"], ["check"])
 
     def test_an_unknown_mergeable_state_is_asked_again(self):
         pr = dict(facts()["pr"])
