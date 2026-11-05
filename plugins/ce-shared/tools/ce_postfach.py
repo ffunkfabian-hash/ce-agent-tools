@@ -13,8 +13,8 @@ CE_MAILBOX=0. The sender name is the one `--reserve` wrote to `<git-dir>/ce-sess
 `who` lists the `angemeldet` messages of the last days (written by `ce_session_name.py --reserve`) with the latest message of each sender.
 0.21: without `--model` the model line comes from the reservation (`--model` of `--reserve`); a first line `Modell…` is taken as the
 model line instead of a second one. `--to` takes several recipients (`--to A --to B` or `--to "A, B"`); a message about a PR or a merge
-also goes to Sightline (`--no-cc` keeps it out). `--freigabe commit,push,pr --zitat "…"` writes Sightline's release message in the
-fixed form (ce_await_mail.release_check; only with sender Sightline, only reversible steps); other senders cannot send that form.
+also goes to Sightline (`--no-cc` keeps it out).
+0.35: the release by post of 0.21 is gone (post carries no Ja, ce_await_mail.release_note); a message speaking of a release gets that hint.
 """
 import argparse
 import datetime
@@ -86,10 +86,6 @@ def with_coordinator(recipients: list, sender: str, text: str) -> list:
     if any(am.normalize(n) == "alle" for n in names):
         return names
     return names + [am.COORDINATOR]
-
-
-def is_coordinator(sender: str) -> bool:
-    return am.normalize(recipient_name(sender)) == am.normalize(am.COORDINATOR)
 
 
 def on_github(repo: Path) -> bool:
@@ -224,8 +220,9 @@ def own_name(repo_dir: Path, agent: str = "auto") -> str:
     return sender_from_branch(sn_git(repo_dir, "branch", "--show-current"), abbrev, place)
 
 
-KNOWN_SAY_VALUED = {"--to", "--name", "--model", "--agent", "--repo", "--freigabe", "--zitat", "--zeit", "--frage", "--standard", "--frist"}
+KNOWN_SAY_VALUED = {"--to", "--name", "--model", "--agent", "--repo", "--frage", "--standard", "--frist"}
 KNOWN_SAY_FLAGS = {"--dry-run", "--no-cc", "-h", "--help"}
+RETIRED_SAY = {"--freigabe", "--zitat", "--zeit"}  # 0.35: as a topic they would go out as a message that means nothing
 
 
 def normalize_say_argv(argv: list[str]) -> list[str]:
@@ -284,9 +281,6 @@ def main(argv=None) -> int:
     say.add_argument("--to", action="append", default=[],
                      help="Empfänger: Sitzungsname, Rolle oder `alle` (Standard Sightline); mehrfach oder mit Komma für mehrere")
     say.add_argument("--no-cc", action="store_true", help="PR-/Merge-Meldung ohne Kopie an Sightline")
-    say.add_argument("--freigabe", default="", help="nur Sightline: Freigabe per Post für diese Schritte (commit, push, pr)")
-    say.add_argument("--zitat", default="", help="mit --freigabe: wörtliches Zitat des Nutzers")
-    say.add_argument("--zeit", default="", help="mit --freigabe: Zeit des Ja in UTC (Standard: jetzt)")
     say.add_argument("--frage", default="", help="Entscheidungsfrage (eine Zeile, z. B. 'A oder B?'): Thema `Entscheidung nötig: …`; mit --standard, --frist")
     say.add_argument("--standard", default="", help="mit --frage: vorgeschlagene Antwort (Pflicht), z. B. A")
     say.add_argument("--frist", default="", help="mit --frage: Frist (Standard 60m; 1 min bis 24 h); danach nur noch ein Hinweis, keine Automatik")
@@ -315,8 +309,8 @@ def main(argv=None) -> int:
             print(f"keine Anmeldung in den letzten {args.days:g} Tagen")
         return 0
 
-    if args.frage and args.freigabe:
-        print("--frage und --freigabe schließen sich aus: eine Entscheidungsfrage ist keine Freigabe", file=sys.stderr)
+    if args.topic.split("=")[0] in RETIRED_SAY:
+        print(f"{args.topic.split('=')[0]} gibt es nicht mehr: Post trägt kein Ja (Regel 4, ./ce merge-check)", file=sys.stderr)
         return 2
     if args.frage:
         if args.topic:
@@ -342,26 +336,9 @@ def main(argv=None) -> int:
     lines = list(args.lines)
     text = "\n".join([args.topic, *lines])
     to = args.to or [am.COORDINATOR]
-    if args.freigabe:
-        if not is_coordinator(sender):
-            print(f"Freigabe per Post sendet nur {am.COORDINATOR} (Absender {sender}); Ja des Nutzers in der Sitzung einholen", file=sys.stderr)
-            return 2
-        targets = [part for name in to for part in am.recipients(name)]
-        if len(targets) != 1 or am.normalize(targets[0]) == "alle":
-            print("Freigabe per Post: genau eine Zielsitzung mit --to", file=sys.stderr)
-            return 2
-        steps, unknown = am.release_steps(args.freigabe)
-        at = args.zeit or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-        lines = am.release_lines(recipient_name(targets[0]), steps + unknown, args.zitat, at) + lines
-        to = targets
-    elif am.RELEASE_MARK in text:
-        print("Die Kennung der Freigabe per Post schreibt nur `say --freigabe` (Absender Sightline)", file=sys.stderr)
-        return 2
-    elif am.release_check(text) is not None:
-        print(("Hinweis: als Freigabe gilt per Post nur `say --freigabe commit,push,pr --zitat …` – dieser Text ist keine."
-               if is_coordinator(sender) else
-               f"Hinweis: eine Freigabe per Post gibt nur {am.COORDINATOR} im festen Format; der Empfänger braucht sonst das Ja in seiner Sitzung."),
-              file=sys.stderr)
+    note = am.release_note(text)
+    if note:
+        print(note, file=sys.stderr)
     if not args.no_cc:
         to = with_coordinator(to, sender, text)
     try:
@@ -369,11 +346,6 @@ def main(argv=None) -> int:
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
-    if args.freigabe:
-        check = am.release_check(body)
-        if not check or not check["valid"]:
-            print(f"Freigabe per Post nicht gesendet: {check['reason'] if check else 'Format'}", file=sys.stderr)
-            return 2
     if not model:
         print("Hinweis: ohne Modellzeile (--model oder bei --reserve angeben)", file=sys.stderr)
     return send(body, args.repo, args.dry_run)

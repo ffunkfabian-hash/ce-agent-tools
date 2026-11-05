@@ -3,7 +3,7 @@
 
 0.5.0: the rules ask for things nobody measured (model per subagent, no repeated full runs, search before reading, output size,
 session length). This reads the transcript (the Stop hook passes transcript_path; or the newest under ~/.claude/projects) and
-prints one line for report.md plus the details:
+prints one line for the Stop hook (hooks/session.py, git dir) plus the details:
 
     Sitzung: 184 Nachrichten · Unteragenten 3 (opus 1, sonnet 2) · ./check 2 (1 wiederholt ohne Diff) · ce_search 4 · Read .md>60 KB 1 ·
     größte Ausgabe 41 KB (cat logs/toolgen_report.json) · heavy_lock gewartet 12 min · Bash 97 · Edit 23

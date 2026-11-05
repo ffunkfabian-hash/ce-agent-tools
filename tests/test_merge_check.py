@@ -165,8 +165,8 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("im PR entfernt", self.reasons(head_config=None))
 
     def test_classification_by_size_and_core_paths(self):
-        self.assertEqual(mc.evaluate(facts(pr={"additions": 100, "deletions": 0}))["classification"], "Patch")
-        result = mc.evaluate(facts(pr={"additions": 100, "deletions": 1}))
+        self.assertEqual(mc.evaluate(facts(pr={"additions": 300, "deletions": 0}))["classification"], "Patch")
+        result = mc.evaluate(facts(pr={"additions": 300, "deletions": 1}))
         self.assertEqual((result["classification"], result["green"]), ("Version", True))
         core = {"filename": "contracts/deep/a.json", "status": "modified", "changes": 1, "patch": "@@\n+x"}
         result = mc.evaluate(facts(files=facts()["files"] + [core]))
@@ -180,6 +180,56 @@ class EvaluateTests(unittest.TestCase):
         result = mc.evaluate(facts(pr={"additions": 300}, versions=versions, changelog="1.2.1"))
         self.assertTrue(result["green"])
         self.assertIn("nur Patch-Nummer erhöht", " ".join(result["warnings"]))
+
+    def test_a_patch_between_the_two_limits_needs_the_ja_but_no_new_minor(self):
+        """Punkte 13 und 15: 100 trennt ohne und mit Ja, 300 trennt Patch und Version."""
+        for lines, classification, free in ((100, "Patch", True), (101, "Patch", False), (300, "Patch", False), (301, "Version", False)):
+            result = mc.evaluate(facts(pr={"additions": lines, "deletions": 0}, versions={"base": "1.2.0", "head": "1.2.1"}, changelog="1.2.1"))
+            self.assertEqual((result["green"], result["classification"], result["ohne_ja"]), (True, classification, free), lines)
+            self.assertEqual(result["ja_noetig_weil"], [] if free else [f"{lines} Zeilen, ohne Ja höchstens 100"], lines)
+            self.assertEqual("nur Patch-Nummer erhöht" in " ".join(result["warnings"]), lines > 300, lines)
+
+    def test_lines_are_counted_added_plus_deleted_for_the_stage_too(self):
+        self.assertTrue(mc.evaluate(facts(pr={"additions": 60, "deletions": 40}))["ohne_ja"])
+        self.assertFalse(mc.evaluate(facts(pr={"additions": 60, "deletions": 41}))["ohne_ja"])
+
+    def test_without_core_paths_in_the_base_there_is_no_stage_one(self):
+        for config in ({}, None, {**CONFIG, "core_paths": None}, {**CONFIG, "core_paths": []}, {**CONFIG, "core_paths": [""]},
+                       {**CONFIG, "core_paths": "contracts/**"}, {**CONFIG, "core_paths": [1, None]}):
+            result = mc.evaluate(facts(base_config=config))
+            self.assertTrue(result["green"], config)
+            self.assertFalse(result["ohne_ja"], config)
+            self.assertEqual(result["ja_noetig_weil"], ["core_paths fehlt in der Basis"], config)
+            self.assertIn("keine Stufe 1", " ".join(result["warnings"]), config)
+
+    def test_a_list_only_in_the_pull_request_does_not_open_stage_one(self):
+        result = mc.evaluate(facts(base_config={}, head_config=CONFIG))
+        self.assertFalse(result["ohne_ja"])
+
+    def test_a_pull_request_that_changes_the_list_needs_the_ja(self):
+        """Sonst nähme ein Patch ohne Ja den Kernpfad von der Liste, und der nächste Patch änderte ihn ohne Ja."""
+        result = mc.evaluate(facts(head_config={**CONFIG, "core_paths": ["contracts/**"]}))
+        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["core_paths im PR geändert"]))
+        self.assertTrue(mc.evaluate(facts(head_config={**CONFIG, "check": {"quick": []}}))["ohne_ja"], "other config entries stay free")
+
+    def test_a_core_path_or_a_red_run_is_never_stage_one(self):
+        core = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
+        result = mc.evaluate(facts(files=facts()["files"] + [core]))
+        self.assertEqual((result["ohne_ja"], result["ja_noetig_weil"]), (False, ["Kernpfad berührt"]))
+        docs = {"filename": "contracts/a.md", "status": "modified", "changes": 1, "patch": "@@\n+x"}
+        self.assertFalse(mc.evaluate(facts(files=[docs]))["ohne_ja"], "a text under a core path is a core path")
+        red = mc.evaluate(facts(pr={"mergeable": "CONFLICTING"}))
+        self.assertEqual((red["green"], red["ohne_ja"], red["ja_noetig_weil"]), (False, False, ["merge-check nicht grün"]))
+
+    def test_from_100_lines_of_code_the_result_asks_for_the_judge(self):
+        def run(*files):
+            result = mc.evaluate(facts(files=list(files)))
+            return result["code_lines"], "Richter nötig" in " ".join(result["warnings"]), result["green"]
+        code = {"filename": "src/a.py", "status": "modified", "patch": "@@\n+x"}
+        self.assertEqual(run(CHANGELOG, {**code, "changes": 99}), (99, False, True))
+        self.assertEqual(run(CHANGELOG, {**code, "changes": 100}), (100, True, True))
+        self.assertEqual(run(CHANGELOG, {**code, "changes": 60}, {**code, "filename": "tests/a.json", "changes": 40}), (100, True, True))
+        self.assertEqual(run(CHANGELOG, {**code, "changes": 50}, {**code, "filename": "docs/A.MD", "changes": 400}), (50, False, True))
 
     def test_core_paths_come_from_the_base_so_a_pull_request_cannot_drop_its_own(self):
         core = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
@@ -391,14 +441,16 @@ class ReceiptTests(unittest.TestCase):
         os.chdir(self.folder)
         self.addCleanup(os.chdir, self.previous)
 
-    def run_main(self, *args, fail=None):
+    def run_main(self, *args, fail=None, given=None):
         out, err = io.StringIO(), io.StringIO()
-        gather = mock.Mock(side_effect=fail) if fail else mock.Mock(return_value=self.facts)
+        gather = mock.Mock(side_effect=fail) if fail else mock.Mock(return_value=given or self.facts)
         with mock.patch.object(mc, "gather", gather), redirect_stdout(out), redirect_stderr(err):
             code = mc.main(["o/r", "7", *args])
         return code, out.getvalue(), err.getvalue()
 
     facts = facts()
+    needs_ja = facts | {"pr": {**facts["pr"], "additions": 150}}
+    door = f"gh pr merge 7 -R o/r --match-head-commit {HEAD} --squash"
 
     def test_green_with_ja_writes_the_receipt_the_guard_accepts(self):
         code, out, err = self.run_main("--ja", "Ja, bitte mergen")
@@ -407,19 +459,59 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual((result["green"], result["classification"], result["receipt"]), (True, "Patch", True))
         self.assertEqual(err.splitlines()[0], f"merge-check o/r#7 {HEAD[:7]}: grün · Einstufung Patch (35 Zeilen)")
         receipt = json.loads(self.file.read_text(encoding="utf-8"))
-        self.assertEqual((receipt["pr"], receipt["head"], receipt["ja"]), (7, HEAD, "Ja, bitte mergen"))
-        self.assertTrue(guard.receipt_allows(f"gh pr merge 7 -R o/r --match-head-commit {HEAD} --squash", self.folder))
+        self.assertEqual((receipt["pr"], receipt["head"], receipt["ja"], receipt["kind"]), (7, HEAD, "Ja, bitte mergen", "ja"))
+        self.assertTrue(guard.receipt_allows(self.door, self.folder))
 
     def test_green_without_ja_gives_no_receipt_and_says_so(self):
-        code, out, err = self.run_main()
+        code, out, err = self.run_main(given=self.needs_ja)
         self.assertEqual((code, json.loads(out)["receipt"], self.file.exists()), (0, False, False))
         self.assertIn("--ja", err)
+        self.assertIn("155 Zeilen, ohne Ja höchstens 100", err)
+        self.assertFalse(guard.receipt_allows(self.door, self.folder))
+
+    def test_a_green_stage_one_run_writes_a_patch_receipt_without_words(self):
+        code, out, err = self.run_main()
+        result = json.loads(out)
+        self.assertEqual((code, result["ohne_ja"], result["receipt"], result["receipt_kind"]), (0, True, True, "patch"))
+        receipt = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual((receipt["repo"], receipt["pr"], receipt["head"], receipt["kind"]), ("o/r", 7, HEAD, "patch"))
+        self.assertNotIn("ja", receipt, "no words in a receipt nobody said them for")
+        self.assertIn("Stufe 1, ohne Ja", err)
+        self.assertIn(self.door, err)
+        self.assertTrue(guard.receipt_allows(self.door, self.folder))
+        self.assertFalse(guard.receipt_allows(self.door.replace("merge 7", "merge 8"), self.folder))
+
+    def test_a_repo_without_core_paths_gets_no_patch_receipt_and_stage_two_still_works(self):
+        without = self.facts | {"base_config": {}}
+        code, out, err = self.run_main(given=without)
+        self.assertEqual((code, json.loads(out)["ohne_ja"], self.file.exists()), (0, False, False))
+        self.assertIn("core_paths fehlt in der Basis", err)
+        self.assertFalse(guard.receipt_allows(self.door, self.folder))
+        code, out, _ = self.run_main("--ja", "Ja", given=without)
+        self.assertEqual((code, json.loads(out)["receipt_kind"]), (0, "ja"))
+        self.assertTrue(guard.receipt_allows(self.door, self.folder))
+
+    def test_a_red_run_gets_no_receipt_of_either_kind(self):
+        red = self.facts | {"behind_by": 1}
+        for args in ((), ("--ja", "Ja")):
+            code, out, _ = self.run_main(*args, given=red)
+            self.assertEqual((code, json.loads(out)["receipt_kind"], self.file.exists()), (1, "", False), args)
+
+    def test_a_quote_of_blanks_is_no_ja_and_only_stage_one_is_left(self):
+        self.run_main("--ja", "   ")
+        self.assertEqual(json.loads(self.file.read_text(encoding="utf-8"))["kind"], "patch")
+        self.run_main("--ja", "   ", given=self.needs_ja)
+        self.assertFalse(self.file.exists())
 
     def test_every_later_run_removes_an_old_receipt(self):
         self.run_main("--ja", "Ja")
         self.assertTrue(self.file.exists())
-        self.run_main()
+        self.run_main(given=self.needs_ja)
         self.assertFalse(self.file.exists())
+        self.run_main()
+        self.assertTrue(self.file.exists(), "patch receipt")
+        self.run_main(given=self.needs_ja)
+        self.assertFalse(self.file.exists(), "a new head above the limit must not keep the patch receipt")
         self.run_main("--ja", "Ja")
         code, out, _ = self.run_main("--ja", "Ja", "--sha", "d" * 40)
         self.assertEqual((code, json.loads(out)["green"], self.file.exists()), (1, False, False))

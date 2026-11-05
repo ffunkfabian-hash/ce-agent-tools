@@ -6,14 +6,22 @@ Patch or Version. Logic errors stay with the judge and Sightline: this only find
 
 Checks: open and no draft, head SHA (against --sha), base branch contained, conflicts, CI, files over 5 MB, report.md in the
 diff, deleted or weakened tests, version file and changelog against .ce-repo.json, core paths (.ce-repo.json > core_paths
-of the base branch, so a pull request cannot take its own files off the list). Version = over PATCH_LINES changed lines or
-a core path touched, else Patch. A core path on a mere patch number is red; size alone only warns, the rule says "etwa".
+of the base branch, so a pull request cannot take its own files off the list).
+
+Classification (regeln-details > Patch-Aufträge): Version = over VERSION_LINES changed lines or a core path touched, else Patch.
+A core path on a mere patch number is red; size alone only warns.
+
+Merge stages (regeln-details > Freigaben und Merge, 0.35): `ohne_ja` is true for stage 1 - green, at most NO_JA_LINES lines, no core
+path, core_paths listed in the base and not changed by the pull request; `ja_noetig_weil` names what stands against it. Everything
+else is stage 2 (after the user's Ja) or stage 3 (merge request to Sightline). From JUDGE_LINES lines of code (diff without .md) a
+warning asks for the judge; whether one ran is not visible here, that stays a rule.
 
 Output: the result as JSON on stdout, one text line on stderr. Exit 0 green, 1 red, 2 not checkable (never green).
 
-Receipt: every run first removes the receipt of this worktree; a green run with --ja "<the user's words>" writes a new one to
-<git dir>/ce-merge-check.json. With it the guard lets this session run `gh pr merge <PR> -R <repo> --match-head-commit <SHA>`
-for 30 minutes (guard.py > merge_attempt, rule merge-nur-sightline). The quote records the Ja, it does not prove it.
+Receipt: every run first removes the receipt of this worktree; a green run then writes a new one to <git dir>/ce-merge-check.json:
+kind `ja` with --ja "<the user's words>", else kind `patch` for stage 1. With it the guard lets this session run
+`gh pr merge <PR> -R <repo> --match-head-commit <SHA>` for 30 minutes (guard.py > merge_attempt, rule merge-tuer). The quote
+records the Ja, it does not prove it.
 """
 import argparse
 import json
@@ -29,7 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
 
 BIG_FILE = 5_000_000  # bytes; the same limit as BIG_BINARY in githooks/ce_githooks.py (a test compares them)
-PATCH_LINES = 100
+VERSION_LINES = 300  # classification: over this a change is a Version (Punkt 15)
+NO_JA_LINES = 100  # stage 1: over this a merge needs the user's Ja (Punkt 13)
+JUDGE_LINES = 100  # from this many lines of code a patch needs the judge too (regeln-details > Patch-Aufträge)
 RECEIPT_FILE = "ce-merge-check.json"  # read by guard.py
 PAGE = 100
 MAX_PAGES = 30
@@ -326,6 +336,14 @@ def version_reasons(facts, classification, touched_core):
     return reasons, warnings
 
 
+def ja_reasons(green, listed, core_changed, touched, lines):
+    """What keeps a run out of stage 1; empty means it may merge without the user's Ja."""
+    checks = ((not green, "merge-check nicht grün"), (not listed, "core_paths fehlt in der Basis"),
+              (core_changed, "core_paths im PR geändert"), (touched, "Kernpfad berührt"),
+              (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"))
+    return [text for failed, text in checks if failed]
+
+
 def evaluate(facts, expected_sha=""):
     pr, files = facts["pr"], facts["files"]
     head = pr["headRefOid"]
@@ -369,18 +387,24 @@ def evaluate(facts, expected_sha=""):
         warnings.append(f"Testdateien ohne Diff von GitHub, nicht bewertet: {', '.join(unread[:5])}")
     config = facts.get("base_config") or {}
     patterns = config.get("core_paths")
-    if not isinstance(patterns, list):
+    listed = isinstance(patterns, list) and any(isinstance(p, str) and p for p in patterns)  # an empty list guards nothing either
+    if not listed:
         patterns = []
-        warnings.append("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft")
+        warnings.append("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1")
+    core_changed = listed and (facts.get("head_config") or {}).get("core_paths") != config.get("core_paths")  # the next patch would profit
     touched = core_hits(files, patterns)
     lines = (pr.get("additions") or 0) + (pr.get("deletions") or 0)
-    classification = "Version" if touched or lines > PATCH_LINES else "Patch"
+    code_lines = sum(f.get("changes") or 0 for f in files if not f["filename"].lower().endswith(".md"))
+    classification = "Version" if touched or lines > VERSION_LINES else "Patch"
     version_problems, version_warnings = version_reasons(facts, classification, bool(touched))
     reasons += version_problems
     warnings += version_warnings
+    if code_lines >= JUDGE_LINES:
+        warnings.append(f"{code_lines} Zeilen Code (ohne .md): Richter nötig (`./ce judge`); ob einer lief, sieht merge-check nicht")
+    why = ja_reasons(not reasons, listed, core_changed, touched, lines)
     return {"repo": facts["repo"], "pr": pr["number"], "url": pr.get("url"), "head": head, "base": pr["baseRefName"],
-            "green": not reasons, "classification": classification, "lines": lines, "files": len(files),
-            "core_paths_touched": touched, "reasons": reasons, "warnings": warnings}
+            "green": not reasons, "classification": classification, "lines": lines, "code_lines": code_lines, "files": len(files),
+            "ohne_ja": not why, "ja_noetig_weil": why, "core_paths_touched": touched, "reasons": reasons, "warnings": warnings}
 
 
 def text_line(result):
@@ -399,18 +423,24 @@ def receipt_path(cwd=None):
 
 
 def update_receipt(result, ja, cwd=None, now=time.time):
-    """Drops the old receipt in every case; a new one needs green and the user's words. True when one was written."""
+    """Drops the old receipt in every case; a new one needs green and either the user's words (kind `ja`) or stage 1 (kind
+    `patch`). The kind written, "" for none."""
     path = receipt_path(cwd)
     if path is None:
-        return False
+        return ""
     path.unlink(missing_ok=True)
-    if not (result and result["green"] and ja.strip()):
-        return False
+    if not (result and result["green"]):
+        return ""
+    kind = "ja" if ja.strip() else "patch" if result.get("ohne_ja") is True else ""
+    if not kind:
+        return ""
+    receipt = {"repo": result["repo"], "pr": result["pr"], "head": result["head"], "green": True, "kind": kind, "time": now()}
+    if kind == "ja":
+        receipt["ja"] = ja.strip()
     temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps({"repo": result["repo"], "pr": result["pr"], "head": result["head"], "green": True, "ja": ja.strip(),
-                                "time": now()}, ensure_ascii=False) + "\n", encoding="utf-8")
+    temp.write_text(json.dumps(receipt, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(temp, path)
-    return True
+    return kind
 
 
 def main(argv=None):
@@ -430,11 +460,17 @@ def main(argv=None):
         print(json.dumps({"repo": args.repo, "pr": args.pr, "green": False, "error": str(error)}, ensure_ascii=False))
         print(f"merge-check {args.repo}#{args.pr}: nicht prüfbar · {error}", file=sys.stderr)
         return 2
-    result["receipt"] = update_receipt(result, args.ja)
+    kind = update_receipt(result, args.ja)
+    result["receipt"], result["receipt_kind"] = bool(kind), kind
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     print(text_line(result), file=sys.stderr)
-    if result["green"] and not result["receipt"]:
-        print("Keine Merge-Quittung: nach dem Ja des Nutzers erneut mit --ja \"<sein Wortlaut>\".", file=sys.stderr)
+    if kind:
+        stage = "Stufe 1, ohne Ja" if kind == "patch" else "Stufe 2, nach Ja"
+        print(f"Merge-Quittung ({stage}), 30 Minuten aus diesem Ordner: gh pr merge {result['pr']} -R {result['repo']} "
+              f"--match-head-commit {result['head']} --squash", file=sys.stderr)
+    elif result["green"]:
+        print(f"Keine Merge-Quittung ({'; '.join(result['ja_noetig_weil'])}): nach dem Ja des Nutzers erneut mit --ja \"<sein Wortlaut>\".",
+              file=sys.stderr)
     return 0 if result["green"] else 1
 
 

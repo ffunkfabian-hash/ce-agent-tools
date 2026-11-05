@@ -7,7 +7,7 @@ and tool_input with the model's arguments - file paths may be relative to cwd.
 - A shell tool (bash, git_bash, powershell, process.start) -> one Claude Bash payload; its own cwd argument wins.
 - file_path with content (write_file) -> Write, with old_string/new_string (edit) -> Edit. The argument shape decides, as
   in the Antigravity adapter, so an MCP file tool with the same arguments is judged too.
-- mcp_<server>.<tool> -> mcp__<server>__<tool> (only merge-nur-sightline looks at the GitHub merge tools).
+- mcp_<server>.<tool> -> mcp__<server>__<tool> (only merge-tuer looks at the GitHub merge tools).
 - Everything else (read_file, grep, agents.spawn, ...): no rule applies.
 
 Output (stdout, exit code 0):

@@ -904,9 +904,12 @@ class ReportAndSessionHookTests(unittest.TestCase):
                                      capture_output=True, text=True, encoding="utf-8", env=env).stdout
                 return json.loads(out)
             result = stop_hook()
-            # 0.33: the Stop hints go to report.md (the measurement), no longer as a systemMessage only the user sees
+            # 0.33: the Stop hints go to the measurement, no longer as a systemMessage only the user sees; 0.35: into the git dir,
+            # report.md becomes the PR description and keeps nothing but the session's own text
+            (root / "report.md").write_text("Entwurf\n", encoding="utf-8")
             self.assertNotIn("systemMessage", result)
-            report = (root / "report.md").read_text(encoding="utf-8")
+            stats = Path(subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=root, capture_output=True, text=True).stdout.strip()) / "ce-session-stats.log"
+            report = stats.read_text(encoding="utf-8")
             self.assertIn("Sitzung:", report)
             self.assertIn("ohne model", report)
             # code changed but checks ran: no check-before-stop hint; remove the checks -> hint for the model
@@ -924,7 +927,9 @@ class ReportAndSessionHookTests(unittest.TestCase):
             self.assertEqual(stop_hook(stop_hook_active=True), {})
             self.assertEqual(stop_hook(), {})
             self.assertIn("check-before-stop", stop_hook(session_id="s-2")["hookSpecificOutput"]["additionalContext"])
-            self.assertIn("check-before-stop", (root / "report.md").read_text(encoding="utf-8"), "report.md keeps every hint")
+            self.assertIn("check-before-stop", stats.read_text(encoding="utf-8"), "the measurement keeps every hint")
+            self.assertEqual((root / "report.md").read_text(encoding="utf-8"), "Entwurf\n", "no statistics on the way to the PR description")
+            self.assertEqual(subprocess.run(["git", "status", "--porcelain", "--", "ce-session-stats.log"], cwd=root, capture_output=True, text=True).stdout, "")
 
     def test_session_start_skips_lessons_the_repo_imports_itself(self):
         import tempfile

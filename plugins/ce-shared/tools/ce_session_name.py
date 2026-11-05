@@ -9,7 +9,7 @@ Run in the working repository at the start of a session:
 Repo kürzel come from `.ce-repo.json` ("name"), the place from the real environment (never from the prompt), the next free version
 from `.ce-repo.json` and the branch names of `origin` (`git ls-remote`, skipped offline).
 1.15: the branch on origin IS the reservation (the Versionsregister PR is retired): `--reserve` creates the branch at HEAD and pushes
-it (no code, so no user approval needed); a number that origin already has is skipped. `--topics` lists the open claude/codex
+it (a push of the own branch never needs a Ja); a number that origin already has is skipped. `--topics` lists the open claude/codex
 branches of origin so a session can see whether the same subject is already being worked on (then ask the user).
 0.14: `--reserve` also announces the session in the Postfach (cubeescape-nexogen#16, `<Name> → Sightline: angemeldet`, see
 ce_postfach.py) so other sessions know it exists and how to reach it; `--about`/`--model` fill the message, `--no-announce` skips it.

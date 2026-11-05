@@ -10,4 +10,4 @@ conditions:
 ---
 
 **Kein Commit direkt auf `main`:** jede Arbeit läuft auf einem Branch `claude/<repo>-<version>-<name>` (Reservierung per
-`session_name.py --reserve`) oder `claude/<repo>-patch-<kurzname>`; nach `main` kommt nur ein PR mit dem Ja des Nutzers.
+`session_name.py --reserve`) oder `claude/<repo>-patch-<kurzname>`; nach `main` kommt nur ein PR nach Regel 4.

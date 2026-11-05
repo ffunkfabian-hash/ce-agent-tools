@@ -11,8 +11,8 @@ It ends quietly when nothing comes, when the process that started it is gone (th
 the stop once (`decision: block`) with the exact command – at most once every REMIND_EVERY_H hours, never without `gh` and not after
 a recent GitHub failure, so a session that cannot listen is not woken again and again. `stop_hook_active` ends a loop in one round.
 Nothing happens without a reservation or with CE_WATCH=0; every error lets the session stop normally.
-0.21: a message that hooks/postfach_inbox.py already handed to the working session (`hinted`) does not wake it again; a release
-message gets its check line (ce_await_mail.release_note) in front.
+0.21: a message that hooks/postfach_inbox.py already handed to the working session (`hinted`) does not wake it again; a message
+speaking of a release gets the hint (ce_await_mail.release_note) in front.
 """
 import json
 import os
@@ -131,7 +131,7 @@ def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, par
             print(am.REDELIVERY.format(id=result["id"]), file=err)
         print(f"Postfach (cubeescape-nexogen#{result.get('pr', am.MAILBOX)}), Kommentar {result['id']} ({result.get('created_at', '')}):\n",
               file=err)
-        note = am.release_note(result.get("body", ""), am.session_key(session["name"]))
+        note = am.release_note(result.get("body", ""))
         if note:
             print(note + "\n", file=err)
         print(result.get("body", ""), file=err)

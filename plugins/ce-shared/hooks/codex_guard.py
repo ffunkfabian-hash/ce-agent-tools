@@ -5,7 +5,7 @@ Input (stdin, snake_case): tool_name "Bash" (shell and unified exec) with tool_i
 patch text in tool_input.command, "mcp__<server>__<tool>" or a local function name with its own arguments.
 - Bash -> one Claude Bash payload.
 - apply_patch -> one Write/Edit payload per file of the patch (Add/Update/Delete/Move to), so the file rules see each path.
-- mcp__<server>__<tool> -> one payload with that tool name (0.22: only merge-nur-sightline looks at the GitHub merge tools).
+- mcp__<server>__<tool> -> one payload with that tool name (0.22: only merge-tuer looks at the GitHub merge tools).
 - Everything else (update_plan, ...) is neither a shell command nor a file edit for the rules: no output.
 
 Output (stdout): blocks as hookSpecificOutput.permissionDecision "deny" plus systemMessage, warnings as
