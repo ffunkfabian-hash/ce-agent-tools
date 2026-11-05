@@ -14,6 +14,8 @@ from unittest import mock
 
 TOOLS = Path(__file__).resolve().parents[1] / "plugins/ce-shared/tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judge_quota import ENOUGH_USED, codex_quota
 import ce_common
 import ce_judge
 import ce_nightly
@@ -58,7 +60,7 @@ class CrosscurrentTests(unittest.TestCase):
                  mock.patch.object(ce_judge, "diff_of", return_value=("+changed", names)), \
                  mock.patch.object(ce_judge.shutil, "which", return_value="codex"), \
                  mock.patch.object(ce_judge.subprocess, "run", return_value=subprocess.CompletedProcess([], returncode, output, "")) as run, \
-                 contextlib.redirect_stdout(io.StringIO()):
+                 codex_quota(ENOUGH_USED), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ce_judge.main(["--repo", tmp, "--base", "main"]), expected)
                 self.assertEqual(run.call_args.args[0][-1], "-")
                 self.assertIn("+changed", run.call_args.kwargs["input"])
@@ -543,7 +545,7 @@ class CrosscurrentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(ce_judge, "git", return_value="abc"), \
              mock.patch.object(ce_judge, "diff_of", return_value=(large_diff, ["data/catalog.json"])), \
-             contextlib.redirect_stdout(io.StringIO()) as out:
+             codex_quota(ENOUGH_USED), contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(ce_judge.main(["--repo", tmp, "--base", "main", "--dry-run"]), 0)
             self.assertIn("WARNUNG: großer Diff", out.getvalue())
             self.assertIn("--files", out.getvalue())

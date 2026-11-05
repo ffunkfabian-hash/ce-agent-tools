@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.35.2 – Patch richter-tests (05.11.2026)
+
+- **Richter-Tests hängen nicht mehr am echten Codex-Kontingent:** Unter 15 % Rest wählte `ce_judge` seit 0.32 auch im Test den API-Weg, vier Tests wurden so am Mac rot. `tests/judge_quota.py` gibt den Stand aus `~/.codex` fest vor, Schwelle und Wegwahl laufen echt. `test_judge_picks_the_model_from_the_diff_and_dry_runs` und `test_judge_stderr_only_cannot_approve` prüfen jetzt beide Wege, nur Tests geändert.
+
 ## 0.35.1 – Patch nachtlauf-stillgelegt (05.11.2026)
 
 - **Nachtlauf überspringt stillgelegte Repos:** Die Standardauswahl lässt Repos aus, deren Eintrag in `repos.json` `status: "stillgelegt"` trägt (Bericht: „stillgelegt – übersprungen“, nicht rot). `--repo` und `CE_REPOS` bleiben ungefiltert; ohne Registry oder Status läuft alles wie bisher. Das Feld `status` bekommt damit eine gemeinsame Bedeutung. Plugin am Mac nachziehen.
