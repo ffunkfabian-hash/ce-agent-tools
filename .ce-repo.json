@@ -23,6 +23,7 @@
   "core_paths": [
     "plugins/ce-shared/contracts/*.json",
     "plugins/ce-shared/hooks/guard.py",
+    "plugins/ce-shared/rules/*.md",
     "plugins/ce-shared/hooks/hooks.json",
     "plugins/ce-shared/githooks/ce_githooks.py",
     "plugins/ce-shared/tools/ce_common.py",

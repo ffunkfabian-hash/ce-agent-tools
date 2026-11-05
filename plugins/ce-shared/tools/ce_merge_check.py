@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ce_merge_check.py <owner/repo> <PR> [--sha SHA] [--ja ZITAT] - the mechanical half of a merge review (0.34 Gatekeeper).
 
-Reads one pull request from GitHub (`gh`, read only) and answers green or red with reasons, plus the classification
+Reads one pull request from GitHub (`gh api`, REST only, read only: cloud sessions get HTTP 403 on GraphQL) and answers green or red with reasons, plus the classification
 Patch or Version. Logic errors stay with the judge and Sightline: this only finds what a machine can find (Trimline 12).
 
 Checks: open and no draft, head SHA (against --sha), base branch contained, conflicts, CI, files over 5 MB, report.md in the
@@ -31,10 +31,10 @@ import ce_common  # noqa: E402
 BIG_FILE = 5_000_000  # bytes; the same limit as BIG_BINARY in githooks/ce_githooks.py (a test compares them)
 PATCH_LINES = 100
 RECEIPT_FILE = "ce-merge-check.json"  # read by guard.py
-SIZE_CHUNK = 100
+PAGE = 100
+MAX_PAGES = 30
 MERGEABLE_TRIES = 4
 UTF8 = {"encoding": "utf-8", "errors": "replace"}
-PR_FIELDS = "number,url,title,state,isDraft,headRefOid,headRefName,baseRefName,mergeable,additions,deletions,statusCheckRollup"
 
 TEST_PATH = re.compile(r"(?:^|/)(?:tests?|Tests?|__tests__)/|(?:^|/)test_[^/]+$|_test\.\w+$|\.(?:test|spec)\.\w+$|Tests?\.cs$")
 TEST_CODE = re.compile(r"\.(?:py|cs|js|jsx|ts|tsx|go|sh)$")
@@ -42,7 +42,7 @@ TEST_NAME = re.compile(r"(?:^|/)test_[^/]+$|_test\.\w+$|\.(?:test|spec)\.\w+$|Te
 TEST_DEF = re.compile(r"^\s*(?:async\s+)?def\s+test|^\s*\[(?:Test|UnityTest|TestCase|Fact|Theory)\b|^\s*(?:it|test)\s*\(")
 ASSERTION = re.compile(r"\bassert|\bAssert\.|\bexpect\(")
 SKIP = re.compile(r"^\s*@(?:unittest\.skip|pytest\.mark\.(?:skip|xfail))\b|^\s*\[Ignore\b|^\s*(?:it|test|describe)\.(?:skip|only)\(|"
-                  r"^\s*x(?:it|describe)\(")
+                  r"^\s*x(?:it|describe)\(|^\s*self\.skipTest\(")
 CI_BAD = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 CI_FINE = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -90,43 +90,75 @@ def read_config(repo, ref):
     return config if isinstance(config, dict) else None
 
 
-def changed_files(repo, number):
-    files, page = [], 1
+def paged(path, key=None):
+    """All items of a REST list (`key` names the list inside an object answer); stops after MAX_PAGES. Second value: capped?"""
+    items, page = [], 1
     while True:
-        batch = gh_json("api", f"repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
-        files += batch
-        if len(batch) < 100 or page >= 30:  # GitHub lists at most 3000 files
-            return files
+        data = gh_json("api", f"{path}{'&' if '?' in path else '?'}per_page={PAGE}&page={page}")
+        batch = data.get(key) or [] if key else data
+        items += batch
+        if len(batch) < PAGE:
+            return items, False
+        if page >= MAX_PAGES:
+            return items, True
         page += 1
 
 
+def changed_files(repo, number):
+    """(files, capped): GitHub lists at most 3000 files of a pull request."""
+    return paged(f"repos/{repo}/pulls/{number}/files")
+
+
 def blob_sizes(repo, head, paths):
-    """{path: bytes} from one GraphQL object lookup per chunk; submodules and the like have no size."""
-    owner, name = repo.split("/", 1)
+    """{path: bytes} for the given paths at the head: one recursive tree read; when GitHub cuts the tree off, one contents read
+    per path. Submodules and the like have no size."""
+    wanted = set(paths)
+    if not wanted:
+        return {}
+    tree = gh_json("api", f"repos/{repo}/git/trees/{head}?recursive=1")
+    if not tree.get("truncated"):
+        return {i["path"]: i["size"] for i in tree.get("tree") or [] if i.get("type") == "blob" and i.get("path") in wanted and "size" in i}
     sizes = {}
-    for start in range(0, len(paths), SIZE_CHUNK):
-        chunk = paths[start:start + SIZE_CHUNK]
-        fields = " ".join(f"f{i}: object(expression: {json.dumps(f'{head}:{path}')}) {{ ... on Blob {{ byteSize }} }}"
-                          for i, path in enumerate(chunk))
-        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
-        data = gh_json("api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}")
-        found = ((data.get("data") or {}).get("repository")) or {}
-        for i, path in enumerate(chunk):
-            size = (found.get(f"f{i}") or {}).get("byteSize")
-            if size is not None:
-                sizes[path] = size
+    for path in sorted(wanted):
+        found = gh("api", f"repos/{repo}/contents/{quote(path)}?ref={head}")
+        try:
+            info = json.loads(found) if found else None
+        except ValueError:
+            info = None
+        if isinstance(info, dict) and info.get("type") == "file" and "size" in info:
+            sizes[path] = info["size"]
     return sizes
 
 
+def normalize_pr(raw):
+    """The REST pull request in the shape evaluate() reads (GraphQL names: OPEN/MERGED, MERGEABLE/CONFLICTING/UNKNOWN)."""
+    state = "MERGED" if raw.get("merged") else str(raw.get("state") or "").upper()
+    mergeable = raw.get("mergeable")
+    return {"number": raw.get("number"), "url": raw.get("html_url"), "title": raw.get("title"), "state": state,
+            "isDraft": bool(raw.get("draft")), "headRefOid": (raw.get("head") or {}).get("sha"),
+            "headRefName": (raw.get("head") or {}).get("ref"), "baseRefName": (raw.get("base") or {}).get("ref"),
+            "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(mergeable, "UNKNOWN"),
+            "additions": raw.get("additions") or 0, "deletions": raw.get("deletions") or 0}
+
+
 def read_pr(repo, number, sleep=time.sleep):
-    """GitHub computes mergeability on demand: the first answers can be UNKNOWN."""
+    """GitHub computes mergeability on demand: the first answers can be null (a closed pull request keeps it null)."""
     for attempt in range(MERGEABLE_TRIES):
-        pr = gh_json("pr", "view", str(number), "-R", repo, "--json", PR_FIELDS)
-        if pr.get("mergeable") != "UNKNOWN":
+        pr = normalize_pr(gh_json("api", f"repos/{repo}/pulls/{number}"))
+        if pr["mergeable"] != "UNKNOWN" or pr["state"] != "OPEN":
             break
         if attempt + 1 < MERGEABLE_TRIES:
             sleep(3)
     return pr
+
+
+def read_checks(repo, head):
+    """The checks of a head commit in the shape of GraphQL's statusCheckRollup: check runs and commit statuses."""
+    runs, _ = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
+    statuses, _ = paged(f"repos/{repo}/commits/{head}/status", "statuses")
+    return ([{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()}
+             for run in runs] +
+            [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses])
 
 
 def version_at(repo, spec, ref):
@@ -152,18 +184,18 @@ def gather(repo, number):
     """Everything evaluate() needs; the only part of this tool that talks to GitHub."""
     pr = read_pr(repo, number)
     head, base = pr["headRefOid"], pr["baseRefName"]
-    files = changed_files(repo, number)
+    files, capped = changed_files(repo, number)
     present = [f["filename"] for f in files if f.get("status") != "removed"]
     base_config, head_config = read_config(repo, base), read_config(repo, head)
     spec = version_spec(base_config) or version_spec(head_config)  # the base decides: a pull request cannot swap its own check
     versions = {"base": version_at(repo, spec, base), "head": version_at(repo, spec, head)} if spec else None
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
-    compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}")
+    compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}?per_page=1")
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
-    facts = {"repo": repo, "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "files": files, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
+    facts = {"repo": repo, "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
              "base_config": base_config, "head_config": head_config, "versions": versions, "changelog_name": changelog_name,
              "changelog": read_file(repo, changelog_name, head) if changelog_name else None}
-    now = gh_json("pr", "view", str(number), "-R", repo, "--json", "headRefOid").get("headRefOid")
+    now = (gh_json("api", f"repos/{repo}/pulls/{number}").get("head") or {}).get("sha")
     if now != head:  # the file list follows the pull request, not the SHA: a push in between mixes two states
         raise NotCheckable(f"Head hat sich während der Prüfung geändert ({head[:7]} → {str(now)[:7]})")
     return facts
@@ -201,7 +233,7 @@ def core_hits(files, patterns):
 
 
 def ci_state(rollup):
-    """(failed names, pending names) of statusCheckRollup: check runs carry status/conclusion, commit statuses state."""
+    """(failed names, pending names) of the checks (read_checks): check runs carry status/conclusion, commit statuses state."""
     failed, pending = [], []
     for item in rollup or []:
         name = item.get("name") or item.get("context") or "?"
@@ -314,9 +346,10 @@ def evaluate(facts, expected_sha=""):
         reasons.append("Konflikt mit der Basis")
     elif mergeable != "MERGEABLE":
         reasons.append(f"Mergebarkeit unbekannt ({mergeable})")
-    failed, pending = ci_state(pr.get("statusCheckRollup"))
+    checks = facts.get("checks")
+    failed, pending = ci_state(checks)
     pending += [name for name in facts.get("runs_open") or [] if name not in pending]  # a queued run has no check entry yet
-    if not pr.get("statusCheckRollup") and not pending:
+    if not checks and not pending:
         warnings.append("Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen")
     if failed:
         reasons.append(f"CI rot: {', '.join(failed[:5])}")
@@ -326,6 +359,8 @@ def evaluate(facts, expected_sha=""):
     big = sorted(((size, name) for name, size in sizes.items() if size > BIG_FILE), reverse=True)
     if big:
         reasons.append("Dateien über 5 MB: " + ", ".join(f"{name} ({size / 1e6:.1f} MB)" for size, name in big[:5]))
+    if facts.get("files_capped"):
+        reasons.append("Mehr als 3000 Dateien im PR: GitHub listet nicht alle, nicht prüfbar")
     if any(f["filename"] == "report.md" and f.get("status") != "removed" for f in files):
         reasons.append("report.md im Diff")
     test_reasons, unread = test_changes(files)

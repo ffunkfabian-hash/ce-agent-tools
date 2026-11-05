@@ -25,9 +25,9 @@ CHANGELOG = {"filename": "CHANGELOG.md", "status": "modified", "changes": 3, "pa
 
 def facts(**change):
     pr = {"number": 7, "url": "u", "title": "t", "state": "OPEN", "isDraft": False, "headRefOid": HEAD, "headRefName": "claude/x",
-          "baseRefName": "main", "mergeable": "MERGEABLE", "additions": 30, "deletions": 5, "statusCheckRollup": []}
+          "baseRefName": "main", "mergeable": "MERGEABLE", "additions": 30, "deletions": 5}
     pr.update(change.pop("pr", {}))
-    base = {"repo": "o/r", "pr": pr, "files": [CHANGELOG, {"filename": "src/a.py", "status": "modified", "changes": 2, "patch": "@@\n+x\n-y"}],
+    base = {"repo": "o/r", "pr": pr, "checks": [], "files": [CHANGELOG, {"filename": "src/a.py", "status": "modified", "changes": 2, "patch": "@@\n+x\n-y"}],
             "sizes": {"src/a.py": 900}, "behind_by": 0, "base_config": CONFIG, "head_config": CONFIG,
             "versions": {"base": "1.2.0", "head": "1.3.0"}, "changelog_name": "CHANGELOG.md", "changelog": "## 1.3.0\n"}
     base.update(change)
@@ -69,15 +69,15 @@ class EvaluateTests(unittest.TestCase):
         bad = [{"name": "a", "status": "COMPLETED", "conclusion": "FAILURE"}, {"context": "b", "state": "ERROR"},
                {"name": "c", "status": "IN_PROGRESS", "conclusion": ""}, {"context": "d", "state": "PENDING"}]
         self.assertEqual(mc.ci_state(bad), (["a", "b"], ["c", "d"]))
-        self.assertIn("CI rot: a, b", self.reasons(pr={"statusCheckRollup": bad}))
-        self.assertIn("CI läuft noch: c, d", self.reasons(pr={"statusCheckRollup": bad}))
+        self.assertIn("CI rot: a, b", self.reasons(checks=bad))
+        self.assertIn("CI läuft noch: c, d", self.reasons(checks=bad))
 
     def test_a_queued_run_without_a_check_entry_is_not_green(self):
         self.assertIn("CI läuft noch: check", self.reasons(runs_open=["check"]))
         done = [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}]
-        self.assertEqual(mc.evaluate(facts(pr={"statusCheckRollup": done}))["warnings"], [])
-        self.assertIn("CI läuft noch: tests", self.reasons(pr={"statusCheckRollup": [{"name": "tests", "status": "QUEUED"}]}, runs_open=["tests"]))
-        self.assertEqual(self.reasons(pr={"statusCheckRollup": [{"name": "tests", "status": "QUEUED"}]}, runs_open=["tests"]).count("tests"), 1)
+        self.assertEqual(mc.evaluate(facts(checks=done))["warnings"], [])
+        self.assertIn("CI läuft noch: tests", self.reasons(checks=[{"name": "tests", "status": "QUEUED"}], runs_open=["tests"]))
+        self.assertEqual(self.reasons(checks=[{"name": "tests", "status": "QUEUED"}], runs_open=["tests"]).count("tests"), 1)
 
     def test_files_over_the_limit_are_red_and_the_limit_is_exact(self):
         self.assertIn("big.bin (5.0 MB)", self.reasons(sizes={"big.bin": mc.BIG_FILE + 1}))
@@ -114,7 +114,7 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(self.reasons(files=moved(old, new)), "", new)
 
     def test_skip_markers_in_added_lines_are_red(self):
-        for line in ("    @unittest.skip('later')", "@pytest.mark.xfail", "    [Ignore(\"x\")]", "  it.only('x', f)", "  describe.skip('x', f)", "  xit('x', f)"):
+        for line in ("    @unittest.skip('later')", "@pytest.mark.xfail", "    [Ignore(\"x\")]", "  it.only('x', f)", "  describe.skip('x', f)", "  xit('x', f)", "        self.skipTest('later')"):
             case = test_file("tests/test_a.py", "@@\n+" + line)
             self.assertIn("Tests übersprungen", self.reasons(files=facts()["files"] + [case]), line)
 
@@ -198,31 +198,47 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(bool(mc.glob_regex(pattern).match(path)), hit, (pattern, path))
 
 
+def rest_pr(pr):
+    """A normalized pull request as GitHub's REST API answers it."""
+    return {"number": pr["number"], "html_url": pr["url"], "title": pr["title"], "state": pr["state"].lower(), "merged": pr["state"] == "MERGED",
+            "draft": pr["isDraft"], "head": {"sha": pr["headRefOid"], "ref": pr["headRefName"]}, "base": {"ref": pr["baseRefName"]},
+            "mergeable": {"MERGEABLE": True, "CONFLICTING": False}.get(pr["mergeable"]), "additions": pr["additions"], "deletions": pr["deletions"]}
+
+
 class FakeGh:
-    """Answers `gh` by the words of the call; a test changes the dict."""
+    """Answers `gh api` by the path of the call; a test changes the dict."""
 
     def __init__(self, **change):
         pr = dict(facts()["pr"])
-        self.answers = {"pr": [json.dumps(pr)], "files": [{"filename": "CHANGELOG.md", "status": "modified", "changes": 1, "patch": "@@\n+x"},
+        self.answers = {"pr": [json.dumps(rest_pr(pr))], "files": [{"filename": "CHANGELOG.md", "status": "modified", "changes": 1, "patch": "@@\n+x"},
                                                           {"filename": "gone.py", "status": "removed", "changes": 1, "patch": "@@\n-x"}],
                         "config": json.dumps({"version": {"file": "v.json", "pattern": "\"v\": \"(.+?)\""}, "docs": {"changelog": "CHANGELOG.md"}}),
-                        "version": {"main": '{"v": "1.2.0"}', HEAD: '{"v": "1.3.0"}'}, "behind": 0}
+                        "version": {"main": '{"v": "1.2.0"}', HEAD: '{"v": "1.3.0"}'}, "behind": 0,
+                        "tree": {"truncated": False, "tree": [{"path": "CHANGELOG.md", "type": "blob", "size": 77}, {"path": "gone.py", "type": "blob", "size": 5},
+                                                              {"path": "sub", "type": "commit"}]}}
         self.answers.update(change)
         self.calls = []
 
     def __call__(self, *args):
         self.calls.append(args)
-        if args[:2] == ("pr", "view"):
-            return self.answers["pr"].pop(0) if len(self.answers["pr"]) > 1 else self.answers["pr"][0]
-        if args[0] == "api" and args[1] == "graphql":
-            return json.dumps({"data": {"repository": {"f0": {"byteSize": 77}}}})
+        assert args[0] == "api" and "graphql" not in args and "pr" not in args[:1], args  # REST only: cloud sessions get 403 on GraphQL
         target = args[-1]
         if "/files?" in target:
             return json.dumps(self.answers["files"] if "page=1" in target else [])
+        if "/check-runs" in target:
+            return json.dumps({"check_runs": self.answers.get("check_runs", [])})
+        if target.split("?")[0].endswith("/status"):
+            return json.dumps({"state": "pending", "statuses": self.answers.get("statuses", [])})
+        if "/git/trees/" in target:
+            return json.dumps(self.answers["tree"])
+        if "/contents/" in target and "raw" not in " ".join(args):
+            return json.dumps({"type": "file", "size": 88})
         if "/actions/runs" in target:
             return json.dumps({"workflow_runs": self.answers.get("runs", [])})
         if "/compare/" in target:
             return json.dumps({"behind_by": self.answers["behind"]})
+        if "/pulls/" in target:
+            return self.answers["pr"].pop(0) if len(self.answers["pr"]) > 1 else self.answers["pr"][0]
         ref = target.rsplit("ref=", 1)[-1]
         if ".ce-repo.json" in target:
             return self.answers["config"]
@@ -234,14 +250,42 @@ class FakeGh:
 
 
 class GatherTests(unittest.TestCase):
-    def test_gather_reads_all_facts_and_only_sizes_files_that_exist(self):
+    def test_gather_reads_all_facts_over_rest_and_only_sizes_files_that_exist(self):
         fake = FakeGh()
         with mock.patch.object(mc, "gh", fake):
-            result = mc.evaluate(mc.gather("o/r", 7))
+            found = mc.gather("o/r", 7)
+            result = mc.evaluate(found)
         self.assertTrue(result["green"], result)
-        size_call = next(call for call in fake.calls if call[1] == "graphql")
-        self.assertIn("CHANGELOG.md", " ".join(size_call))
-        self.assertNotIn("gone.py", " ".join(size_call))
+        self.assertEqual(found["sizes"], {"CHANGELOG.md": 77})  # gone.py was removed by the pull request
+        self.assertTrue(all(call[0] == "api" for call in fake.calls))
+
+    def test_checks_come_from_check_runs_and_commit_statuses_of_the_head(self):
+        fake = FakeGh(check_runs=[{"name": "a", "status": "completed", "conclusion": "failure"}, {"name": "b", "status": "in_progress", "conclusion": None},
+                                  {"name": "c", "status": "completed", "conclusion": "success"}],
+                      statuses=[{"context": "d", "state": "success"}, {"context": "e", "state": "error"}])
+        with mock.patch.object(mc, "gh", fake):
+            checks = mc.read_checks("o/r", HEAD)
+            reasons = mc.evaluate(mc.gather("o/r", 7))["reasons"]
+        self.assertEqual(mc.ci_state(checks), (["a", "e"], ["b"]))
+        self.assertIn("CI rot: a, e", reasons)
+        self.assertIn("CI läuft noch: b", reasons)
+        self.assertTrue(any(f"commits/{HEAD}/check-runs" in call[-1] for call in fake.calls))
+
+    def test_the_rest_pull_request_is_read_in_the_shape_evaluate_expects(self):
+        base = dict(facts()["pr"])
+        for rest, expected in ((dict(rest_pr(base)), base),
+                               ({**rest_pr(base), "merged": True, "state": "closed", "mergeable": None}, {**base, "state": "MERGED", "mergeable": "UNKNOWN"}),
+                               ({**rest_pr(base), "draft": True, "mergeable": False}, {**base, "isDraft": True, "mergeable": "CONFLICTING"})):
+            for key in ("number", "state", "isDraft", "headRefOid", "baseRefName", "mergeable", "additions", "deletions"):
+                self.assertEqual(mc.normalize_pr(rest)[key], expected[key], (key, rest))
+
+    def test_a_merged_pull_request_is_not_asked_again_for_its_mergeability(self):
+        merged = json.dumps({**rest_pr(facts()["pr"]), "merged": True, "state": "closed", "mergeable": None})
+        fake = FakeGh(pr=[merged])
+        slept = []
+        with mock.patch.object(mc, "gh", fake):
+            self.assertEqual(mc.read_pr("o/r", 7, sleep=slept.append)["state"], "MERGED")
+        self.assertEqual((len(fake.calls), slept), (1, []))
 
     def test_what_the_base_demands_stays_when_the_pull_request_drops_it(self):
         config = json.loads(FakeGh().answers["config"])
@@ -274,7 +318,7 @@ class GatherTests(unittest.TestCase):
 
     def test_a_push_during_the_check_makes_the_run_not_checkable(self):
         pr = dict(facts()["pr"])
-        fake = FakeGh(pr=[json.dumps(pr), json.dumps({**pr, "headRefOid": "d" * 40})])
+        fake = FakeGh(pr=[json.dumps(rest_pr(pr)), json.dumps(rest_pr({**pr, "headRefOid": "d" * 40}))])
         with mock.patch.object(mc, "gh", fake), self.assertRaisesRegex(mc.NotCheckable, "während der Prüfung"):
             mc.gather("o/r", 7)
 
@@ -285,24 +329,43 @@ class GatherTests(unittest.TestCase):
 
     def test_an_unknown_mergeable_state_is_asked_again(self):
         pr = dict(facts()["pr"])
-        fake = FakeGh(pr=[json.dumps({**pr, "mergeable": "UNKNOWN"}), json.dumps(pr)])
+        fake = FakeGh(pr=[json.dumps(rest_pr({**pr, "mergeable": "UNKNOWN"})), json.dumps(rest_pr(pr))])
         with mock.patch.object(mc, "gh", fake):
             self.assertEqual(mc.read_pr("o/r", 7, sleep=lambda _: None)["mergeable"], "MERGEABLE")
 
     def test_more_than_one_page_of_files_is_read(self):
         pages = {1: [{"filename": str(i)} for i in range(100)], 2: [{"filename": "last"}]}
         with mock.patch.object(mc, "gh", lambda *a: json.dumps(pages[int(a[-1].rsplit("=", 1)[1])])):
-            self.assertEqual(len(mc.changed_files("o/r", 7)), 101)
+            files, capped = mc.changed_files("o/r", 7)
+        self.assertEqual((len(files), capped), (101, False))
 
-    def test_many_paths_are_sized_in_chunks(self):
-        queries = []
+    def test_the_3000_files_limit_is_reported_and_makes_the_run_red(self):
+        with mock.patch.object(mc, "gh", lambda *a: json.dumps([{"filename": "f"}] * 100)):
+            files, capped = mc.changed_files("o/r", 7)
+        self.assertEqual((len(files), capped), (3000, True))
+        self.assertIn("3000", self.capped_reasons())
+
+    def capped_reasons(self):
+        return " ".join(mc.evaluate(facts(files_capped=True))["reasons"])
+
+    def test_sizes_come_from_one_tree_read_and_from_contents_when_the_tree_is_cut_off(self):
+        tree = {"truncated": False, "tree": [{"path": "a", "type": "blob", "size": 9}, {"path": "b", "type": "blob", "size": 8},
+                                             {"path": "sub", "type": "commit"}, {"path": "dir", "type": "tree"}]}
+        calls = []
 
         def answer(*args):
-            queries.append(args)
-            return json.dumps({"data": {"repository": {f"f{i}": {"byteSize": i} for i in range(100)}}})
+            calls.append(args)
+            return json.dumps(tree)
         with mock.patch.object(mc, "gh", answer):
-            self.assertEqual(len(mc.blob_sizes("o/r", HEAD, [f"p{i}" for i in range(150)])), 150)
-        self.assertEqual(len(queries), 2)
+            self.assertEqual(mc.blob_sizes("o/r", HEAD, ["a", "sub", "dir", "missing"]), {"a": 9})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(mc.blob_sizes("o/r", HEAD, []), {})
+        tree["truncated"] = True
+        fake = FakeGh(tree=tree)
+        with mock.patch.object(mc, "gh", fake):
+            sizes = mc.blob_sizes("o/r", HEAD, [f"p{i}" for i in range(150)])
+        self.assertEqual((len(sizes), set(sizes.values())), (150, {88}))
+        self.assertEqual(len([c for c in fake.calls if "/contents/" in c[-1]]), 150)
 
     def test_gh_failures_are_not_checkable_and_404_is_none(self):
         failed = subprocess.CompletedProcess([], 1, "", "HTTP 500: boom")
