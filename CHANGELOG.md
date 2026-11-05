@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.35.1 – Patch nachtlauf-stillgelegt (05.11.2026)
+
+- **Nachtlauf überspringt stillgelegte Repos:** Die Standardauswahl lässt Repos aus, deren Eintrag in `repos.json` `status: "stillgelegt"` trägt (Bericht: „stillgelegt – übersprungen“, nicht rot). `--repo` und `CE_REPOS` bleiben ungefiltert; ohne Registry oder Status läuft alles wie bisher. Das Feld `status` bekommt damit eine gemeinsame Bedeutung. Plugin am Mac nachziehen.
+
 ## 0.35.0 „Turnstile“ – unveröffentlicht (05.11.2026)
 
 Nachzug zu Nexogen 1.26 „Keel“ (`docs/nachzug-agent-tools-keel.md`, Teile A und B).

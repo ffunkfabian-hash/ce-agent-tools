@@ -51,6 +51,25 @@ def repos(args) -> list[Path]:
     return standard_repos(DEFAULT_REPOS, HOME)
 
 
+def retired_roots() -> set[Path]:
+    """0.35.1: resolved checkout paths of registry entries with status "stillgelegt" (same registry lookup as
+    ce_common.standard_repos). No registry, no status or a broken file: empty set, everything runs as before."""
+    base = Path(os.environ.get("CE_HOME", HOME / "Claude"))
+    registry = Path(os.environ.get("CE_REPO_REGISTRY", base / "cubeescape-nexogen" / "repos.json"))
+    if not registry.is_file():
+        registry = base / "cubeescape-rules" / "repos.json"
+    found: set[Path] = set()
+    try:
+        data = json.loads(registry.read_text(encoding="utf-8"))
+        if data.get("schema_version") == 1:
+            for item in data["repos"]:
+                if item.get("status") == "stillgelegt":
+                    found.update(Path(str(p).replace("~/", str(HOME) + "/", 1)).expanduser().resolve() for p in item["paths"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return set()
+    return found
+
+
 def has_nightly(root: Path) -> bool:
     try:
         import json
@@ -115,7 +134,13 @@ def run(args) -> int:
 
     log(f"ce_nightly {dt.datetime.now():%Y-%m-%d %H:%M} - {len(targets)} Repos")
     results = []
+    # 0.35.1: only the default selection skips retired repos; --repo and CE_REPOS stay unfiltered
+    retired = retired_roots() if not args.repo and not os.environ.get("CE_REPOS") else set()
     for root in targets:
+        if root in retired:
+            log(f"=== {root.name}: stillgelegt – übersprungen")
+            results.append((root.name, "übersprungen", 0.0))
+            continue
         if not has_nightly(root):
             log(f"=== {root.name}: kein check.nightly in .ce-repo.json - übersprungen")
             results.append((root.name, "übersprungen", 0.0))

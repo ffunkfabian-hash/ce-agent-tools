@@ -760,6 +760,40 @@ class DocsAndNightlyTests(unittest.TestCase):
         self.assertIn("nacht", out)
         self.assertRegex(out, r"other\s+green")
 
+    def test_nightly_default_selection_skips_retired_repos(self):
+        """0.35.1: status "stillgelegt" in the registry -> skipped, not red; no status / no registry -> as before;
+        --repo stays unfiltered."""
+        import ce_nightly
+        def make(name):
+            repo = Path(self.tmp.name) / name; repo.mkdir()
+            (repo / ".ce-repo.json").write_text(json.dumps({"name": name, "version": {"file": "V", "pattern": "(.*)"},
+                                                            "check": {"quick": ["true"], "nightly": [[sys.executable, "-c", "print('nacht')"]]}}))
+            (repo / "V").write_text("0.1")
+            return repo
+        old, live = make("old"), make("live")
+        registry = Path(self.tmp.name) / "repos.json"
+        def write(old_status):
+            entry = lambda n, p, **kw: {"github": f"x/{n}", "paths": [str(p)], **kw}
+            registry.write_text(json.dumps({"schema_version": 1, "repos": [entry("old", old, **old_status), entry("live", live)]}))
+        write({"status": "stillgelegt"})
+        env = {"CE_REPO_REGISTRY": str(registry), "CE_REPOS": ""}
+        with mock.patch.object(ce_nightly, "LOG_DIR", Path(self.tmp.name) / "logs"), mock.patch.object(ce_nightly, "notify"), \
+                mock.patch.dict(os.environ, env), \
+                mock.patch("ce_common.standard_repos", return_value=[old.resolve(), live.resolve()]):
+            self.assertEqual(ce_nightly.retired_roots(), {old.resolve()})
+            code, out = run_main(ce_nightly, "--dry-run")
+            self.assertIn("old: stillgelegt – übersprungen", out)
+            self.assertRegex(out, r"old\s+übersprungen")
+            self.assertRegex(out, r"live\s+dry-run")
+            self.assertEqual(code, 0, out)
+            code, out = run_main(ce_nightly, "--dry-run", "--repo", str(old))  # explicit selection: unfiltered
+            self.assertNotIn("stillgelegt – übersprungen", out)
+            self.assertRegex(out, r"old\s+dry-run")
+            write({})  # no status
+            self.assertEqual(ce_nightly.retired_roots(), set())
+        with mock.patch.dict(os.environ, {"CE_REPO_REGISTRY": str(Path(self.tmp.name) / "fehlt.json"), "CE_HOME": self.tmp.name}):
+            self.assertEqual(ce_nightly.retired_roots(), set())  # registry missing
+
 
 class ContractTests(unittest.TestCase):
     """0.5.0: ce_contract.py validates a contract against plugins/ce-shared/contracts/<name>.v<format>.json."""
