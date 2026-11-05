@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.34.1 – Patch merge-check-rest (05.11.2026)
+
+- **`merge-check` liest nur noch REST** (`gh api repos/…`): PR, Head, Mergebarkeit, Dateigrößen (ein `git/trees`-Lesen, `contents` je Datei bei abgeschnittenem Baum) und CI aus `check-runs` plus Commit-Status statt GraphQL, das in Cloud-Sitzungen mit 403 gesperrt ist. Dazu: `self.skipTest(` zählt als übersprungen, mehr als 3000 Dateien im PR sind rot statt still gekürzt, `rules/*.md` steht in `core_paths`.
+
 ## 0.34.0 „Gatekeeper“ – unveröffentlicht (04.11.2026)
 
 - **`./ce merge-check <owner/repo> <PR>`** (Trimline 12): `ce_merge_check.py` prüft mechanisch Head-SHA (`--sha`), `main` enthalten, Konflikt, CI, Dateien über 5 MB, `report.md`, gelöschte oder abgeschwächte Tests, Version und CHANGELOG gegen `.ce-repo.json`. Ein Lauf in der Warteschlange ohne Check-Eintrag zählt als laufend, ein Head ganz ohne Checks gibt eine Warnung. Ergebnis: JSON auf stdout, eine Textzeile auf stderr, Exit 0 grün, 1 rot, 2 nicht prüfbar. Einstufung Version ab 101 Zeilen oder bei berührtem Kernpfad, sonst Patch. Ein Kernpfad auf bloßer Patch-Nummer ist rot (außer bei reinen `.md`-PRs, dort nur Warnung), die Größe allein nur eine Warnung, weil die Regel „etwa 100“ sagt.
