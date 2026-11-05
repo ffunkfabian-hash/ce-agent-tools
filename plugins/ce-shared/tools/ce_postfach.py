@@ -222,7 +222,13 @@ def own_name(repo_dir: Path, agent: str = "auto") -> str:
 
 KNOWN_SAY_VALUED = {"--to", "--name", "--model", "--agent", "--repo", "--frage", "--standard", "--frist"}
 KNOWN_SAY_FLAGS = {"--dry-run", "--no-cc", "-h", "--help"}
-RETIRED_SAY = {"--freigabe", "--zitat", "--zeit"}  # 0.35: as a topic they would go out as a message that means nothing
+RETIRED_SAY = {"--freigabe", "--zitat", "--zeit"}  # 0.35: unknown words become message lines, these would go out meaning nothing
+
+
+def retired_option(argv: list[str]) -> str:
+    """A retired option of `say` before `--`, "" for none; a whole line that only starts with one stays a line."""
+    words = argv[:argv.index("--")] if "--" in argv else argv
+    return next((word.split("=")[0] for word in words if word.split("=")[0] in RETIRED_SAY), "") if "say" in words else ""
 
 
 def normalize_say_argv(argv: list[str]) -> list[str]:
@@ -293,6 +299,10 @@ def main(argv=None) -> int:
     who.add_argument("--days", type=float, default=3)
     if argv is None:
         argv = sys.argv[1:]
+    retired = retired_option(list(argv))
+    if retired:
+        print(f"{retired} gibt es nicht mehr: Post trägt kein Ja (Regel 4, ./ce merge-check)", file=sys.stderr)
+        return 2
     argv = normalize_say_argv(list(argv))
     args = parser.parse_args(argv)
 
@@ -309,9 +319,6 @@ def main(argv=None) -> int:
             print(f"keine Anmeldung in den letzten {args.days:g} Tagen")
         return 0
 
-    if args.topic.split("=")[0] in RETIRED_SAY:
-        print(f"{args.topic.split('=')[0]} gibt es nicht mehr: Post trägt kein Ja (Regel 4, ./ce merge-check)", file=sys.stderr)
-        return 2
     if args.frage:
         if args.topic:
             args.lines = [args.topic, *args.lines]      # with --frage the first positional is just another line

@@ -194,7 +194,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(mc.evaluate(facts(pr={"additions": 60, "deletions": 41}))["ohne_ja"])
 
     def test_without_core_paths_in_the_base_there_is_no_stage_one(self):
-        for config in ({}, None, {**CONFIG, "core_paths": None}, {**CONFIG, "core_paths": []}, {**CONFIG, "core_paths": [""]},
+        for config in ({}, None, {**CONFIG, "core_paths": None}, {**CONFIG, "core_paths": []}, {**CONFIG, "core_paths": [""]}, {**CONFIG, "core_paths": [" ", "\t"]},
                        {**CONFIG, "core_paths": "contracts/**"}, {**CONFIG, "core_paths": [1, None]}):
             result = mc.evaluate(facts(base_config=config))
             self.assertTrue(result["green"], config)

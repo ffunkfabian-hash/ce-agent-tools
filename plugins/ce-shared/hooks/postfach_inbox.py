@@ -99,7 +99,8 @@ def text_of(messages: list) -> str:
     parts = ["Postfach (cubeescape-nexogen#16) – neue Nachricht an diese Sitzung während der Arbeit (ce-shared 0.21):"]
     for item in messages:
         parts.append(f"\nKommentar {item['id']} ({item.get('created_at', '')}):")
-        note = item["note"] if isinstance(item.get("note"), str) else am.release_note(item.get("body", ""))  # from the full text
+        # a stored note came from the full text; its wording may be from before 0.35 ("gültig"), so only its presence counts
+        note = am.RELEASE_HINT if item.get("note") else am.release_note(item.get("body", ""))
         if note:
             parts.append(note)
         parts.append(item.get("body", "").strip())

@@ -387,7 +387,7 @@ def evaluate(facts, expected_sha=""):
         warnings.append(f"Testdateien ohne Diff von GitHub, nicht bewertet: {', '.join(unread[:5])}")
     config = facts.get("base_config") or {}
     patterns = config.get("core_paths")
-    listed = isinstance(patterns, list) and any(isinstance(p, str) and p for p in patterns)  # an empty list guards nothing either
+    listed = isinstance(patterns, list) and any(isinstance(p, str) and p.strip() for p in patterns)  # an empty list guards nothing either
     if not listed:
         patterns = []
         warnings.append("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1")

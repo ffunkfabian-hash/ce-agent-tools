@@ -212,7 +212,8 @@ class Release(Origin):
         self.assertEqual(am.release_note(""), "")
 
     def test_say_has_no_release_options_any_more(self):
-        for args in (("--freigabe", "commit", "Thema"), ("--freigabe=commit", "Thema"), ("--zitat", "ja", "Thema"), ("--zeit", "2026-10-23T17:37Z", "Thema")):
+        for args in (("--freigabe", "commit", "Thema"), ("--freigabe=commit", "Thema"), ("--zitat", "ja", "Thema"), ("--zeit", "2026-10-23T17:37Z", "Thema"),
+                     ("Thema", "--freigabe", "commit", "--zitat", "ja"), ("Thema", "Zeile", "--zeit=2026-10-23T17:37Z")):
             out = self.say("--name", "Sightline · Cloud", "--to", "CE-AGENT-TOOLS 0.21 „Courier“", *args)
             self.assertEqual((out.returncode, out.stdout), (2, ""), args)
             self.assertIn("gibt es nicht mehr", out.stderr, args)
@@ -221,6 +222,9 @@ class Release(Origin):
         out = self.say("--name", "TG 0.24 „Salvo“ · Mac", "Thema", "Freigabe per Post (ce-freigabe 1)", "--zitat ist weg")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("--zitat ist weg", out.stdout)
+        out = self.say("--name", "TG 0.24 „Salvo“ · Mac", "--", "Thema", "--freigabe")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("--freigabe", out.stdout, "behind -- everything is text")
 
     def test_a_session_writing_about_a_release_is_told_the_rule(self):
         for name in ("X 0.1 „Y“ · Mac", "Sightline · Cloud"):
@@ -340,6 +344,14 @@ class DuringWork(Worktree):
         state = am.load_state(self.git)
         self.assertEqual((state["hinted"], state["pending"], state["deliveries"]), (6370961598, 6370961598, 1))
         self.assertEqual(self.text(), "", "the same message twice")
+
+    def test_a_note_stored_before_0_35_cannot_call_a_release_valid(self):
+        """Richter 0.35, Nr 1: a ce-inbox.json fetched by 0.34 still holds the old wording."""
+        old = "Freigabe per Post gültig (Absender Sightline): erlaubt nur commit, push, pr."
+        self.put(dict(comment(9, RELEASE), note=old))
+        text = self.text()
+        self.assertIn("Post trägt kein Ja", text)
+        self.assertNotIn(old, text)
 
     def test_release_messages_carry_the_hint(self):
         self.put(comment(9, RELEASE))
