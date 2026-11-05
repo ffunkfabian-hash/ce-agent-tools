@@ -6,6 +6,10 @@ The hooks block what no agent hook can see when a client fires no hook (an IDE w
 - pre-push, per pushed ref: an update or creation of main/master (exception CE_ALLOW_MAIN=1), deleting main/master
   (never), overwriting an existing tag and every update whose remote commit is not an ancestor of the pushed one
   (a real non-fast-forward; no exception). A remote commit missing locally cannot be an ancestor: fetch first.
+- pre-push into a public GitHub repository (0.34, Trimline 28; a push there is visible at once, a merge check comes too
+  late): new binary files over 5 MB in the pushed commits, and added lines with a recognizable secret. Text files of any
+  size pass, placeholders pass, a found secret is named by type and place, never printed. Visibility comes from `gh`;
+  no `gh` or no answer skips this part with a message (fail open), other hosts and private repositories skip it silently.
 Limits, by Git's protocol: pre-push sees refs and commits, not flags - `git push --force` of a fast-forward looks like a
 normal push and passes (the client guards still check the flags). `--no-verify` skips both hooks. Merge commits run
 pre-merge-commit, which is not covered. The hooks are a net, not a boundary.
@@ -23,9 +27,11 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 PROTECTED = ("refs/heads/main", "refs/heads/master")
@@ -42,6 +48,25 @@ KNOWN = ("applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "p
          "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction",
          "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman",
          "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit", "post-index-change")
+BIG_BINARY = 5_000_000  # bytes; the same limit as BIG_FILE in tools/ce_merge_check.py (a test compares them)
+BINARY_PROBE = 8000  # Git's own rule: a NUL in the first 8000 bytes makes a file binary
+SCAN_SECONDS = 20  # a huge first push must not hang: the secret scan stops with a message
+LONGEST_LINE = 100_000
+SHOWN = 10
+# Only formats with a fixed prefix and length: a generic "password = ..." would fire on every test fixture.
+SECRETS = (("GitHub-Token", re.compile(r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,})")),
+           ("AWS-Zugangsschlüssel", re.compile(r"(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])")),
+           ("Anthropic-Schlüssel", re.compile(r"(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{32,}")),
+           ("OpenAI-Schlüssel", re.compile(r"(?<![A-Za-z0-9_-])sk-(?:proj-[A-Za-z0-9_-]{40,}|[A-Za-z0-9]{40,})")),
+           ("Google-API-Schlüssel", re.compile(r"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])")),
+           ("Slack-Token", re.compile(r"(?<![A-Za-z0-9_-])xox[abeoprs]-[0-9]{6,}-[A-Za-z0-9-]{10,}")),
+           ("Stripe-Live-Schlüssel", re.compile(r"(?<![A-Za-z0-9_])[rs]k_live_[A-Za-z0-9]{20,}")),
+           ("npm-Token", re.compile(r"(?<![A-Za-z0-9_])npm_[A-Za-z0-9]{36}(?![A-Za-z0-9])")),
+           ("PyPI-Token", re.compile(r"(?<![A-Za-z0-9_])pypi-AgE[A-Za-z0-9_-]{50,}")))
+PLACEHOLDER = re.compile(r"example|sample|dummy|fake|placeholder|changeme|your|redacted|0123456|1234567", re.IGNORECASE)
+KEY_HEAD = re.compile(r"-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")
+KEY_BODY = re.compile(r"[A-Za-z0-9+/=]{40,}")  # a key has a body; a bare header is documentation
+GITHUB_URL = re.compile(r"github\.com[:/]+([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
 
 
 def git(*args, cwd=None, check=True):
@@ -100,6 +125,154 @@ def push_problems(lines, allow_main):
     return problems
 
 
+def is_placeholder(token):
+    """A documented example, not a key: placeholder words, or too few different characters for a random string."""
+    return PLACEHOLDER.search(token) is not None or len(set(token)) < 12
+
+
+def secrets_in_line(text):
+    """Names of the secrets in one line of added text."""
+    return [name for name, pattern in SECRETS for match in pattern.finditer(text) if not is_placeholder(match.group())]
+
+
+def scan_diff(lines, deadline=None):
+    """(hits, finished) of the output of `git log -p -U0`: hits are (type, path, commit), from added lines only, so a secret
+    that is already out does not stop every later push."""
+    hits, commit, path, in_header, key_open = [], "?", "?", False, False
+    for raw in lines:
+        if deadline is not None and time.monotonic() > deadline:
+            return hits, False
+        line = raw.rstrip("\r\n")
+        if line.startswith("commit:"):
+            commit, in_header = line[7:], False
+        elif line.startswith("diff --git "):
+            in_header, key_open = True, False
+        elif in_header:
+            if line.startswith("+++ b/"):
+                path = line[6:]
+            in_header = not line.startswith("@@")
+        elif line.startswith("+") and len(line) <= LONGEST_LINE:
+            text = line[1:]
+            hits += [(name, path, commit) for name in secrets_in_line(text)]
+            head = KEY_HEAD.search(text)
+            body = KEY_BODY.search(text[head.end():].replace("\\n", "")) if head else None
+            if body or (key_open and KEY_BODY.fullmatch(text.strip())):
+                hits.append(("privater Schlüssel", path, commit))
+            key_open = bool(head) and not body
+        elif not line.startswith("@@"):
+            key_open = False
+    return hits, True
+
+
+def push_urls(remote):
+    """Where a push of this remote goes, after insteadOf and pushInsteadOf; [] when it is no configured remote."""
+    return git("remote", "get-url", "--push", "--all", remote, check=False).stdout.split()
+
+
+def fetch_urls(remote):
+    return git("remote", "get-url", remote, check=False).stdout.split() or None
+
+
+def ranges(lines, remote):
+    """rev-list arguments of each pushed ref: its new commits, those the target remote does not have yet. Other remotes do not
+    count, a commit known to a private remote is still new to a public one. Tracking refs show the fetch URL, so they only
+    count when it is the one push target: a pushurl, a second URL, pushInsteadOf or a URL as remote leave the old ref value."""
+    tracked = [f"--remotes={remote}"] if push_urls(remote) == fetch_urls(remote) else []
+    found = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or zero(parts[1]) or parts[1] == parts[3]:
+            continue
+        known = [] if zero(parts[3]) or git("cat-file", "-e", f"{parts[3]}^{{commit}}", check=False).returncode else [parts[3]]
+        found.append([parts[1], "--not", *tracked, *known])
+    return found
+
+
+def big_binaries(args):
+    """(path, bytes) of the binary blobs over the limit that these commits add."""
+    objects = git("rev-list", "--objects", *args).stdout
+    batch = subprocess.run(["git", "cat-file", "--batch-check=%(objecttype) %(objectname) %(objectsize) %(rest)"], input=objects,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
+    found = []
+    for line in batch.stdout.splitlines():
+        parts = line.split(" ", 3)
+        if len(parts) == 4 and parts[0] == "blob" and int(parts[2]) > BIG_BINARY:
+            reader = subprocess.Popen(["git", "cat-file", "blob", parts[1]], stdout=subprocess.PIPE)
+            probe = reader.stdout.read(BINARY_PROBE)
+            reader.kill()
+            reader.wait()
+            reader.stdout.close()
+            if b"\0" in probe:
+                found.append((parts[3], int(parts[2])))
+    return found
+
+
+def diff_secrets(args):
+    """Merge commits show what the merge itself added (--diff-merges=remerge, Git 2.35): a plain `git log -p` shows them no diff.
+    An older Git refuses the option, which ends in the caller's message instead of an empty, clean-looking scan."""
+    command = ["git", "log", "-p", "-U0", "--diff-merges=remerge", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/",
+               "--dst-prefix=b/", "--format=commit:%h", *args]
+    reader = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8", errors="replace")
+    try:
+        hits, finished = scan_diff(reader.stdout, time.monotonic() + SCAN_SECONDS)
+        if finished and reader.wait() != 0:
+            raise RuntimeError(f"git log endet mit Exit {reader.returncode}, Geheimnis-Suche ungeprüft")
+        return hits, finished
+    finally:
+        reader.kill()
+        reader.wait()
+        reader.stdout.close()
+
+
+def remote_slugs(remote, url=""):
+    """owner/repo of every GitHub push target, none for other hosts. A pushurl replaces the fetch URL; the raw config values count
+    next to Git's URL for the hook, because insteadOf rewrites that one."""
+    configured = git("config", "--get-all", f"remote.{remote}.pushurl", check=False).stdout.split()
+    configured = configured or git("config", "--get-all", f"remote.{remote}.url", check=False).stdout.split()[:1]
+    matches = [GITHUB_URL.search(item) for item in (url, *configured, *push_urls(remote), remote) if item]
+    return sorted({match.group(1) for match in matches if match})
+
+
+def visibility(slug):
+    """"public", "private", "internal", or None when GitHub gives no answer."""
+    try:
+        done = subprocess.run(["gh", "api", f"repos/{slug}", "--jq", ".visibility"], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout.strip() or None if done.returncode == 0 else None
+
+
+def public_slug(slugs):
+    """The first public repository of the targets, None when there is none. Anything unread is reported."""
+    for slug in slugs:
+        seen = visibility(slug)
+        if seen is None:
+            print(f"ce-shared pre-push: Sichtbarkeit von {slug} nicht lesbar, Binärdateien und Geheimnisse ungeprüft", file=sys.stderr)
+        if seen == "public":
+            return slug
+    return None
+
+
+def public_problems(lines, remote, url=""):
+    """The checks of a push into a public repository. Anything that cannot be read lets the push go on with a message."""
+    pushed = [args for args in ranges(lines, remote) if git("rev-list", "-n", "1", *args).stdout.strip()]
+    slug = public_slug(remote_slugs(remote, url)) if pushed else None
+    if slug is None:
+        return []
+    binaries, secrets = set(), set()
+    for args in pushed:
+        binaries.update(big_binaries(args))
+        hits, finished = diff_secrets(args)
+        secrets.update(hits)
+        if not finished:
+            print(f"ce-shared pre-push: Geheimnis-Suche nach {SCAN_SECONDS} s abgebrochen, Rest ungeprüft", file=sys.stderr)
+    problems = [f"Binärdatei über 5 MB in öffentliches Repo {slug}: `{path}` ({size / 1e6:.1f} MB)." for path, size in sorted(binaries)]
+    problems += [f"Mögliches Geheimnis in öffentlichem Repo {slug}: {name} in `{path}`, Commit {commit}. Entfernen und den "
+                 "Schlüssel ersetzen, wenn er echt ist." for name, path, commit in sorted(secrets)]
+    return problems[:SHOWN] + ([f"… und {len(problems) - SHOWN} weitere."] if len(problems) > SHOWN else [])
+
+
 def check_commit(allow_main):
     ref = git("symbolic-ref", "-q", "HEAD", check=False).stdout.strip()
     if ref in PROTECTED and not allow_main:
@@ -113,15 +286,22 @@ def previous_hook(previous, name):
     return str(path) if path.is_file() and os.access(path, os.X_OK) else None
 
 
-def check_hook(name, stdin=None):
-    """The checks of one guarded hook: 0 to go on, REJECT for a deliberate refusal (reasons on stderr)."""
+def check_hook(name, stdin=None, remote="origin", url=""):
+    """The checks of one guarded hook: 0 to go on, REJECT for a deliberate refusal (reasons on stderr). Wrappers from before
+    0.34 pass no remote, so origin is the default."""
     allow_main = os.environ.get("CE_ALLOW_MAIN") == "1"
+    data = None
     try:
         data = (stdin or sys.stdin).read() if name == "pre-push" else None
         problems = push_problems(data.splitlines(), allow_main) if name == "pre-push" else check_commit(allow_main)
     except Exception as error:  # never wedge git
         print(f"ce-shared {name}: Prüfung fehlgeschlagen ({error}), Git läuft weiter", file=sys.stderr)
         problems = []
+    if name == "pre-push" and not problems and data:
+        try:
+            problems = public_problems(data.splitlines(), remote, url)
+        except Exception as error:  # a broken scan must not hide the checks above or wedge git
+            print(f"ce-shared {name}: Prüfung fehlgeschlagen ({error}), Git läuft weiter", file=sys.stderr)
     if problems:
         print(f"ce-shared {name}: abgelehnt\n- " + "\n- ".join(problems), file=sys.stderr)
         print("(Netz der globalen Regel › Immer; `--no-verify` umgeht es - nur mit ausdrücklichem Ja des Nutzers.)",
@@ -144,7 +324,7 @@ def wrapper(name, previous, guard, python):
     if name in GUARDED:
         lines += [f"guard={shlex.quote(guard)}", f"python={shlex.quote(python)}",
                   'if [ -f "$guard" ] && [ -x "$python" ]; then',
-                  f'  {feed}"$python" "$guard" check {name}', "  code=$?",
+                  f'  {feed}"$python" "$guard" check {name} "$@"', "  code=$?",
                   f'  if [ "$code" -eq {REJECT} ]; then exit 1; fi',
                   f'  if [ "$code" -ne 0 ]; then echo "ce-shared: Git-Wächter startet nicht (Exit $code), {name} läuft '
                   'ohne Prüfung" >&2; fi',
@@ -258,8 +438,8 @@ def main(argv=None):
         for stream in (sys.stdout, sys.stderr):
             with contextlib.suppress(AttributeError, ValueError):
                 stream.reconfigure(encoding="utf-8", errors="replace")
-    if argv[:1] == ["check"] and len(argv) == 2:  # called by the wrappers: check <hook>
-        return check_hook(argv[1])
+    if argv[:1] == ["check"] and len(argv) >= 2:  # called by the wrappers: check <hook> [Git's hook arguments]
+        return check_hook(argv[1], remote=argv[2] if len(argv) > 2 else "origin", url=argv[3] if len(argv) > 3 else "")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("command", choices=["install", "uninstall", "status"])
     parser.add_argument("--repo", action="append", type=Path, help="Repository (wiederholbar), Standard: hier")

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -671,6 +672,53 @@ class MergeNurSightlineTests(unittest.TestCase):
         self.assertEqual(guard.decide(self.mcp(self.MCP[1]), RULES), {})
         os.environ["CE_ROLE"] = "fachsitzung"
         self.assertTrue(denied(guard.decide(bash("gh pr merge 5"), RULES)))
+
+    HEAD = "a" * 40
+    DOOR = f"gh pr merge 5 -R o/r --match-head-commit {HEAD}"
+
+    def receipt(self, **change):
+        folder = self.session("CE-AGENT-TOOLS 0.34 „Gatekeeper“ · Mac")
+        receipt = {"repo": "o/r", "pr": 5, "head": self.HEAD, "green": True, "ja": "Ja, mergen", "time": time.time()}
+        receipt.update(change)
+        (Path(folder) / ".git" / guard.RECEIPT_FILE).write_text(json.dumps(receipt), encoding="utf-8")
+        return folder
+
+    def test_a_green_receipt_opens_the_pinned_merge_of_exactly_this_pull_request(self):
+        folder = self.receipt()
+        for command in (self.DOOR, self.DOOR + " --squash --delete-branch", f"gh pr merge --squash 5 --repo=O/R --match-head-commit={self.HEAD}",
+                        self.DOOR + " -t 'Titel mit Leerzeichen'", "gh pr view 5 && " + self.DOOR, "cd /anderswo && " + self.DOOR):
+            self.assertFalse(denied(guard.decide(bash(command, cwd=folder), RULES)), command)
+
+    def test_the_door_stays_shut_for_every_other_line(self):
+        folder = self.receipt()
+        for command in ("gh pr merge 5", "gh pr merge 5 --squash", "gh pr merge", self.DOOR.replace("merge 5", "merge 6"),
+                        self.DOOR.replace(self.HEAD, "b" * 40), self.DOOR.replace(self.HEAD, self.HEAD[:12]), self.DOOR + " --auto",
+                        self.DOOR + " --admin", self.DOOR.replace("o/r", "o/other"), self.DOOR + " 6", self.DOOR.replace(" -R o/r", ""),
+                        "GH_REPO=o/other " + self.DOOR.replace(" -R o/r", ""), "GH_HOST=x " + self.DOOR, self.DOOR.replace("merge 5", "merge $PR"),
+                        self.DOOR.replace(self.HEAD, "$SHA"), self.DOOR + " --repo o/other", self.DOOR + " -R o/other", "gh pr merge 5 --repo o/other -R o/r "
+                        f"--match-head-commit {self.HEAD}", "gh pr merge 5 --repo=o/other --repo=o/r " f"--match-head-commit {self.HEAD}",
+                        self.DOOR + " --match-head-commit " + "b" * 40, f"bash -c '{self.DOOR}'", f"eval '{self.DOOR}'", f"env {self.DOOR}",
+                        f"{self.DOOR} && gh pr merge 6", "gh api -X PUT repos/o/r/pulls/5/merge",
+                        "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"):
+            self.assertTrue(denied(guard.decide(bash(command, cwd=folder), RULES)), command)
+        for tool in self.MCP:
+            self.assertTrue(denied(guard.decide(self.mcp(tool, folder), RULES)), tool)
+
+    def test_a_receipt_without_ja_green_youth_or_a_full_head_is_no_receipt(self):
+        now = time.time()
+        for change in ({"ja": ""}, {"ja": "   "}, {"ja": None}, {"green": False}, {"green": "true"}, {"time": now - guard.RECEIPT_MAX_AGE - 5},
+                       {"time": now + 600}, {"time": "gestern"}, {"pr": "5"}, {"repo": None}, {"head": "a" * 12}):
+            self.assertTrue(denied(guard.decide(bash(self.DOOR, cwd=self.receipt(**change)), RULES)), change)
+        broken = self.session("x")
+        (Path(broken) / ".git" / guard.RECEIPT_FILE).write_text("[kein json", encoding="utf-8")
+        self.assertTrue(denied(guard.decide(bash(self.DOOR, cwd=broken), RULES)))
+        (Path(broken) / ".git" / guard.RECEIPT_FILE).write_text("[1, 2]", encoding="utf-8")
+        self.assertTrue(denied(guard.decide(bash(self.DOOR, cwd=broken), RULES)))
+
+    def test_the_block_message_names_the_way_through(self):
+        message = guard.decide(bash("gh pr merge 5"), RULES)["systemMessage"]
+        self.assertIn("./ce merge-check", message)
+        self.assertIn("--match-head-commit", message)
 
     def test_a_broken_reading_fails_open_and_keeps_the_other_rules(self):
         with mock.patch.object(guard, "is_sightline", side_effect=OSError("kaputt")):
