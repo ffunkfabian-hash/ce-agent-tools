@@ -33,6 +33,7 @@
     "plugins/ce-shared/hooks/codex_guard.py",
     "plugins/ce-shared/hooks/vibe_guard.py",
     "plugins/ce-shared/hooks/antigravity_guard.py",
+    "plugins/ce-shared/agents/*.md",
     ".github/workflows/*",
     ".ce-repo.json"
   ],

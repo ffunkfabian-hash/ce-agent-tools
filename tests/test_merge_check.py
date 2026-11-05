@@ -219,6 +219,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, [".ce-repo.json im PR geändert"]))
         self.assertFalse(mc.evaluate(ci_facts(head_config={**CONFIG, "check": {"quick": []}}))["ohne_ja"])
         self.assertTrue(mc.evaluate(ci_facts(base_config={**CONFIG, "version": "1.2.0"}, head_config={**CONFIG, "version": "1.3.0"}))["ohne_ja"])
+        self.assertFalse(mc.evaluate(ci_facts(head_config={**CONFIG, "version": {"file": "other.json", "pattern": "x"}}))["ohne_ja"], "the check of the next patch")
 
     def test_a_core_path_or_a_red_run_is_never_stage_one(self):
         core = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
@@ -273,7 +274,7 @@ class EvaluateTests(unittest.TestCase):
         """Richter 0.35 Runde 3, Nr 7.3: a patch without Ja must not change the limits of patches without Ja, nor the check that guards them."""
         config = json.loads((ROOT / ".ce-repo.json").read_text(encoding="utf-8"))
         names = [PLUGIN.relative_to(ROOT).as_posix() + "/" + name for name in ("tools/ce_merge_check.py", "hooks/guard.py", "hooks/codex_guard.py", "hooks/vibe_guard.py", "hooks/antigravity_guard.py")]
-        names += [".github/workflows/check.yml", ".ce-repo.json"]
+        names += [".github/workflows/check.yml", ".ce-repo.json", PLUGIN.relative_to(ROOT).as_posix() + "/agents/ce-judge.md"]
         self.assertEqual(mc.core_hits([{"filename": name} for name in names], config["core_paths"]), sorted(names))
 
     def test_from_100_lines_of_code_the_result_asks_for_the_judge(self):
@@ -431,10 +432,10 @@ class GatherTests(unittest.TestCase):
 
     def test_workflows_are_counted_and_unreadable_ones_keep_stage_one_waiting(self):
         with mock.patch.object(mc, "gh", FakeGh()):
-            self.assertEqual(mc.gather("o/r", 7)["workflows"], 1)
+            self.assertEqual(mc.gather("o/r", 7)["workflows"], 2, "a switched off workflow counts")
         for answer, count in ((json.dumps({"workflows": []}), 0), (None, 1), ("kein json", 1), ("[]", 1)):
             with mock.patch.object(mc, "gh", FakeGh(workflows=answer)):
-                self.assertEqual(mc.active_workflows("o/r"), count, answer)
+                self.assertEqual(mc.workflow_count("o/r"), count, answer)
 
     def test_the_place_decides_the_cloud_fact(self):
         with mock.patch.object(mc.platform, "system", return_value="Linux"), mock.patch.dict(os.environ, {"CLAUDE_CODE_REMOTE": "1"}):

@@ -180,14 +180,15 @@ def read_checks(repo, head):
             [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses])
 
 
-def active_workflows(repo):
-    """Active GitHub workflows: 0 means no CI will ever report. Unreadable counts as one, so stage 1 keeps waiting for a check."""
+def workflow_count(repo):
+    """GitHub workflows of the repository, switched off ones too (a session could switch one off before the push): 0 means no CI
+    will ever report. Unreadable counts as one, so stage 1 keeps waiting for a check."""
     text = gh("api", f"repos/{repo}/actions/workflows?per_page=100")
     try:
         found = json.loads(text).get("workflows") if text else None
     except (ValueError, AttributeError):
         found = None
-    return 1 if found is None else sum(1 for item in found if item.get("state") == "active")
+    return 1 if found is None else len(found)
 
 
 def on_cloud():
@@ -225,7 +226,7 @@ def gather(repo, number):
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
     compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}?per_page=1")
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
-    facts = {"repo": repo, "workflows": active_workflows(repo), "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
+    facts = {"repo": repo, "workflows": workflow_count(repo), "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
              "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
              "base_config": base_config, "head_config": head_config, "versions": versions, "changelog_name": changelog_name,
              "changelog": read_file(repo, changelog_name, head) if changelog_name else None}
@@ -366,7 +367,8 @@ def version_reasons(facts, classification, touched_core):
 
 
 def config_without_version(config):
-    return {key: value for key, value in (config or {}).items() if key != "version"}  # a patch may raise a version kept there
+    """A patch may raise a version kept right there; a {file, pattern} entry is part of the check and stays compared."""
+    return {key: value for key, value in (config or {}).items() if not (key == "version" and isinstance(value, str))}
 
 
 def evaluate(facts, expected_sha=""):
