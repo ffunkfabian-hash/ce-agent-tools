@@ -5,7 +5,7 @@
 Nachzug zu Nexogen 1.26 „Keel“ (`docs/nachzug-agent-tools-keel.md`, Teile A und B).
 
 - **Patch-Tür ohne Ja** (Punkt 13): Ein grüner `merge-check`, der Stufe 1 erfüllt, schreibt eine Quittung der Art `patch` ohne Wortlaut; der Wächter nimmt sie an, gleiche Zeile, gleiche Bindung an Repo, PR, Head und 30 Minuten. Quittungen mit Ja aus 0.34 gelten weiter.
-- **Fehlende `core_paths` sperren Stufe 1:** Ohne Liste in der Basis (auch leer oder unbrauchbar) gibt es keine Patch-Quittung, Stufe 2 bleibt möglich. Über den Auftrag hinaus: Ein PR, der die Liste selbst ändert, braucht ebenfalls das Ja, sonst nähme ein Patch ohne Ja den nächsten Kernpfad von der Liste.
+- **Fehlende `core_paths` sperren Stufe 1:** Ohne Liste in der Basis (auch leer oder unbrauchbar) gibt es keine Patch-Quittung, Stufe 2 bleibt möglich. Über den Auftrag hinaus: Ein PR, der die Liste selbst ändert, braucht ebenfalls das Ja, sonst nähme ein Patch ohne Ja den nächsten Kernpfad von der Liste; ebenso ein Head ohne gemeldete Checks (direkt nach dem Push ist der Lauf grün, bevor CI startet), ein Repo ohne CI hat also keine Stufe 1.
 - **Zwei Grenzen:** `VERSION_LINES = 300` für die Einstufung, `NO_JA_LINES = 100` für die Stufe. Neue Ausgabefelder `ohne_ja`, `ja_noetig_weil`, `code_lines`, `receipt_kind`; die Warnung „nur Patch-Nummer erhöht“ kommt erst über 300 Zeilen.
 - **Richter-Hinweis:** Ab 100 Zeilen Code (Diff ohne `.md`) warnt `merge-check`; ob ein Richter lief, sieht es nicht.
 - **Regel `merge-nur-sightline` heißt `merge-tuer`** und beschreibt die drei Stufen; `commit-on-main` verweist auf Regel 4. Keine Konfiguration eines Repos nennt den alten Namen.

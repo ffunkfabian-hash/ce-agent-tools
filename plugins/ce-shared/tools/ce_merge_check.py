@@ -12,7 +12,8 @@ Classification (regeln-details > Patch-Aufträge): Version = over VERSION_LINES 
 A core path on a mere patch number is red; size alone only warns.
 
 Merge stages (regeln-details > Freigaben und Merge, 0.35): `ohne_ja` is true for stage 1 - green, at most NO_JA_LINES lines, no core
-path, core_paths listed in the base and not changed by the pull request; `ja_noetig_weil` names what stands against it. Everything
+path, checks reported for the head (right after a push none may exist yet, so a repository without CI has no stage 1), core_paths
+listed in the base and not changed by the pull request; `ja_noetig_weil` names what stands against it. Everything
 else is stage 2 (after the user's Ja) or stage 3 (merge request to Sightline). From JUDGE_LINES lines of code (diff without .md) a
 warning asks for the judge; whether one ran is not visible here, that stays a rule.
 
@@ -336,9 +337,10 @@ def version_reasons(facts, classification, touched_core):
     return reasons, warnings
 
 
-def ja_reasons(green, listed, core_changed, touched, lines):
+def ja_reasons(green, ci_seen, listed, core_changed, touched, lines):
     """What keeps a run out of stage 1; empty means it may merge without the user's Ja."""
-    checks = ((not green, "merge-check nicht grün"), (not listed, "core_paths fehlt in der Basis"),
+    checks = ((not green, "merge-check nicht grün"), (green and not ci_seen, "keine Checks zum Head gemeldet"),
+              (not listed, "core_paths fehlt in der Basis"),
               (core_changed, "core_paths im PR geändert"), (touched, "Kernpfad berührt"),
               (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"))
     return [text for failed, text in checks if failed]
@@ -401,7 +403,7 @@ def evaluate(facts, expected_sha=""):
     warnings += version_warnings
     if code_lines >= JUDGE_LINES:
         warnings.append(f"{code_lines} Zeilen Code (ohne .md): Richter nötig (`./ce judge`); ob einer lief, sieht merge-check nicht")
-    why = ja_reasons(not reasons, listed, core_changed, touched, lines)
+    why = ja_reasons(not reasons, bool(checks), listed, core_changed, touched, lines)  # no human at this door: "no CI yet" is not green enough
     return {"repo": facts["repo"], "pr": pr["number"], "url": pr.get("url"), "head": head, "base": pr["baseRefName"],
             "green": not reasons, "classification": classification, "lines": lines, "code_lines": code_lines, "files": len(files),
             "ohne_ja": not why, "ja_noetig_weil": why, "core_paths_touched": touched, "reasons": reasons, "warnings": warnings}

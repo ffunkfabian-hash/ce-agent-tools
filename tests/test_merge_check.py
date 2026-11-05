@@ -34,6 +34,11 @@ def facts(**change):
     return base
 
 
+def ci_facts(**change):
+    """A pull request whose CI has finished: stage 1 needs reported checks."""
+    return facts(checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}], **change)
+
+
 def test_file(name, patch, status="modified"):
     return {"filename": name, "status": status, "changes": patch.count("\n"), "patch": patch}
 
@@ -184,42 +189,51 @@ class EvaluateTests(unittest.TestCase):
     def test_a_patch_between_the_two_limits_needs_the_ja_but_no_new_minor(self):
         """Punkte 13 und 15: 100 trennt ohne und mit Ja, 300 trennt Patch und Version."""
         for lines, classification, free in ((100, "Patch", True), (101, "Patch", False), (300, "Patch", False), (301, "Version", False)):
-            result = mc.evaluate(facts(pr={"additions": lines, "deletions": 0}, versions={"base": "1.2.0", "head": "1.2.1"}, changelog="1.2.1"))
+            result = mc.evaluate(ci_facts(pr={"additions": lines, "deletions": 0}, versions={"base": "1.2.0", "head": "1.2.1"}, changelog="1.2.1"))
             self.assertEqual((result["green"], result["classification"], result["ohne_ja"]), (True, classification, free), lines)
             self.assertEqual(result["ja_noetig_weil"], [] if free else [f"{lines} Zeilen, ohne Ja höchstens 100"], lines)
             self.assertEqual("nur Patch-Nummer erhöht" in " ".join(result["warnings"]), lines > 300, lines)
 
     def test_lines_are_counted_added_plus_deleted_for_the_stage_too(self):
-        self.assertTrue(mc.evaluate(facts(pr={"additions": 60, "deletions": 40}))["ohne_ja"])
-        self.assertFalse(mc.evaluate(facts(pr={"additions": 60, "deletions": 41}))["ohne_ja"])
+        self.assertTrue(mc.evaluate(ci_facts(pr={"additions": 60, "deletions": 40}))["ohne_ja"])
+        self.assertFalse(mc.evaluate(ci_facts(pr={"additions": 60, "deletions": 41}))["ohne_ja"])
 
     def test_without_core_paths_in_the_base_there_is_no_stage_one(self):
         for config in ({}, None, {**CONFIG, "core_paths": None}, {**CONFIG, "core_paths": []}, {**CONFIG, "core_paths": [""]}, {**CONFIG, "core_paths": [" ", "\t"]},
                        {**CONFIG, "core_paths": "contracts/**"}, {**CONFIG, "core_paths": [1, None]}):
-            result = mc.evaluate(facts(base_config=config))
+            result = mc.evaluate(ci_facts(base_config=config))
             self.assertTrue(result["green"], config)
             self.assertFalse(result["ohne_ja"], config)
             self.assertEqual(result["ja_noetig_weil"], ["core_paths fehlt in der Basis"], config)
             self.assertIn("keine Stufe 1", " ".join(result["warnings"]), config)
 
     def test_a_list_only_in_the_pull_request_does_not_open_stage_one(self):
-        result = mc.evaluate(facts(base_config={}, head_config=CONFIG))
+        result = mc.evaluate(ci_facts(base_config={}, head_config=CONFIG))
         self.assertFalse(result["ohne_ja"])
 
     def test_a_pull_request_that_changes_the_list_needs_the_ja(self):
         """Sonst nähme ein Patch ohne Ja den Kernpfad von der Liste, und der nächste Patch änderte ihn ohne Ja."""
-        result = mc.evaluate(facts(head_config={**CONFIG, "core_paths": ["contracts/**"]}))
+        result = mc.evaluate(ci_facts(head_config={**CONFIG, "core_paths": ["contracts/**"]}))
         self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["core_paths im PR geändert"]))
-        self.assertTrue(mc.evaluate(facts(head_config={**CONFIG, "check": {"quick": []}}))["ohne_ja"], "other config entries stay free")
+        self.assertTrue(mc.evaluate(ci_facts(head_config={**CONFIG, "check": {"quick": []}}))["ohne_ja"], "other config entries stay free")
 
     def test_a_core_path_or_a_red_run_is_never_stage_one(self):
         core = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
-        result = mc.evaluate(facts(files=facts()["files"] + [core]))
+        result = mc.evaluate(ci_facts(files=ci_facts()["files"] + [core]))
         self.assertEqual((result["ohne_ja"], result["ja_noetig_weil"]), (False, ["Kernpfad berührt"]))
         docs = {"filename": "contracts/a.md", "status": "modified", "changes": 1, "patch": "@@\n+x"}
-        self.assertFalse(mc.evaluate(facts(files=[docs]))["ohne_ja"], "a text under a core path is a core path")
-        red = mc.evaluate(facts(pr={"mergeable": "CONFLICTING"}))
+        self.assertFalse(mc.evaluate(ci_facts(files=[docs]))["ohne_ja"], "a text under a core path is a core path")
+        red = mc.evaluate(ci_facts(pr={"mergeable": "CONFLICTING"}))
         self.assertEqual((red["green"], red["ohne_ja"], red["ja_noetig_weil"]), (False, False, ["merge-check nicht grün"]))
+
+    def test_no_stage_one_before_ci_has_reported(self):
+        """Richter 0.35 Runde 2: right after a push the run is green with no checks at all; stage 2 keeps its warning."""
+        result = mc.evaluate(facts())
+        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["keine Checks zum Head gemeldet"]))
+        self.assertFalse(mc.evaluate(facts(runs_open=["tests"]))["ohne_ja"])
+        self.assertFalse(mc.evaluate(facts(checks=[{"name": "tests", "status": "QUEUED"}]))["ohne_ja"])
+        self.assertFalse(mc.evaluate(facts(checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "FAILURE"}]))["ohne_ja"])
+        self.assertTrue(mc.evaluate(ci_facts())["ohne_ja"])
 
     def test_from_100_lines_of_code_the_result_asks_for_the_judge(self):
         def run(*files):
@@ -448,7 +462,7 @@ class ReceiptTests(unittest.TestCase):
             code = mc.main(["o/r", "7", *args])
         return code, out.getvalue(), err.getvalue()
 
-    facts = facts()
+    facts = ci_facts()
     needs_ja = facts | {"pr": {**facts["pr"], "additions": 150}}
     door = f"gh pr merge 7 -R o/r --match-head-commit {HEAD} --squash"
 
@@ -490,6 +504,11 @@ class ReceiptTests(unittest.TestCase):
         code, out, _ = self.run_main("--ja", "Ja", given=without)
         self.assertEqual((code, json.loads(out)["receipt_kind"]), (0, "ja"))
         self.assertTrue(guard.receipt_allows(self.door, self.folder))
+
+    def test_a_run_before_ci_reported_gets_no_patch_receipt(self):
+        code, out, err = self.run_main(given=facts())
+        self.assertEqual((code, json.loads(out)["receipt"], self.file.exists()), (0, False, False))
+        self.assertIn("keine Checks zum Head gemeldet", err)
 
     def test_a_red_run_gets_no_receipt_of_either_kind(self):
         red = self.facts | {"behind_by": 1}
