@@ -167,10 +167,10 @@ class CodexAdapterTests(unittest.TestCase):
         with mock.patch.dict(os.environ):
             os.environ.pop("CE_ROLE", None)
             for command in ("gh pr merge 5 --squash", "gh api -X PUT repos/o/r/pulls/5/merge"):
-                self.assert_denied(self.codex("Bash", {"command": command}), "merge-nur-sightline")
-            self.assert_denied(self.codex("mcp__github__merge_pull_request", {"pullNumber": 5}), "merge-nur-sightline")
+                self.assert_denied(self.codex("Bash", {"command": command}), "merge-tuer")
+            self.assert_denied(self.codex("mcp__github__merge_pull_request", {"pullNumber": 5}), "merge-tuer")
             self.assert_denied(self.codex("mcp__github__enable_pr_auto_merge", {"pullNumber": 5}),
-                               "merge-nur-sightline")
+                               "merge-tuer")
             self.assertIsNone(self.codex("Bash", {"command": "git merge origin/main"}))
             self.assertIsNone(self.codex("Bash", {"command": "gh pr view 5"}))
             self.assertIsNone(self.codex("mcp__github__get_pull_request", {"pullNumber": 5}))
@@ -344,7 +344,7 @@ class VibeAdapterTests(unittest.TestCase):
             for tool in ("mcp_github.merge_pull_request", "mcp_github.enable_pr_auto_merge"):
                 output = self.vibe(tool, {"pullNumber": 5})
                 self.assertEqual(output["decision"], "deny", tool)
-                self.assertIn("[merge-nur-sightline]", output["reason"])
+                self.assertIn("[merge-tuer]", output["reason"])
             self.assertIsNone(self.vibe("mcp_github.get_pull_request", {"pullNumber": 5}))
             os.environ["CE_ROLE"] = "sightline"
             self.assertIsNone(self.vibe("mcp_github.merge_pull_request", {"pullNumber": 5}))

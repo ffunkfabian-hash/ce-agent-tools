@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.35.0 „Turnstile“ – unveröffentlicht (05.11.2026)
+
+Nachzug zu Nexogen 1.26 „Keel“ (`docs/nachzug-agent-tools-keel.md`, Teile A und B).
+
+- **Patch-Tür ohne Ja** (Punkt 13): Ein grüner `merge-check`, der Stufe 1 erfüllt, schreibt eine Quittung der Art `patch` ohne Wortlaut; der Wächter nimmt sie an, gleiche Zeile, gleiche Bindung an Repo, PR, Head und 30 Minuten. Quittungen mit Ja aus 0.34 gelten weiter.
+- **Fehlende `core_paths` sperren Stufe 1:** Ohne Liste in der Basis (auch leer oder unbrauchbar) gibt es keine Patch-Quittung, Stufe 2 bleibt möglich.
+- **Stufe 1 enger als „grün“ (Richter, über den Auftrag hinaus):** An dieser Tür steht kein Mensch, also verlangt sie zusätzlich: eigener PR (gleiches Repo, Head = dieser Ordner, sonst Fork-PRs ohne Ja), Basis = Standardbranch (die Quittung überlebt sonst `gh pr edit --base main`), keine Cloud-Sitzung (Stufe 3), `.ce-repo.json` außer der Version unverändert, nichts ungeprüft, und ein erfolgreicher Check, wo CI kommen kann (direkt nach dem Push ist der Lauf sonst grün; Repos ohne Workflow und reine `.md`-PRs warten nicht). `core_paths` hier um `ce_merge_check.py`, die Client-Wächter, `.github/workflows/*` und `.ce-repo.json` erweitert.
+- **Zwei Grenzen:** `VERSION_LINES = 300` für die Einstufung, `NO_JA_LINES = 100` für die Stufe. Neue Ausgabefelder `ohne_ja`, `ja_noetig_weil`, `code_lines`, `receipt_kind`; die Warnung „nur Patch-Nummer erhöht“ kommt erst über 300 Zeilen.
+- **Richter-Hinweis:** Ab 100 Zeilen Code (Diff ohne `.md`) warnt `merge-check`; ob ein Richter lief, sieht es nicht.
+- **Regel `merge-nur-sightline` heißt `merge-tuer`** und beschreibt die drei Stufen; `commit-on-main` verweist auf Regel 4. Keine Konfiguration eines Repos nennt den alten Namen.
+- **`ce-freigabe` entfällt:** `say --freigabe/--zitat/--zeit` und die Prüfung der Freigabe-Post sind weg. Die alten Optionen enden mit einer klaren Meldung statt als Nachricht; eine Nachricht, die von einer Freigabe spricht, trägt weiter einen Hinweis: Post trägt kein Ja. Alte Nachrichten im Postfach stören nicht.
+- **Stop-Hook:** Die Sitzungsstatistik steht in `<git-dir>/ce-session-stats.log`, nicht mehr in `report.md`, dessen Text die PR-Beschreibung wird (gesehen in PR #37).
+- Tests: `test_merge_check` (Grenzen, Stufe 1, Quittungen), `test_guard.MergeDoorTests` (Patch-Quittung). Die Tests der Freigabe-Post fallen mit ihrer Funktion weg, Hinweis und alte Nachrichten sind neu abgedeckt. [Version](docs/versions/0.35.md).
+
 ## 0.34.1 – Patch merge-check-rest (05.11.2026)
 
 - **`merge-check` liest nur noch REST** (`gh api repos/…`): PR, Head, Mergebarkeit, Dateigrößen (ein `git/trees`-Lesen, `contents` je Datei bei abgeschnittenem Baum) und CI aus `check-runs` plus Commit-Status statt GraphQL, das in Cloud-Sitzungen mit 403 gesperrt ist. Dazu: `self.skipTest(` zählt als übersprungen, mehr als 3000 Dateien im PR sind rot statt still gekürzt, `rules/*.md` steht in `core_paths`.

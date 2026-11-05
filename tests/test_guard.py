@@ -120,7 +120,7 @@ class SharedRuleTests(unittest.TestCase):
 
     def test_every_rule_blocks_what_it_should_and_nothing_else(self):
         self.assertEqual({rule["name"] for rule in RULES},
-                         set(self.CASES) | set(self.WARN_CASES) | {"actions-sparsam", "merge-nur-sightline"}, "a new rule needs cases here")
+                         set(self.CASES) | set(self.WARN_CASES) | {"actions-sparsam", "merge-tuer"}, "a new rule needs cases here")
         for name, (hits, misses) in self.CASES.items():
             for command in hits:
                 self.assertIn(name, names(bash(command)), command)
@@ -599,7 +599,7 @@ class AgentProfileTests(unittest.TestCase):
         self.assertIn("git-stash-geteilt", result["systemMessage"])
 
 
-class MergeNurSightlineTests(unittest.TestCase):
+class MergeDoorTests(unittest.TestCase):
     """0.22: only Sightline merges. Hits are blocked for every other session; catching up with main stays free."""
     HITS = ["gh pr merge 5", "gh pr merge 5 --squash --delete-branch", "gh pr merge --auto 5", "gh pr merge",
             "gh pr merge 5 -R ffunkfabian-hash/ce-agent-tools", "gh api -X PUT repos/o/r/pulls/5/merge",
@@ -639,15 +639,15 @@ class MergeNurSightlineTests(unittest.TestCase):
         for command in self.HITS:
             result = guard.decide(bash(command), RULES)
             self.assertTrue(denied(result), command)
-            self.assertIn("[merge-nur-sightline]", result["systemMessage"], command)
-            self.assertIn("Merge macht Sightline nach Prüfung – PR-Nummer und Head-SHA ins Postfach",
+            self.assertIn("[merge-tuer]", result["systemMessage"], command)
+            self.assertIn("Merge nach Regel 4 nur durch die Merge-Tür",
                           result["systemMessage"])
         for tool in self.MCP:
             self.assertTrue(denied(guard.decide(self.mcp(tool), RULES)), tool)
 
     def test_catching_up_with_main_and_harmless_commands_pass(self):
         for command in self.MISSES:
-            self.assertNotIn("merge-nur-sightline", names(bash(command)), command)
+            self.assertNotIn("merge-tuer", names(bash(command)), command)
             self.assertFalse(denied(guard.decide(bash(command), RULES)), command)
         for tool in ("mcp__github__get_pull_request", "mcp__github__create_pull_request", "mcp__ce-search__ce_search"):
             self.assertEqual(guard.decide(self.mcp(tool), RULES), {}, tool)
@@ -703,6 +703,43 @@ class MergeNurSightlineTests(unittest.TestCase):
             self.assertTrue(denied(guard.decide(bash(command, cwd=folder), RULES)), command)
         for tool in self.MCP:
             self.assertTrue(denied(guard.decide(self.mcp(tool, folder), RULES)), tool)
+
+    def patch_receipt(self, **change):
+        folder = self.receipt(kind="patch", **change)
+        path = Path(folder) / ".git" / guard.RECEIPT_FILE
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        if "ja" not in change:
+            del receipt["ja"]
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        return folder
+
+    def test_a_patch_receipt_opens_the_same_door_without_words(self):
+        folder = self.patch_receipt()
+        for command in (self.DOOR, self.DOOR + " --squash --delete-branch", f"gh pr merge --squash 5 --repo=O/R --match-head-commit={self.HEAD}"):
+            self.assertFalse(denied(guard.decide(bash(command, cwd=folder), RULES)), command)
+
+    def test_a_patch_receipt_binds_like_a_ja_receipt(self):
+        folder = self.patch_receipt()
+        for command in ("gh pr merge 5", "gh pr merge 5 --squash", self.DOOR.replace("merge 5", "merge 6"), self.DOOR.replace(self.HEAD, "b" * 40),
+                        self.DOOR.replace("o/r", "o/other"), self.DOOR + " --auto", self.DOOR + " --admin", f"bash -c '{self.DOOR}'",
+                        "gh api -X PUT repos/o/r/pulls/5/merge"):
+            self.assertTrue(denied(guard.decide(bash(command, cwd=folder), RULES)), command)
+        for tool in self.MCP:
+            self.assertTrue(denied(guard.decide(self.mcp(tool, folder), RULES)), tool)
+
+    def test_a_patch_receipt_needs_green_youth_and_a_full_head_too(self):
+        now = time.time()
+        for change in ({"green": False}, {"green": "true"}, {"time": now - guard.RECEIPT_MAX_AGE - 5}, {"time": now + 600}, {"time": "gestern"},
+                       {"pr": "5"}, {"repo": None}, {"head": "a" * 12}):
+            self.assertTrue(denied(guard.decide(bash(self.DOOR, cwd=self.patch_receipt(**change)), RULES)), change)
+
+    def test_only_the_kind_patch_stands_in_for_the_words(self):
+        for kind in ("Patch", "PATCH", "ja", "version", "", None, 1, True, ["patch"]):
+            folder = self.receipt(kind=kind, ja="")
+            self.assertTrue(denied(guard.decide(bash(self.DOOR, cwd=folder), RULES)), kind)
+
+    def test_a_ja_receipt_of_0_34_without_a_kind_still_counts(self):
+        self.assertFalse(denied(guard.decide(bash(self.DOOR, cwd=self.receipt()), RULES)))
 
     def test_a_receipt_without_ja_green_youth_or_a_full_head_is_no_receipt(self):
         now = time.time()

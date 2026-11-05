@@ -28,7 +28,14 @@
     "plugins/ce-shared/githooks/ce_githooks.py",
     "plugins/ce-shared/tools/ce_common.py",
     "plugins/ce-shared/tools/ce_contract.py",
-    "plugins/ce-shared/tools/ce_loader.py"
+    "plugins/ce-shared/tools/ce_loader.py",
+    "plugins/ce-shared/tools/ce_merge_check.py",
+    "plugins/ce-shared/hooks/codex_guard.py",
+    "plugins/ce-shared/hooks/vibe_guard.py",
+    "plugins/ce-shared/hooks/antigravity_guard.py",
+    "plugins/ce-shared/agents/*.md",
+    ".github/workflows/*",
+    ".ce-repo.json"
   ],
   "heavy_lock": false,
   "coordination": {

@@ -10,8 +10,9 @@ PostToolUse (0.33 Earshot, `pulse`): every PULSE_EVERY tool calls a cheap look a
 input of the last request - and, crossing a limit, one hint as additionalContext for the model: over 300 records
 (Trimline: "über 300 Nachrichten" came 1,177 times as a Stop warning that only the user saw), over 150,000 input tokens.
 Each hint once per session and threshold step (hint_state).
-Stop: runs ce_report.py on the transcript and appends its line and hints to report.md in the worktree (untracked) -
-the measurement; no systemMessage any more (0.33: those warnings reached only the user). check-before-stop - code or
+Stop: runs ce_report.py on the transcript and appends its line and hints to ce-session-stats.log in the git dir - the
+measurement. 0.35: no longer to report.md, whose text becomes the PR description (statistics stood in PR #37); no
+systemMessage either (0.33: those warnings reached only the user). check-before-stop - code or
 assets changed but no ./check or test ran - goes to the model as additionalContext once per session and never while
 stop_hook_active (probe 04.11.2026: a Stop additionalContext makes the model answer once more; repeated, it would loop).
 It never blocks; any error lets the session end.
@@ -30,6 +31,7 @@ TOOL_LINE = ("Werkzeuge dieser Sitzung (Pflicht, globale Regeln): `ce_search` (M
              "`./ce session reserve <Name> --about … --model …` vor der ersten Änderung (Patch: `./ce session patch <kurzname>`; meldet im Postfach an, den Wächter startet ab ce-shared 0.15 der Stop-Hook) · "
              "`heavy_lock --resource unity|blender|gpu` für schwere Läufe · `./check` vor Commit · Richter mit `templates/pruefung.md` · "
              "Bericht = PR-Beschreibung, Ist-Zeit als Warten/Rechnen/Lesen/Umsetzen.")
+STATS_FILE = "ce-session-stats.log"  # in the git dir of the worktree: outside the tree, gone with the worktree
 CLAUDE_FILES = ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md"))
 IMPORT = re.compile(r"^\s*@(\S+)", re.MULTILINE)
 PULSE_EVERY = 20              # PostToolUse: look at the transcript every 20th tool call
@@ -244,10 +246,11 @@ def stop(payload: dict) -> dict:
             unchecked = changed_code(root) and info["checks"] == 0
             if unchecked:
                 hints.append("Code/Assets geändert, aber kein ./check oder Testlauf in dieser Sitzung (check-before-stop, DoD 2)")
-            report = root / "report.md"
+            git_dir = run(["git", "rev-parse", "--absolute-git-dir"], cwd=root)
             try:
-                with open(report, "a", encoding="utf-8") as handle:
-                    handle.write("\n" + line + "\n" + "".join("  Hinweis: " + w + "\n" for w in hints))
+                if git_dir:
+                    with open(Path(git_dir) / STATS_FILE, "a", encoding="utf-8") as handle:
+                        handle.write("\n" + line + "\n" + "".join("  Hinweis: " + w + "\n" for w in hints))
             except OSError:
                 pass
         except Exception as error:  # noqa: BLE001 - never wedge the session end

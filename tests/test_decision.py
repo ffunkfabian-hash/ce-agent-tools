@@ -68,10 +68,10 @@ class FormatTests(unittest.TestCase):
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(text, err)
 
-    def test_question_and_release_exclude_each_other(self):
+    def test_a_question_does_not_take_the_retired_release_option(self):
         code, out, err = say("--frage", "A oder B?", "--standard", "A", "--freigabe", "commit")
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("schließen sich aus", err)
+        self.assertIn("gibt es nicht mehr", err)
 
     def test_plain_messages_are_unchanged(self):
         code, out, err = say("Fertig", "PR 1")

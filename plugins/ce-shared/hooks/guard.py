@@ -726,8 +726,9 @@ def git_commits(command, cwd):
 
 # -------------------------------------------------------------------------------------------- merge attempt field
 #
-# merge-nur-sightline (0.22): only Sightline merges. The field merge_attempt is "merge" when the call would merge a pull
-# request or switch on its auto-merge and the session is not Sightline, else "". Bash: a `gh pr merge` or `gh api` call
+# merge-tuer (0.22, until 0.35 merge-nur-sightline): rule 4 in three stages (regeln-details > Freigaben und Merge); three ways through,
+# all else stays shut: Sightline, a receipt of the user's Ja, a receipt of a green patch. The field merge_attempt is "merge" when
+# the call would merge a pull request or switch on its auto-merge and no door is open, else "". Bash: a `gh pr merge` or `gh api` call
 # (PUT …/pulls/N/merge, GraphQL mergePullRequest / enablePullRequestAutoMerge) in any segment of the line, also behind
 # NAME=value, env/command/exec/time/nohup and `bash|sh|zsh -c '…'` / eval; the words come from shell_segments, so quotes
 # are read like the shell does. Other tools: the GitHub MCP merge tools. `git merge` is no PR merge and stays free
@@ -739,6 +740,8 @@ def git_commits(command, cwd):
 # and the line must be a plain `gh pr merge <PR> -R <repo> --match-head-commit <head>` - GitHub itself then refuses any other
 # head, so the guard needs no network, and the explicit repo binds the target whatever the folder or GH_REPO say. No --auto, no --admin, no gh api, no MCP tool, no shell around it. The receipt records the
 # user's words, it does not prove them, and it is a file: the guard is a net, not a boundary.
+# 0.35 (Keel, Punkt 13): the patch door. A green run that meets stage 1 (merge-check > ohne_ja) writes a receipt of kind `patch`
+# without words; same line, same binding to repo, PR and head, same 30 minutes. Whether a change is a patch only merge-check decides.
 
 MERGE_TOOLS = ("mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_merge")
 MERGE_MUTATIONS = ("mergePullRequest", "enablePullRequestAutoMerge")
@@ -815,10 +818,11 @@ def is_sightline(cwd):
 
 
 def receipt_valid(receipt, now):
-    """True for a green, young receipt that carries the user's words."""
+    """True for a green, young receipt that carries the user's words or is of kind `patch` (stage 1)."""
     age = now - receipt["time"] if isinstance(receipt.get("time"), (int, float)) else -1
+    words = isinstance(receipt.get("ja"), str) and bool(receipt["ja"].strip())
     return (receipt.get("green") is True and 0 <= age <= RECEIPT_MAX_AGE and isinstance(receipt.get("pr"), int)
-            and isinstance(receipt.get("ja"), str) and bool(receipt["ja"].strip())
+            and (words or receipt.get("kind") == "patch")
             and isinstance(receipt.get("repo"), str) and re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("head"))) is not None)
 
 

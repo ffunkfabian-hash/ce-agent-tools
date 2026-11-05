@@ -6,7 +6,7 @@
 #   tidy [--apply|--nightly] [--json] [--category K]   (0.18: Reste fertiger Sitzungen, Probelauf ohne --apply)
 #   tools where|fetch|pin <commit>   (0.20: Repos mit tools_version; ihr ./ce ist der Lader ce_loader.py)
 #   vibe run --prompt-file F [--json] | status | clean [--apply]   (0.26: Aufgabe an Mistral Vibe im Wegwerf-Worktree, Ergebnis als Patch)
-#   merge-check <owner/repo> <PR> [--sha SHA] [--ja ZITAT]   (0.34: mechanische Merge-Prüfung, JSON plus Textzeile)
+#   merge-check <owner/repo> <PR> [--sha SHA] [--ja ZITAT]   (0.34: mechanische Merge-Prüfung, JSON plus Textzeile; 0.35: ohne_ja, Quittung der Art patch)
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 py=python3
@@ -27,7 +27,7 @@ case "$cmd" in
       patch) exec "$py" "$tools/ce_session_name.py" --reserve --patch "$@";;
       mail) exec "$py" "$tools/ce_await_mail.py" "$@";;
       say|who) exec "$py" "$tools/ce_postfach.py" "$sub" "$@";;
-      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] [--follow] [--also-pr] | say [--to <Empfänger>[,…]] [--freigabe commit,push,pr --zitat …] <Thema> [Zeilen] | say --frage \"<A oder B?>\" --standard A [--frist 60m] | who"; exit 2;;
+      *) echo "session reserve <Name> | patch <kurzname> | topics | mail [--name <Name>] [--follow] [--also-pr] | say [--to <Empfänger>[,…]] <Thema> [Zeilen] | say --frage \"<A oder B?>\" --standard A [--frist 60m] | who"; exit 2;;
     esac;;
   codex)
     sub="${1:-help}"; [ $# -gt 0 ] && shift
