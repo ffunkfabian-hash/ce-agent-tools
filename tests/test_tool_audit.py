@@ -14,6 +14,8 @@ from unittest import mock
 
 TOOLS = Path(__file__).resolve().parents[1] / "plugins/ce-shared/tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judge_quota import ENOUGH_USED, LOW_USED, codex_quota
 import ce_judge
 import ce_media
 import ce_search
@@ -43,8 +45,18 @@ class ToolAuditTests(unittest.TestCase):
                  mock.patch.object(ce_judge, "diff_of", return_value=("+changed", names)), \
                  mock.patch.object(ce_judge.shutil, "which", return_value="codex"), \
                  mock.patch.object(ce_judge.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout, stderr)), \
-                 contextlib.redirect_stdout(io.StringIO()):
+                 codex_quota(ENOUGH_USED), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ce_judge.main(["--repo", tmp, "--base", "main"]), expected)
+        # Low quota: the verdict is the API's alone, Codex is not even started.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_judge, "git", side_effect=git), \
+             mock.patch.object(ce_judge, "diff_of", return_value=("+changed", names)), \
+             mock.patch.object(ce_judge.shutil, "which", return_value="codex"), \
+             mock.patch.object(ce_judge.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "Freigabe")) as run, \
+             mock.patch.object(ce_judge, "run_api", return_value=1) as api, \
+             codex_quota(LOW_USED), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ce_judge.main(["--repo", tmp, "--base", "main"]), 1)
+        api.assert_called_once()
+        run.assert_not_called()
 
     def test_invalid_index_root_fails_without_refreshing_existing_index(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"CE_SEARCH_EMBED": "0"}):

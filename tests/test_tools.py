@@ -15,6 +15,8 @@ from unittest import mock
 PLUGIN = Path(__file__).resolve().parent.parent / "plugins" / "ce-shared"
 sys.path.insert(0, str(PLUGIN / "tools"))
 sys.path.insert(0, str(PLUGIN / "hooks"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from judge_quota import ENOUGH_USED, LOW_USED, codex_quota  # noqa: E402
 import ce_check  # noqa: E402
 import ce_common  # noqa: E402
 import ce_lint  # noqa: E402
@@ -1122,14 +1124,20 @@ class MediaAndJudgeTests(unittest.TestCase):
             self.assertEqual(ce_judge.choose_model(diff, names, None), "luna")
             self.assertEqual(ce_judge.choose_model(diff, ["unity_contract.json"], None), "sol")
             self.assertEqual(ce_judge.choose_model("+x\n" * 400, ["a.py"], None), "sol")
-            code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--dry-run")
+            with codex_quota(ENOUGH_USED):
+                code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--dry-run")
             self.assertEqual(code, 0, out); self.assertIn("Richter luna", out); self.assertIn("Checkliste", out)
+            self.assertIn("Weg: Codex – Codex-Rest 60.0 %", out)
+            with codex_quota(LOW_USED):
+                code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--dry-run")
+            self.assertEqual(code, 0, out); self.assertIn("Richter Opus über ./ce api", out); self.assertIn("Checkliste", out)
+            self.assertIn("Weg: Opus über ./ce api – Codex-Rest 11.0 %", out); self.assertNotIn("Richter luna", out)
             code, out = run_main(ce_judge, "--repo", str(root), "--base", "main", "--opus")
             self.assertEqual(code, 0); self.assertTrue((root / "report.judge.diff").is_file())
             # (0.31) Windows: npm's codex.cmd is started by its full name; mocked, runs everywhere
             verdict = subprocess.CompletedProcess([], 0, "| 1 | ok |\nFreigabe\n", "")
             real_run = subprocess.run
-            with mock.patch.object(ce_judge, "WINDOWS", True), \
+            with codex_quota(ENOUGH_USED), mock.patch.object(ce_judge, "WINDOWS", True), \
                     mock.patch.object(ce_judge.shutil, "which", return_value="C:\\npm\\codex.CMD"), \
                     mock.patch.object(ce_judge.subprocess, "run") as run:
                 run.side_effect = lambda argv, **kw: verdict if argv[0].endswith("codex.CMD") else real_run(argv, **kw)
