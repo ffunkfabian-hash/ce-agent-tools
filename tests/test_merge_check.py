@@ -35,8 +35,10 @@ def facts(**change):
 
 
 def ci_facts(**change):
-    """A pull request whose CI has finished: stage 1 needs reported checks."""
-    return facts(checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}], **change)
+    """The session's own pull request into the default branch with finished CI: what stage 1 wants beyond a green run."""
+    change.setdefault("checks", [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}])
+    change.setdefault("local_head", HEAD)
+    return facts(pr={"sameRepo": True, "defaultBranch": "main", **change.pop("pr", {})}, **change)
 
 
 def test_file(name, patch, status="modified"):
@@ -211,11 +213,12 @@ class EvaluateTests(unittest.TestCase):
         result = mc.evaluate(ci_facts(base_config={}, head_config=CONFIG))
         self.assertFalse(result["ohne_ja"])
 
-    def test_a_pull_request_that_changes_the_list_needs_the_ja(self):
-        """Sonst nähme ein Patch ohne Ja den Kernpfad von der Liste, und der nächste Patch änderte ihn ohne Ja."""
+    def test_a_pull_request_that_changes_the_config_needs_the_ja(self):
+        """Sonst nähme ein Patch ohne Ja den Kernpfad von der Liste oder die Prüfung weg, und der nächste Patch ginge ohne Ja durch."""
         result = mc.evaluate(ci_facts(head_config={**CONFIG, "core_paths": ["contracts/**"]}))
-        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["core_paths im PR geändert"]))
-        self.assertTrue(mc.evaluate(ci_facts(head_config={**CONFIG, "check": {"quick": []}}))["ohne_ja"], "other config entries stay free")
+        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, [".ce-repo.json im PR geändert"]))
+        self.assertFalse(mc.evaluate(ci_facts(head_config={**CONFIG, "check": {"quick": []}}))["ohne_ja"])
+        self.assertTrue(mc.evaluate(ci_facts(base_config={**CONFIG, "version": "1.2.0"}, head_config={**CONFIG, "version": "1.3.0"}))["ohne_ja"])
 
     def test_a_core_path_or_a_red_run_is_never_stage_one(self):
         core = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
@@ -228,12 +231,50 @@ class EvaluateTests(unittest.TestCase):
 
     def test_no_stage_one_before_ci_has_reported(self):
         """Richter 0.35 Runde 2: right after a push the run is green with no checks at all; stage 2 keeps its warning."""
-        result = mc.evaluate(facts())
-        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["keine Checks zum Head gemeldet"]))
-        self.assertFalse(mc.evaluate(facts(runs_open=["tests"]))["ohne_ja"])
-        self.assertFalse(mc.evaluate(facts(checks=[{"name": "tests", "status": "QUEUED"}]))["ohne_ja"])
-        self.assertFalse(mc.evaluate(facts(checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "FAILURE"}]))["ohne_ja"])
+        result = mc.evaluate(ci_facts(checks=[]))
+        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["keine erfolgreichen Checks zum Head gemeldet"]))
+        self.assertFalse(mc.evaluate(ci_facts(checks=[], runs_open=["tests"]))["ohne_ja"])
+        self.assertFalse(mc.evaluate(ci_facts(checks=[{"name": "tests", "status": "QUEUED"}]))["ohne_ja"])
+        self.assertFalse(mc.evaluate(ci_facts(checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "FAILURE"}]))["ohne_ja"])
+        for conclusion in ("SKIPPED", "NEUTRAL"):
+            self.assertFalse(mc.evaluate(ci_facts(checks=[{"name": "tests", "status": "COMPLETED", "conclusion": conclusion}]))["ohne_ja"], conclusion)
         self.assertTrue(mc.evaluate(ci_facts())["ohne_ja"])
+        self.assertTrue(mc.evaluate(ci_facts(checks=[{"context": "ci", "state": "SUCCESS"}]))["ohne_ja"])
+
+    def test_where_no_ci_can_come_stage_one_does_not_wait_for_it(self):
+        """Richter 0.35 Runde 3, Nr 7.5: Nexogen has no workflow, a pull request of .md files starts none here."""
+        self.assertTrue(mc.evaluate(ci_facts(checks=[], workflows=0))["ohne_ja"])
+        docs = {"filename": "docs/a.md", "status": "modified", "changes": 2, "patch": "@@\n+x"}
+        self.assertTrue(mc.evaluate(ci_facts(checks=[], files=[CHANGELOG, docs], workflows=2))["ohne_ja"])
+        self.assertFalse(mc.evaluate(ci_facts(checks=[], workflows=1))["ohne_ja"])
+
+    def test_stage_one_is_for_the_own_pull_request_into_the_default_branch(self):
+        """Richter 0.35 Runde 3, Nr 7.1, 7.2, 7.4: a receipt survives `gh pr edit --base main`; forks and other sessions have no patch door."""
+        for change, text in (({"pr": {"baseRefName": "claude/side"}}, "Basis ist nicht der Standardbranch"), ({"pr": {"defaultBranch": None}}, "Basis ist nicht der Standardbranch"),
+                             ({"pr": {"sameRepo": False}}, "PR aus einem anderen Repo"), ({"local_head": "d" * 40}, "Head ist nicht der Stand dieses Ordners"),
+                             ({"local_head": None}, "Head ist nicht der Stand dieses Ordners"), ({"cloud": True}, "Cloud-Sitzung: Merge-Bitte an Sightline")):
+            result = mc.evaluate(ci_facts(**change))
+            self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, [text]), change)
+
+    def test_what_stayed_unchecked_keeps_stage_one_shut(self):
+        """Richter 0.35 Runde 3, Nr 7.8."""
+        unread = {"filename": "tests/test_a.py", "status": "modified", "changes": 2}
+        for change in ({"files": facts()["files"] + [unread]}, {"versions": None}, {"changelog_name": None}, {"versions": {"base": None, "head": "1.3.0"}}):
+            result = mc.evaluate(ci_facts(**change))
+            self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"]), (True, False, ["Teile nicht geprüft"]), change)
+
+    def test_a_pattern_with_blanks_around_it_still_guards(self):
+        core = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
+        config = {**CONFIG, "core_paths": [" hooks/guard.py\t"]}
+        result = mc.evaluate(ci_facts(files=facts()["files"] + [core], base_config=config, head_config=config))
+        self.assertEqual((result["core_paths_touched"], result["ohne_ja"]), (["hooks/guard.py"], False))
+
+    def test_the_door_of_this_repository_is_on_its_own_list(self):
+        """Richter 0.35 Runde 3, Nr 7.3: a patch without Ja must not change the limits of patches without Ja, nor the check that guards them."""
+        config = json.loads((ROOT / ".ce-repo.json").read_text(encoding="utf-8"))
+        names = [PLUGIN.relative_to(ROOT).as_posix() + "/" + name for name in ("tools/ce_merge_check.py", "hooks/guard.py", "hooks/codex_guard.py", "hooks/vibe_guard.py", "hooks/antigravity_guard.py")]
+        names += [".github/workflows/check.yml", ".ce-repo.json"]
+        self.assertEqual(mc.core_hits([{"filename": name} for name in names], config["core_paths"]), sorted(names))
 
     def test_from_100_lines_of_code_the_result_asks_for_the_judge(self):
         def run(*files):
@@ -297,6 +338,8 @@ class FakeGh:
             return json.dumps(self.answers["tree"])
         if "/contents/" in target and "raw" not in " ".join(args):
             return json.dumps({"type": "file", "size": 88})
+        if "/actions/workflows" in target:
+            return self.answers["workflows"] if "workflows" in self.answers else json.dumps({"workflows": [{"state": "active"}, {"state": "disabled_manually"}]})
         if "/actions/runs" in target:
             return json.dumps({"workflow_runs": self.answers.get("runs", [])})
         if "/compare/" in target:
@@ -385,6 +428,27 @@ class GatherTests(unittest.TestCase):
         fake = FakeGh(pr=[json.dumps(rest_pr(pr)), json.dumps(rest_pr({**pr, "headRefOid": "d" * 40}))])
         with mock.patch.object(mc, "gh", fake), self.assertRaisesRegex(mc.NotCheckable, "während der Prüfung"):
             mc.gather("o/r", 7)
+
+    def test_workflows_are_counted_and_unreadable_ones_keep_stage_one_waiting(self):
+        with mock.patch.object(mc, "gh", FakeGh()):
+            self.assertEqual(mc.gather("o/r", 7)["workflows"], 1)
+        for answer, count in ((json.dumps({"workflows": []}), 0), (None, 1), ("kein json", 1), ("[]", 1)):
+            with mock.patch.object(mc, "gh", FakeGh(workflows=answer)):
+                self.assertEqual(mc.active_workflows("o/r"), count, answer)
+
+    def test_the_place_decides_the_cloud_fact(self):
+        with mock.patch.object(mc.platform, "system", return_value="Linux"), mock.patch.dict(os.environ, {"CLAUDE_CODE_REMOTE": "1"}):
+            self.assertTrue(mc.on_cloud())
+        with mock.patch.object(mc.platform, "system", return_value="Darwin"):
+            self.assertFalse(mc.on_cloud())
+
+    def test_the_rest_answer_gives_the_default_branch_and_the_origin_of_the_head(self):
+        same = {"full_name": "o/r", "default_branch": "main"}
+        pr = mc.normalize_pr({"head": {"repo": same}, "base": {"repo": same}})
+        self.assertEqual((pr["sameRepo"], pr["defaultBranch"]), (True, "main"))
+        self.assertFalse(mc.normalize_pr({"head": {"repo": {"full_name": "x/r"}}, "base": {"repo": same}})["sameRepo"])
+        self.assertFalse(mc.normalize_pr({"head": {"repo": None}, "base": {"repo": same}})["sameRepo"], "deleted fork")
+        self.assertFalse(mc.normalize_pr({})["sameRepo"])
 
     def test_open_workflow_runs_of_the_head_are_read(self):
         fake = FakeGh(runs=[{"name": "check", "status": "queued"}, {"name": "alt", "status": "completed"}])
@@ -506,9 +570,9 @@ class ReceiptTests(unittest.TestCase):
         self.assertTrue(guard.receipt_allows(self.door, self.folder))
 
     def test_a_run_before_ci_reported_gets_no_patch_receipt(self):
-        code, out, err = self.run_main(given=facts())
+        code, out, err = self.run_main(given=ci_facts(checks=[]))
         self.assertEqual((code, json.loads(out)["receipt"], self.file.exists()), (0, False, False))
-        self.assertIn("keine Checks zum Head gemeldet", err)
+        self.assertIn("keine erfolgreichen Checks zum Head gemeldet", err)
 
     def test_a_red_run_gets_no_receipt_of_either_kind(self):
         red = self.facts | {"behind_by": 1}

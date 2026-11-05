@@ -12,8 +12,11 @@ Classification (regeln-details > Patch-Aufträge): Version = over VERSION_LINES 
 A core path on a mere patch number is red; size alone only warns.
 
 Merge stages (regeln-details > Freigaben und Merge, 0.35): `ohne_ja` is true for stage 1 - green, at most NO_JA_LINES lines, no core
-path, checks reported for the head (right after a push none may exist yet, so a repository without CI has no stage 1), core_paths
-listed in the base and not changed by the pull request; `ja_noetig_weil` names what stands against it. Everything
+path, core_paths listed in the base, .ce-repo.json unchanged. No human stands at this door, so it also wants what a green run alone
+does not say: the session's own pull request (same repository, head = this folder) into the default branch (a receipt survives
+`gh pr edit --base`), no cloud session (stage 3), nothing left unchecked, and a successful check where CI can come at all (right
+after a push none has reported yet; a repository without workflows and a pull request of .md files wait for nothing).
+`ja_noetig_weil` names what stands against it. Everything
 else is stage 2 (after the user's Ja) or stage 3 (merge request to Sightline). From JUDGE_LINES lines of code (diff without .md) a
 warning asks for the judge; whether one ran is not visible here, that stays a rule.
 
@@ -27,6 +30,7 @@ records the Ja, it does not prove it.
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -36,6 +40,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
+import ce_session_name  # noqa: E402
 
 BIG_FILE = 5_000_000  # bytes; the same limit as BIG_BINARY in githooks/ce_githooks.py (a test compares them)
 VERSION_LINES = 300  # classification: over this a change is a Version (Punkt 15)
@@ -145,9 +150,12 @@ def normalize_pr(raw):
     """The REST pull request in the shape evaluate() reads (GraphQL names: OPEN/MERGED, MERGEABLE/CONFLICTING/UNKNOWN)."""
     state = "MERGED" if raw.get("merged") else str(raw.get("state") or "").upper()
     mergeable = raw.get("mergeable")
+    base_repo, head_repo = (raw.get("base") or {}).get("repo") or {}, (raw.get("head") or {}).get("repo") or {}
     return {"number": raw.get("number"), "url": raw.get("html_url"), "title": raw.get("title"), "state": state,
             "isDraft": bool(raw.get("draft")), "headRefOid": (raw.get("head") or {}).get("sha"),
             "headRefName": (raw.get("head") or {}).get("ref"), "baseRefName": (raw.get("base") or {}).get("ref"),
+            "defaultBranch": base_repo.get("default_branch"),
+            "sameRepo": bool(base_repo.get("full_name")) and head_repo.get("full_name") == base_repo.get("full_name"),
             "mergeable": {True: "MERGEABLE", False: "CONFLICTING"}.get(mergeable, "UNKNOWN"),
             "additions": raw.get("additions") or 0, "deletions": raw.get("deletions") or 0}
 
@@ -170,6 +178,20 @@ def read_checks(repo, head):
     return ([{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()}
              for run in runs] +
             [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses])
+
+
+def active_workflows(repo):
+    """Active GitHub workflows: 0 means no CI will ever report. Unreadable counts as one, so stage 1 keeps waiting for a check."""
+    text = gh("api", f"repos/{repo}/actions/workflows?per_page=100")
+    try:
+        found = json.loads(text).get("workflows") if text else None
+    except (ValueError, AttributeError):
+        found = None
+    return 1 if found is None else sum(1 for item in found if item.get("state") == "active")
+
+
+def on_cloud():
+    return ce_session_name.detect_place(platform.system(), dict(os.environ), "auto").endswith("Cloud")
 
 
 def version_at(repo, spec, ref):
@@ -203,7 +225,8 @@ def gather(repo, number):
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
     compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}?per_page=1")
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
-    facts = {"repo": repo, "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
+    facts = {"repo": repo, "workflows": active_workflows(repo), "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
+             "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
              "base_config": base_config, "head_config": head_config, "versions": versions, "changelog_name": changelog_name,
              "changelog": read_file(repo, changelog_name, head) if changelog_name else None}
     now = (gh_json("api", f"repos/{repo}/pulls/{number}").get("head") or {}).get("sha")
@@ -238,7 +261,7 @@ def glob_regex(pattern):
 
 
 def core_hits(files, patterns):
-    regexes = [glob_regex(p) for p in patterns if isinstance(p, str) and p]
+    regexes = [glob_regex(p.strip()) for p in patterns if isinstance(p, str) and p.strip()]
     names = {name for f in files for name in (f["filename"], f.get("previous_filename")) if name}
     return sorted(name for name in names if any(r.match(name) for r in regexes))
 
@@ -259,6 +282,11 @@ def ci_state(rollup):
         elif state not in CI_FINE:
             pending.append(name)
     return failed, pending
+
+
+def ci_passed(rollup):
+    """True when at least one check ended in success; SKIPPED and NEUTRAL say nothing about the head."""
+    return any("SUCCESS" in (item.get("conclusion"), item.get("state")) for item in rollup or [])
 
 
 def test_changes(files):
@@ -337,13 +365,8 @@ def version_reasons(facts, classification, touched_core):
     return reasons, warnings
 
 
-def ja_reasons(green, ci_seen, listed, core_changed, touched, lines):
-    """What keeps a run out of stage 1; empty means it may merge without the user's Ja."""
-    checks = ((not green, "merge-check nicht grün"), (green and not ci_seen, "keine Checks zum Head gemeldet"),
-              (not listed, "core_paths fehlt in der Basis"),
-              (core_changed, "core_paths im PR geändert"), (touched, "Kernpfad berührt"),
-              (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"))
-    return [text for failed, text in checks if failed]
+def config_without_version(config):
+    return {key: value for key, value in (config or {}).items() if key != "version"}  # a patch may raise a version kept there
 
 
 def evaluate(facts, expected_sha=""):
@@ -393,7 +416,7 @@ def evaluate(facts, expected_sha=""):
     if not listed:
         patterns = []
         warnings.append("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1")
-    core_changed = listed and (facts.get("head_config") or {}).get("core_paths") != config.get("core_paths")  # the next patch would profit
+    config_changed = listed and config_without_version(facts.get("head_config")) != config_without_version(config)  # the next patch would profit
     touched = core_hits(files, patterns)
     lines = (pr.get("additions") or 0) + (pr.get("deletions") or 0)
     code_lines = sum(f.get("changes") or 0 for f in files if not f["filename"].lower().endswith(".md"))
@@ -403,7 +426,15 @@ def evaluate(facts, expected_sha=""):
     warnings += version_warnings
     if code_lines >= JUDGE_LINES:
         warnings.append(f"{code_lines} Zeilen Code (ohne .md): Richter nötig (`./ce judge`); ob einer lief, sieht merge-check nicht")
-    why = ja_reasons(not reasons, bool(checks), listed, core_changed, touched, lines)  # no human at this door: "no CI yet" is not green enough
+    ci_due = facts.get("workflows", 1) > 0 and not all(f["filename"].lower().endswith(".md") for f in files)
+    unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings)
+    stage_one = ((bool(reasons), "merge-check nicht grün"), (ci_due and not ci_passed(checks), "keine erfolgreichen Checks zum Head gemeldet"),
+                 (not listed, "core_paths fehlt in der Basis"), (config_changed, ".ce-repo.json im PR geändert"), (bool(touched), "Kernpfad berührt"),
+                 (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),
+                 (pr.get("baseRefName") != pr.get("defaultBranch"), "Basis ist nicht der Standardbranch"),
+                 (not pr.get("sameRepo"), "PR aus einem anderen Repo"), (facts.get("local_head") != head, "Head ist nicht der Stand dieses Ordners"),
+                 (bool(facts.get("cloud")), "Cloud-Sitzung: Merge-Bitte an Sightline"), (unchecked, "Teile nicht geprüft"))
+    why = [text for failed, text in stage_one if failed]
     return {"repo": facts["repo"], "pr": pr["number"], "url": pr.get("url"), "head": head, "base": pr["baseRefName"],
             "green": not reasons, "classification": classification, "lines": lines, "code_lines": code_lines, "files": len(files),
             "ohne_ja": not why, "ja_noetig_weil": why, "core_paths_touched": touched, "reasons": reasons, "warnings": warnings}
