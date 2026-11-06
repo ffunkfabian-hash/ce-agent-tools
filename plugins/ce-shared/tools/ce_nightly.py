@@ -5,6 +5,9 @@
 ~/Claude), each inside its own heavy locks, writes one report to ~/Library/Caches/CubeEscape/nightly/ce_nightly-<date>.log and
 sends a macOS notification. Repos without check.nightly are skipped with a note. 0.18: afterwards `ce_tidy.py --nightly` (removes
 only categories with nightly: true in .ce-repo.json › tidy, lists the rest; --dry-run: probe only). Never a GitHub workflow (private repos pay minutes).
+0.36: a checkout that is not clean main stops a repo as red (checkout), unless own_main_script() shows that everything the
+run starts from it is a state of origin/main and the repo's nightly.sh tests origin/main in a worktree of its own: then it
+runs with a warning in the report and the notification. Unsure means red; the warning does not change the exit code.
 
     python3 ce_nightly.py --all                   run now, all repos
     python3 ce_nightly.py --repo ~/Claude/cubeescape-toolgen
@@ -23,6 +26,7 @@ import os
 import json
 import contextlib
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -32,12 +36,15 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import heavy_lock  # noqa: E402  (0.31: cache folder and Windows layer)
-from ce_common import UTF8, WINDOWS, utf8_console  # noqa: E402
+from ce_check import commands_of  # noqa: E402
+from ce_common import UTF8, WINDOWS, RepoError, utf8_console  # noqa: E402
 HOME = Path.home()
 DEFAULT_REPOS = ["cubeescape", "cubeescape-toolgen", "cubeescape-robogen", "cubeescape-cubegen", "cubeescape-formgen",
                  "cubeescape-motiongen"]
 LOG_DIR = Path(heavy_lock.cache_dir("nightly"))  # 0.31: %LOCALAPPDATA%\CubeEscape\nightly on Windows
 LABEL = "com.cubeescape.ce-nightly"
+WARNED = " (Warnung)"  # suffix of a state: the run went on from a checkout that is not clean main
+OWN_WORKTREE = re.compile(r"\bworktree\s+add\b")
 
 
 def repos(args) -> list[Path]:
@@ -86,6 +93,38 @@ def uses_loader(root: Path) -> bool:
         return False
 
 
+def git_text(root: Path, *argv: str) -> str | None:
+    done = subprocess.run(["git", *argv], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return done.stdout if done.returncode == 0 else None
+
+
+def own_main_script(root: Path, launcher: list[str]) -> str | None:
+    """0.36: the repo's nightly.sh when it may run from a checkout that is not clean main, else None. The name alone says
+    nothing: Toolgen's nightly.sh tests the checkout it lies in. So everything is read at `base`, the last commit the
+    checkout shares with origin/main: check.nightly must be that one script and nothing else, its code lines (not
+    comments) must name origin/main and add a worktree of their own, and the files this run starts from the checkout
+    (`launcher`, .ce-repo.json, the script) must equal `base` - otherwise it would run foreign work after all. A main
+    that merely lags behind passes (Cube Escape: 7 commits behind on 06.11.), the script fetches and tests the newest."""
+    base = (git_text(root, "merge-base", "HEAD", "origin/main") or "").strip()
+    if not base:
+        return None
+    try:
+        argvs = commands_of(json.loads(git_text(root, "show", f"{base}:.ce-repo.json") or "{}")["check"]["nightly"])
+    except (ValueError, KeyError, TypeError, RepoError):  # no usable check.nightly: the strict way stays
+        return None
+    scripts = [part for part in argvs[0][:2] if Path(part).name == "nightly.sh"]
+    if len(argvs) != 1 or len(scripts) != 1:
+        return None
+    text = git_text(root, "show", f"{base}:{scripts[0]}") or ""
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    if "origin/main" not in code or not OWN_WORKTREE.search(code):
+        return None
+    files = [*launcher, ".ce-repo.json", scripts[0]]
+    if any(git_text(root, "cat-file", "-e", f"{base}:{name}") is None for name in files):
+        return None
+    return scripts[0] if git_text(root, "diff", "--quiet", base, "--", *files) is not None else None
+
+
 def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
     tools = root / "Tools" / "ce_tools" / "ce_check.py"
     if not tools.is_file():
@@ -102,15 +141,22 @@ def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
                             **UTF8).stdout.strip()
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True,
                            **UTF8).stdout.strip()
+    warned = ""
     if branch != "main" or dirty:
-        log("Nachtlauf benötigt einen sauberen main-Checkout; keine fremden Arbeitsstände ausführen")
-        return "red (checkout)", 0.0
+        started = [str(Path(part).relative_to(root)) for part in command[1:2] if Path(part).is_relative_to(root)]
+        script = own_main_script(root, started)
+        if script is None:
+            log("Nachtlauf benötigt einen sauberen main-Checkout; keine fremden Arbeitsstände ausführen")
+            return "red (checkout)", 0.0
+        where = f"Branch {branch}" if branch else "ohne Branch"
+        log(f"WARNUNG: Checkout {where}, {len(dirty.splitlines())} geänderte Dateien; {script} arbeitet auf origin/main, Lauf geht weiter")
+        warned = WARNED
     start = time.monotonic()
     with subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **UTF8) as proc:
         for line in proc.stdout:
             log(line.rstrip("\n"))
         code = proc.wait()
-    return ("green" if code == 0 else f"red (exit {code})"), time.monotonic() - start
+    return ("green" if code == 0 else f"red (exit {code})") + warned, time.monotonic() - start
 
 
 def notify(title: str, text: str) -> None:
@@ -170,12 +216,14 @@ def run(args) -> int:
         log(f"=== Suchindex: übersprungen ({error})")
     log("--- Ergebnis")
     for name, state, seconds in results:
-        log(f"{name:24} {state:14} {seconds / 60:5.1f} min")
+        log(f"{name:24} {state:16} {seconds / 60:5.1f} min")
     handle.close()
     red = [name for name, state, _ in results if state.startswith("red")]
-    executed = any(state == "green" or state.startswith("red") for _, state, _ in results)
+    executed = any(state.startswith(("green", "red")) for _, state, _ in results)
+    warned = [name for name, state, _ in results if state.endswith(WARNED)]
     if not args.dry_run:
-        notify("CE Nachtlauf", ("rot: " + ", ".join(red)) if red else "alle grün" if executed else "keine Prüfungen ausgeführt")
+        text = ("rot: " + ", ".join(red)) if red else "alle grün" if executed else "keine Prüfungen ausgeführt"
+        notify("CE Nachtlauf", text + ("; Checkout-Warnung: " + ", ".join(warned) if warned else ""))
     print(f"Bericht: {report}")
     return 1 if red else 0 if executed or args.dry_run else 2
 

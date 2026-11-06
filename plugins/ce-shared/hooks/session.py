@@ -5,7 +5,9 @@ SessionStart (additionalContext): the repo's docs/LESSONS.md (or Docs/) - unless
 it (0.33: it came twice in 7 repos, in Cube Escape 8,950 characters per session) - the session-name proposal of
 ce_session_name.py, and one line naming the tools every session is expected to use (ce_search, heavy_lock --resource,
 session_name --reserve, ./check, pruefung.md). Nothing is installed. Since 0.16 it also compares the loaded ce-shared
-version with the newest this machine knows and warns visibly when the session runs an older one.
+version with the newest this machine knows and warns visibly when the session runs an older one. 0.36: the hard core
+(hooks/kern.md, a word-for-word copy of Nexogen templates/kern.md, tests/test_kern.py) comes first - a cloud container has
+no global CLAUDE.md - unless the memory files the hook can name already carry every rule. Unsure means it is shown.
 PostToolUse (0.33 Earshot, `pulse`): every PULSE_EVERY tool calls a cheap look at the transcript - record count and the
 input of the last request - and, crossing a limit, one hint as additionalContext for the model: over 300 records
 (Trimline: "über 300 Nachrichten" came 1,177 times as a Stop warning that only the user saw), over 150,000 input tokens.
@@ -31,6 +33,10 @@ TOOL_LINE = ("Werkzeuge dieser Sitzung (Pflicht, globale Regeln): `ce_search` (M
              "`./ce session reserve <Name> --about … --model …` vor der ersten Änderung (Patch: `./ce session patch <kurzname>`; meldet im Postfach an, den Wächter startet ab ce-shared 0.15 der Stop-Hook) · "
              "`heavy_lock --resource unity|blender|gpu` für schwere Läufe · `./check` vor Commit · Richter mit `templates/pruefung.md` · "
              "Bericht = PR-Beschreibung, Ist-Zeit als Warten/Rechnen/Lesen/Umsetzen.")
+KERN_FILE = Path(__file__).resolve().parent / "kern.md"
+KERN_RULE = re.compile(r"^\d+\. .+$", re.MULTILINE)
+KERN_HEAD = "Harter Kern (Nexogen `templates/kern.md`; globale Regeln dieser Sitzung nicht geladen):"
+KERN_MISSING = "WARNUNG: Der harte Kern fehlt im Plugin (hooks/kern.md); er steht in Nexogen `templates/kern.md`, Plugin neu installieren."
 STATS_FILE = "ce-session-stats.log"  # in the git dir of the worktree: outside the tree, gone with the worktree
 CLAUDE_FILES = ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md"))
 IMPORT = re.compile(r"^\s*@(\S+)", re.MULTILINE)
@@ -124,6 +130,36 @@ def lessons(root: Path) -> str:
     return ""
 
 
+def memory_text(root: Path) -> str:
+    """What the session has loaded as far as the hook can name it: the user's global CLAUDE.md, the repo's memory files
+    and their imports (one level). A parent folder's CLAUDE.md is not read: a miss only shows the core once too often."""
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    texts = []
+    for path in [config / "CLAUDE.md"] + [root / name for name in CLAUDE_FILES]:
+        for item in [path] + [resolved(path, entry) for entry in imports(path)]:
+            try:
+                texts.append(item.read_text(encoding="utf-8", errors="replace") if item else "")
+            except OSError:
+                pass
+    return "\n".join(texts)
+
+
+def kern_block(root: Path, source: Path = None) -> str:
+    """The hard core for the start context, empty when the session has every rule word for word already; an older
+    global file with another wording does not count, so the core is shown."""
+    try:
+        rules = KERN_RULE.findall((source or KERN_FILE).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        rules = []
+    if not rules:
+        return KERN_MISSING
+    try:
+        loaded = memory_text(root)
+    except Exception:  # noqa: BLE001 - a broken look must not cost the session its context; unsure means shown
+        loaded = ""
+    return "" if all(rule in loaded for rule in rules) else KERN_HEAD + "\n" + "\n".join(rules)
+
+
 def loaded_version(plugin_root: Path = PLUGIN_ROOT) -> str:
     try:
         return json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")).get("version") or ""
@@ -146,6 +182,9 @@ def version_hint(plugin_root: Path = PLUGIN_ROOT, folder=None) -> str:
 def session_start(payload: dict) -> dict:
     root = Path(payload.get("cwd") or os.getcwd())
     parts = [TOOL_LINE]
+    kern = kern_block(root)
+    if kern:
+        parts.insert(0, kern)
     try:
         hint = version_hint()
     except Exception:  # noqa: BLE001 - a broken check must not cost the session its context
