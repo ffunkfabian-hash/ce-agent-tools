@@ -19,11 +19,14 @@ import json
 import re
 import sys
 import math
+import os
+import subprocess
 from collections import Counter
 from pathlib import Path
 
 BIG_DOC = 60_000
 MAX_CONTEXT_TOKENS = 150_000
+SIGHTLINE_CONTEXT_TOKENS = 300_000  # (0.36.1) only the coordination session "Sightline" (Entscheidung 295): its base alone is ~85k
 DELEGATION_AFTER = 150     # (0.32) messages without any subagent before the Stop hint 'delegate' appears
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 
@@ -254,7 +257,22 @@ def one_line(info: dict) -> str:
             f"{usage_line}")
 
 
-def hints(info: dict) -> list[str]:
+def input_limit(cwd=None) -> int:
+    """Input-token limit of the session in `cwd`: 300,000 when <git-dir>/ce-session.json names exactly "Sightline", else 150,000
+    (no file, broken file, no name, no git: the default). The same reading way as heavy_lock.session_of; the message limit stays."""
+    try:
+        git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=str(cwd or os.getcwd()), capture_output=True,
+                                 text=True, timeout=5).stdout.strip()
+        with open(os.path.join(git_dir, "ce-session.json"), encoding="utf-8") as handle:
+            saved = json.load(handle)
+        if git_dir and isinstance(saved, dict) and saved.get("name") == "Sightline":
+            return SIGHTLINE_CONTEXT_TOKENS
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        pass
+    return MAX_CONTEXT_TOKENS
+
+
+def hints(info: dict, limit: int = MAX_CONTEXT_TOKENS) -> list[str]:
     out = []
     if info["messages"] > 300:
         out.append("über 300 Nachrichten: neue Sitzung beginnen (› Sitzungen kurz halten)")
@@ -263,8 +281,8 @@ def hints(info: dict) -> list[str]:
                    "Belege an ce-recorder abgeben (› Unteragenten und Modelle) – nur ein Hinweis")
     usage = info.get("usage") or {}
     max_input = usage.get("max_input_tokens_per_request")
-    if isinstance(max_input, int) and max_input > MAX_CONTEXT_TOKENS:
-        out.append(f"Spitzen-Input {max_input:,} Tokens (> {MAX_CONTEXT_TOKENS:,}): neue Sitzung beginnen (› Sitzungen kurz halten)")
+    if isinstance(max_input, int) and max_input > limit:
+        out.append(f"Spitzen-Input {max_input:,} Tokens (> {limit:,}): neue Sitzung beginnen (› Sitzungen kurz halten)")
     creation = usage.get("cache_creation_input_tokens")
     if isinstance(creation, int) and isinstance(max_input, int) and max_input > 0 and creation > max(100_000, 2 * max_input):
         out.append(f"Cache-Schreiben ({creation:,} Tokens) > 2× Spitzen-Input ({max_input:,}): "
@@ -314,7 +332,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps(info, ensure_ascii=False, indent=1))
         return 0
     print(one_line(info))
-    for hint in hints(info):
+    for hint in hints(info, input_limit()):
         print("  Hinweis: " + hint)
     return 0
 

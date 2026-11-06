@@ -1045,6 +1045,25 @@ class ReportAndSessionHookTests(unittest.TestCase):
                 self.assertNotEqual(session.pulse(dict(payload, session_id="p-2")), {}, "another session: its own hints")
                 self.assertEqual(session.pulse({"hook_event_name": "PostToolUse"}), {}, "no transcript: nothing")
 
+    def test_pulse_input_limit_300000_only_for_sightline(self):
+        import subprocess, tempfile
+        sys.path.insert(0, str(PLUGIN / "hooks"))
+        import session
+        usage = '"usage":{"input_tokens":1000,"cache_creation_input_tokens":2000,"cache_read_input_tokens":200000,"output_tokens":5}'
+        records = ['{"type":"user","message":{"content":"x"}}', '{"type":"assistant","message":{' + usage + '}}']
+        for name, expect in (("Sightline", False), ("Anderes", True), (None, True)):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                subprocess.run(["git", "init", "-q", str(root / "repo")], check=True)
+                if name:
+                    (root / "repo" / ".git" / "ce-session.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+                transcript = root / "t.jsonl"
+                transcript.write_text("\n".join(records * 5) + "\n", encoding="utf-8")
+                payload = {"hook_event_name": "PostToolUse", "transcript_path": str(transcript), "session_id": "lim-1",
+                           "cwd": str(root / "repo")}
+                with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
+                    self.assertEqual(bool(session.pulse(payload)), expect, name)
+
 
 class MediaAndJudgeTests(unittest.TestCase):
     """0.5.0: ce_imagediff (numbers instead of two pictures), ce_media (one way to make evidence), ce_judge (checklist reviewer)."""

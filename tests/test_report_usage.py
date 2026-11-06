@@ -164,5 +164,55 @@ class ReportUsageTests(unittest.TestCase):
         self.assertNotIn("0 Unteragenten:", ce_report.one_line(dict(self.analyse_records([record("a", {"input_tokens": 1})]), messages=200)))
 
 
+
+class SessionInputLimitTests(unittest.TestCase):
+    """0.36.1: 300,000 input tokens for the session named exactly "Sightline", 150,000 for every other (Entscheidung 295)."""
+
+    def repo(self, tmp, session_file=None):
+        import subprocess
+        root = Path(tmp)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        if session_file is not None:
+            (root / ".git" / "ce-session.json").write_text(session_file, encoding="utf-8")
+        return root
+
+    def peak(self, tokens):
+        usage = {"input_tokens": tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text(json.dumps(record("a", usage)) + "\n", encoding="utf-8")
+            return ce_report.analyse(path)
+
+    def flagged(self, root, tokens):
+        return any("Spitzen-Input" in h for h in ce_report.hints(self.peak(tokens), ce_report.input_limit(root)))
+
+    def test_sightline_below_300000_is_quiet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.repo(tmp, '{"name": "Sightline"}')
+            self.assertEqual(ce_report.input_limit(root), 300_000)
+            self.assertFalse(self.flagged(root, 250_000))
+
+    def test_sightline_above_300000_is_flagged_with_its_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.repo(tmp, '{"name": "Sightline"}')
+            texts = " ".join(ce_report.hints(self.peak(310_000), ce_report.input_limit(root)))
+            self.assertIn("Spitzen-Input 310,000 Tokens (> 300,000)", texts)
+
+    def test_other_session_above_150000_is_flagged(self):
+        for name in ("CE-AGENT-TOOLS Patch x · Mac", "Sightline 2", "sightline", ""):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self.repo(tmp, json.dumps({"name": name}))
+                self.assertEqual(ce_report.input_limit(root), 150_000, name)
+                self.assertTrue(self.flagged(root, 200_000), name)
+
+    def test_missing_or_broken_session_file_keeps_150000(self):
+        for content in (None, "{kaputt", "[]", '{"model": "x"}', '{"name": 7}'):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self.repo(tmp, content)
+                self.assertEqual(ce_report.input_limit(root), 150_000, content)
+                self.assertTrue(self.flagged(root, 200_000), content)
+        with tempfile.TemporaryDirectory() as tmp:  # no git at all
+            self.assertEqual(ce_report.input_limit(tmp), 150_000)
+
 if __name__ == "__main__":
     unittest.main()
