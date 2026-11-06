@@ -924,6 +924,21 @@ class ReportAndSessionHookTests(unittest.TestCase):
         self.assertEqual(self.lock_wait("src/x.py", quoted, tool="Read"), 0)
         self.assertEqual(self.lock_wait("./run", "log said: heavy lock: free after 900 s today\n"), 0)
 
+    def test_lock_wait_pairs_parallel_results_by_tool_use_id(self):
+        import tempfile, ce_report
+        def use(i, name, **data):
+            return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": i, "name": name, "input": data}]}}
+        def result(i, text):
+            return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": i, "content": text}]}}
+        wait = "heavy lock: free after 60 s\n"
+        records = [use("a", "Bash", command="./ce lock unity -- ./run"), use("b", "Bash", command="cat old.log"), use("c", "Read", file_path="x"),
+                   result("b", wait), result("c", wait), result("a", wait),  # results come back in another order
+                   use("d", "Bash", command="cd x && cat old.log"), result("d", wait)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            self.assertEqual(ce_report.analyse(path)["heavy_lock_waited_s"], 60)
+
     def test_report_counts_the_rules(self):
         import tempfile, ce_report
         with tempfile.TemporaryDirectory() as tmp:

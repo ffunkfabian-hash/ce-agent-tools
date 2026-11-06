@@ -176,9 +176,19 @@ QUOTING = re.compile(r"^\s*(cat|head|tail|less|more|grep|rg|egrep|sed|awk|echo|p
 def lock_wait_seconds(text: str, command: str) -> int:
     """Seconds waited for locks according to a Bash result: each announcement line once, and not when the command only
     shows older text (cat/grep/echo of a log or of this very message)."""
-    if QUOTING.match(command):
+    if any(QUOTING.match(part) for part in re.split(r"&&|\|\||;|\n", command)):
         return 0
     return sum(int(match[1]) for match in LOCK_WAIT.finditer(text))
+
+
+def tool_result_ids(record: dict):
+    """(tool_use_id, text) of the tool results in one record; the id is "" when the transcript carries none."""
+    content = (record.get("message") or {}).get("content") if isinstance(record.get("message"), dict) else None
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            inner = block.get("content")
+            yield str(block.get("tool_use_id") or ""), inner if isinstance(inner, str) else "".join(
+                c.get("text", "") for c in inner or [] if isinstance(c, dict))
 
 
 def analyse(path: Path, since=None) -> dict:
@@ -191,6 +201,7 @@ def analyse(path: Path, since=None) -> dict:
     last_command = ""
     last_tool = ""
     full_command = ""
+    bash_commands = {}  # tool_use_id -> command: parallel calls must not swap their results
     usage_requests = {}
     for record in events(path, since):
         message = record.get("message") if isinstance(record.get("message"), dict) else {}
@@ -235,11 +246,19 @@ def analyse(path: Path, since=None) -> dict:
                     pass
             if name.startswith("mcp__") and "search" in name:
                 searches += 1
+        message_content = message.get("content")
+        for block in message_content if isinstance(message_content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                bash_commands[str(block["id"])] = (str((block.get("input") or {}).get("command") or "") if block.get("name") == "Bash" else None)
+        if record.get("type") == "GENERIC" and isinstance(record.get("content"), str) and last_tool == "Bash":
+            waited += lock_wait_seconds(record["content"], full_command)
+        for use_id, text in tool_result_ids(record):
+            command = bash_commands.get(use_id) if use_id in bash_commands else (full_command if not use_id and last_tool == "Bash" else None)
+            if command is not None:
+                waited += lock_wait_seconds(text, command)
         for text in tool_results(record):
             if len(text.encode("utf-8")) > largest[0]:
                 largest = (len(text.encode("utf-8")), last_command)
-            if last_tool == "Bash":
-                waited += lock_wait_seconds(text, full_command)
     repeated = sum(count - 1 for count in check_signatures.values() if count > 1)
     return {"transcript": str(path), "messages": messages, "tools": dict(tools), "agents": dict(agents), "checks": checks,
             "checks_repeated_same_command": repeated, "searches": searches, "big_doc_reads": big_reads,
