@@ -8,6 +8,10 @@ Checks: open and no draft, head SHA (against --sha), base branch contained, conf
 diff, deleted or weakened tests, version file and changelog against .ce-repo.json, core paths (.ce-repo.json > core_paths
 of the base branch, so a pull request cannot take its own files off the list).
 
+A whole test file deleted together with the code it checks is no weakening (0.39 Sunset): the file is removed, its patch is readable and
+its removed lines name a deleted non-test file that is not .md (named_sources). Its numbers leave the count, a warning lists the file, its numbers and the source for
+the judge, and such a pull request always needs the user's Ja, never stage 1.
+
 Classification (regeln-details > Patch-Aufträge): Version = over VERSION_LINES changed lines or a core path touched, else Patch.
 A core path on a mere patch number is red; size alone only warns.
 
@@ -69,6 +73,8 @@ TEST_DEF = re.compile(r"^\s*(?:async\s+)?def\s+test|^\s*\[(?:Test|UnityTest|Test
 ASSERTION = re.compile(r"\bassert|\bAssert\.|\bexpect\(")
 SKIP = re.compile(r"^\s*@(?:unittest\.skip|pytest\.mark\.(?:skip|xfail))\b|^\s*\[Ignore\b|^\s*(?:it|test|describe)\.(?:skip|only)\(|"
                   r"^\s*x(?:it|describe)\(|^\s*self\.skipTest\(")
+PATH_TOKEN = re.compile(r"[\w./-]*[\w-]\.\w+")  # a path or file name with an extension
+IMPORT_LINE = re.compile(r"^\s*(?:import|from|using)\s|\brequire\(")
 CI_BAD = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 CI_FINE = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -361,11 +367,27 @@ def ci_passed(rollup):
     return any("SUCCESS" in (item.get("conclusion"), item.get("state")) for item in rollup or [])
 
 
+def removed_sources(files):
+    """Deleted files a test can have checked: neither tests nor .md, the same line code_lines draws."""
+    return [f["filename"] for f in files if f.get("status") == "removed" and not TEST_PATH.search(f["filename"]) and not f["filename"].lower().endswith(".md")]
+
+
+def named_sources(patch, sources):
+    """The sources the removed lines of a patch name: by path, a tail of it or the file name, whole tokens only, so data.py is not a.py and
+    other/a.py not src/a.py; by module name only on an import line, a bare word proves nothing (subprocess.run against run.py)."""
+    lines = [line[1:] for line in patch.split("\n") if line[:1] == "-"]
+    paths = {re.sub(r"^(?:\.{0,2}/)+", "", token) for line in lines for token in PATH_TOKEN.findall(line)}
+    modules = {word for line in lines if IMPORT_LINE.search(line) for word in re.findall(r"\w+", line)}
+    return [name for name in sources if any(name == path or name.endswith("/" + path) for path in paths) or Path(name).stem in modules]
+
+
 def test_changes(files):
-    """(reasons, unread files): removed test code that nothing replaces, and new skip markers. Counts run over the whole
-    pull request, so a test that moves to another file is no loss."""
+    """(reasons, unread files, spared): removed test code that nothing replaces, and new skip markers. Counts run over the whole
+    pull request, so a test that moves to another file is no loss. A test file deleted with the code it checks leaves the count:
+    spared lists it as (file, test cases, assertions, sources)."""
     defs = asserts = 0
-    skips, deleted, unread, renamed = [], [], [], []
+    skips, deleted, unread, renamed, spared = [], [], [], [], []
+    sources = removed_sources(files)
     for f in files:
         name, old = f["filename"], f.get("previous_filename") or ""
         if TEST_PATH.search(old) and TEST_CODE.search(old) and (not TEST_PATH.search(name) or (TEST_NAME.search(old) and not TEST_NAME.search(name))):
@@ -379,15 +401,23 @@ def test_changes(files):
             if f.get("changes"):
                 unread.append(name)
             continue
+        file_defs = file_asserts = 0
         for line in patch.split("\n"):
             sign, text = line[:1], line[1:]
             if sign not in "+-" or not sign:
                 continue
             step = 1 if sign == "+" else -1
-            defs += step if TEST_DEF.search(text) else 0
-            asserts += step if ASSERTION.search(text) else 0
+            file_defs += step if TEST_DEF.search(text) else 0
+            file_asserts += step if ASSERTION.search(text) else 0
             if sign == "+" and SKIP.search(text):
                 skips.append(name)
+        gone = named_sources(patch, sources) if f.get("status") == "removed" and min(file_defs, file_asserts) < 0 else []
+        if gone:
+            spared.append((name, -file_defs, -file_asserts, gone))
+            deleted.remove(name)
+            continue
+        defs += file_defs
+        asserts += file_asserts
     reasons = []
     if defs < 0 or asserts < 0:
         where = f" (gelöscht: {', '.join(deleted[:5])})" if deleted else ""
@@ -398,7 +428,7 @@ def test_changes(files):
         reasons.append(f"Tests aus dem Testlauf verschoben: {', '.join(renamed[:5])}")
     if skips:
         reasons.append(f"Tests übersprungen: {', '.join(sorted(set(skips))[:5])}")
-    return reasons, [name for name in unread if name not in deleted]
+    return reasons, [name for name in unread if name not in deleted], spared
 
 
 def version_key(text):
@@ -505,8 +535,10 @@ def evaluate(facts, expected_sha=""):
         reasons.append("Mehr als 3000 Dateien im PR: GitHub listet nicht alle, nicht prüfbar")
     if any(f["filename"] == "report.md" and f.get("status") != "removed" for f in files):
         reasons.append("report.md im Diff")
-    test_reasons, unread = test_changes(files)
+    test_reasons, unread, spared = test_changes(files)
     reasons += test_reasons
+    warnings += [f"Testdatei mit ihrer Quelle gelöscht, nicht gezählt: {name} ({cases} Testfälle, {checks_gone} Prüfungen), Quelle: {', '.join(gone)}"
+                 for name, cases, checks_gone, gone in spared]
     if unread:
         warnings.append(f"Testdateien ohne Diff von GitHub, nicht bewertet: {', '.join(unread[:5])}")
     config = facts.get("base_config") or {}
@@ -541,7 +573,8 @@ def evaluate(facts, expected_sha=""):
                  (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),
                  (pr.get("baseRefName") != pr.get("defaultBranch"), "Basis ist nicht der Standardbranch"),
                  (not pr.get("sameRepo"), "PR aus einem anderen Repo"), (facts.get("local_head") != head, "Head ist nicht der Stand dieses Ordners"),
-                 (bool(facts.get("cloud")), "Cloud-Sitzung: Merge-Bitte an Sightline"), (unchecked, "Teile nicht geprüft"))
+                 (bool(facts.get("cloud")), "Cloud-Sitzung: Merge-Bitte an Sightline"), (unchecked, "Teile nicht geprüft"),
+                 (bool(spared), f"Tests gelöscht, weil ihre Quelle entfällt: {', '.join(item[0] for item in spared)}; ob die Tests wirklich nur diese Quelle prüften, entscheidet der Nutzer"))
     why = [text for failed, text in stage_one if failed]
     return {"repo": facts["repo"], "pr": pr["number"], "url": pr.get("url"), "head": head, "base": pr["baseRefName"],
             "green": not reasons, "classification": classification, "lines": lines, "code_lines": code_lines, "files": len(files),

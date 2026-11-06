@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.39.0 „Sunset“ – unveröffentlicht (06.11.2026)
+
+Entscheidung 304.
+
+- **`merge-check`: gelöschte Tests, deren Code im selben PR entfällt:** `test_changes` zählt eine Testdatei nicht mehr als Abschwächung, wenn sie ganz gelöscht ist, ihr Patch lesbar ist und ihre entfernten Zeilen eine ebenfalls gelöschte Nicht-Test-Datei nennen (Pfad, Pfadende oder Dateiname als ganzes Wort, Modulname nur auf einer Importzeile). `.md` zählt nicht als Quelle. Alles andere bleibt rot wie bisher, auch „Inhalt nicht lesbar“, „verschoben“ und „übersprungen“.
+- **Nie Stufe 1:** Ein solcher PR braucht das Ja des Nutzers (`ja_noetig_weil`), `warnings` nennt jede ausgenommene Datei mit Testfällen, Prüfungen und entfallener Quelle für den Richter.
+- Tests: 12 neue Fälle in `test_merge_check`. [Version](docs/versions/0.39.md).
+
 ## 0.37.0 „Waybill“ – unveröffentlicht (06.11.2026)
 
 Entscheidungen 300 und 301.
