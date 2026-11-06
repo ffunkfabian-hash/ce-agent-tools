@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.36.0 „Capstan“ – unveröffentlicht (06.11.2026)
+
+Trimline 29 und 1b.
+
+- **Harter Kern über SessionStart** (Punkt 29): `hooks/kern.md` ist eine Kopie von Nexogen `templates/kern.md`, `tests/test_kern.py` vergleicht sie am Mac bytegleich mit `origin/main` der Quelle und nennt bei Abweichung den Abgleichbefehl. `session.py` stellt die zehn Regeln an den Anfang des Startkontexts, außer die globale `CLAUDE.md`, die Repo-Dateien und ihre Importe tragen schon jede Regel wortgleich. Im Zweifel erscheint der Kern; fehlt die Kopie, kommt eine Warnung und der übrige Kontext bleibt. Scheitert ein anderer Teil des Startkontexts, kommt der Kern trotzdem.
+- **Nachtlauf warnt statt abzubrechen** (Punkt 1b): `run_one` stoppt bei falschem Branch oder geändertem Checkout nicht mehr, wenn `own_main_script` belegt, dass `check.nightly` nur ein `nightly.sh` unter `sh`, `bash` oder `zsh` ist, das origin/main in einem eigenen Worktree testet, dass Einstieg, `.ce-repo.json` und Skript einem Stand von origin/main entsprechen und keine unversionierte `.py` im Wurzelordner liegt. Zustand `green (Warnung)`, Hinweis auch in der Mitteilung, Exitcode unverändert. Skripte, die im Checkout selbst testen (Toolgen, Robogen), und direkte Befehle (Formgen) bleiben `red (checkout)`, ebenso ein `main` mit der alten Skriptfassung (Cube Escape bis zum Nachziehen).
+- Tests: `test_kern`, `test_nightly_checkout` (echte Git-Repos, echter `ce_check`-Lauf). [Version](docs/versions/0.36.md).
+
 ## 0.35.2 – Patch richter-tests (05.11.2026)
 
 - **Richter-Tests hängen nicht mehr am echten Codex-Kontingent:** Unter 15 % Rest wählte `ce_judge` seit 0.32 auch im Test den API-Weg, vier Tests wurden so am Mac rot. `tests/judge_quota.py` gibt den Stand aus `~/.codex` fest vor, Schwelle und Wegwahl laufen echt. `test_judge_picks_the_model_from_the_diff_and_dry_runs` und `test_judge_stderr_only_cannot_approve` prüfen jetzt beide Wege, nur Tests geändert.
