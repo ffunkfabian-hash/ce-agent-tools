@@ -1064,6 +1064,46 @@ class ReportAndSessionHookTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
                     self.assertEqual(bool(session.pulse(payload)), expect, name)
 
+    def test_pulse_sightline_above_300000_names_its_limit(self):
+        import subprocess, tempfile
+        sys.path.insert(0, str(PLUGIN / "hooks"))
+        import session
+        usage = '"usage":{"input_tokens":10000,"cache_creation_input_tokens":0,"cache_read_input_tokens":300000,"output_tokens":5}'
+        records = ['{"type":"user","message":{"content":"x"}}', '{"type":"assistant","message":{' + usage + '}}']
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root / "repo")], check=True)
+            (root / "repo" / ".git" / "ce-session.json").write_text('{"name": "Sightline"}', encoding="utf-8")
+            transcript = root / "t.jsonl"
+            transcript.write_text("\n".join(records * 5) + "\n", encoding="utf-8")
+            payload = {"hook_event_name": "PostToolUse", "transcript_path": str(transcript), "session_id": "lim-2", "cwd": str(root / "repo")}
+            with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
+                text = session.pulse(payload)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("310,000 Input-Tokens (> 300,000)", text)
+
+    def test_stop_hook_input_limit_by_session_name(self):
+        """0.36.2: the Stop way through the hook process: Sightline at 200,000 input tokens is quiet in the log, any other session is flagged."""
+        import subprocess, tempfile
+        hook = Path(__file__).resolve().parent.parent / "plugins" / "ce-shared" / "hooks" / "session.py"
+        usage = '"usage":{"input_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":199000,"output_tokens":5}'
+        records = ['{"type":"user","message":{"content":"x"}}', '{"type":"assistant","message":{"id":"m1","model":"claude-sonnet","role":"assistant",' + usage + '}}']
+        for name, flagged in (("Sightline", False), ("CE-AGENT-TOOLS Patch x · Mac", True)):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "repo"
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                (root / ".git" / "ce-session.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+                transcript = Path(tmp) / "t.jsonl"
+                transcript.write_text("\n".join(records) + "\n", encoding="utf-8")
+                payload = {"hook_event_name": "Stop", "cwd": str(root), "transcript_path": str(transcript), "session_id": "s-lim",
+                           "stop_hook_active": False}
+                env = dict(os.environ, CE_HOOK_STATE=str(Path(tmp) / "state"))
+                proc = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload), capture_output=True, text=True,
+                                      encoding="utf-8", env=env)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                log = (root / ".git" / "ce-session-stats.log").read_text(encoding="utf-8")
+                self.assertEqual("Spitzen-Input 200,000 Tokens (> 150,000)" in log, flagged, name)
+                self.assertEqual("Spitzen-Input" in log, flagged, name)
+
 
 class MediaAndJudgeTests(unittest.TestCase):
     """0.5.0: ce_imagediff (numbers instead of two pictures), ce_media (one way to make evidence), ce_judge (checklist reviewer)."""

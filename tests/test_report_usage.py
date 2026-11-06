@@ -214,5 +214,23 @@ class SessionInputLimitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:  # no git at all
             self.assertEqual(ce_report.input_limit(tmp), 150_000)
 
+    def test_cli_main_uses_the_limit_of_the_working_folder(self):
+        """0.36.2: `ce_report.main` (the CLI) reads the session name from the current folder: Sightline quiet, others flagged at 200,000."""
+        import contextlib, io, os
+        usage = {"input_tokens": 200_000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1}
+        for name, flagged in (("Sightline", False), ("Anderes", True)):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self.repo(tmp, json.dumps({"name": name}))
+                path = Path(tmp) / "t.jsonl"
+                path.write_text(json.dumps(record("a", usage)) + "\n", encoding="utf-8")
+                out, cwd = io.StringIO(), os.getcwd()
+                os.chdir(root)
+                try:
+                    with contextlib.redirect_stdout(out):
+                        self.assertEqual(ce_report.main([str(path)]), 0)
+                finally:
+                    os.chdir(cwd)
+                self.assertEqual("Spitzen-Input 200,000 Tokens (> 150,000)" in out.getvalue(), flagged, name)
+
 if __name__ == "__main__":
     unittest.main()

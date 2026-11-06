@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.36.2 – Patch sightline-grenze-tests (06.11.2026)
+
+- **Testlücken der Sightline-Grenze geschlossen:** Stop-Weg über den Hook (Sightline mit 200.000 ohne `Spitzen-Input` im `ce-session-stats.log`, andere Sitzung mit Treffer), CLI `ce_report.main`, Pulse-Text `(> 300,000)`.
+- Klein: Git-Timeout in `ce_report.input_limit` 2 s (unter dem 5-s-Hook-Timeout), Hinweisschlüssel `input>{limit}` im Pulse, Docstring nennt die Sightline-Ausnahme. Bekannte Grenze: die 300.000 hängen am Ordner, nicht an der Sitzung.
+
 ## 0.36.1 – Patch sightline-grenze (06.11.2026)
 
 - **Kontextgrenze 300.000 Input-Tokens nur für Sightline** (Entscheidung 295): `ce_report.input_limit` liest den Namen aus `<git-dir>/ce-session.json`; genau `Sightline` → 300.000, sonst (auch fehlende oder kaputte Datei) 150.000. Gilt für den Hinweis in der Sitzung (`session.py` pulse) und im Bericht/Stop-Log (`ce_report.hints`). Grenze von 300 Nachrichten unverändert.

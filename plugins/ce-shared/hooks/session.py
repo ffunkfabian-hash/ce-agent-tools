@@ -10,7 +10,7 @@ version with the newest this machine knows and warns visibly when the session ru
 no global CLAUDE.md - unless the memory files the hook can name already carry every rule. Unsure means it is shown.
 PostToolUse (0.33 Earshot, `pulse`): every PULSE_EVERY tool calls a cheap look at the transcript - record count and the
 input of the last request - and, crossing a limit, one hint as additionalContext for the model: over 300 records
-(Trimline: "über 300 Nachrichten" came 1,177 times as a Stop warning that only the user saw), over 150,000 input tokens.
+(Trimline: "über 300 Nachrichten" came 1,177 times as a Stop warning that only the user saw), over 150,000 input tokens (300,000 for the session named "Sightline", ce_report.input_limit).
 Each hint once per session and threshold step (hint_state).
 Stop: runs ce_report.py on the transcript and appends its line and hints to ce-session-stats.log in the git dir - the
 measurement. 0.35: no longer to report.md, whose text becomes the PR description (statistics stood in PR #37); no
@@ -268,7 +268,7 @@ def pulse(payload: dict) -> dict:
         hints.append(f"Sitzung über {MESSAGE_LIMIT} Nachrichten ({records}): Etappe abschließen und an eine frische "
                      "Sitzung übergeben (› Sitzungen kurz halten, Übergabe nur ohne Verlauf).")
     limit = input_limit(payload) if last_input > INPUT_LIMIT else INPUT_LIMIT  # no git call below the default
-    if last_input > limit and due(payload, "input>limit"):
+    if last_input > limit and due(payload, f"input>{limit}"):
         hints.append(f"Letzte Anfrage {last_input:,} Input-Tokens (> {limit:,}): Kontext ist groß – Etappe "
                      "abschließen und an eine frische Sitzung übergeben (› Sitzungen kurz halten).")
     if not hints:

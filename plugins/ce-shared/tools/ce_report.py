@@ -262,7 +262,7 @@ def input_limit(cwd=None) -> int:
     (no file, broken file, no name, no git: the default). The same reading way as heavy_lock.session_of; the message limit stays."""
     try:
         git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=str(cwd or os.getcwd()), capture_output=True,
-                                 text=True, timeout=5).stdout.strip()
+                                 text=True, timeout=2).stdout.strip()  # < 5 s PostToolUse timeout (hooks.json): fall back before Claude ends the hook
         with open(os.path.join(git_dir, "ce-session.json"), encoding="utf-8") as handle:
             saved = json.load(handle)
         if git_dir and isinstance(saved, dict) and saved.get("name") == "Sightline":
