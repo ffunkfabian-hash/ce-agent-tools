@@ -241,15 +241,6 @@ fehlende Werte sind unbekannt. API-Werte stammen aus dem lokalen Budget-Ledger, 
 Ledgeränderung; sie ersetzen keine Anbieterabrechnung. Der lokale Webserver liefert ausschließlich `/` und
 `/api/state` und führt keine Aktionen aus. Portable HTML-Dateien enthalten lokale Pfade und gehören in private Ablagen.
 
-```json
-{"manifest_version":1,"kind":"pure_logic","prompt_sha256":"<64 hex characters>",
- "required_capabilities":{"unity":false,"blender":false,"visuals":false,"viewer":false},
- "scopes":[{"path":"src/rules.py","kind":"logic_code"}]}
-```
-
-Weitere Kategorien: `logic_test`, `logic_data`, `documentation`. Dies ist eine geprüfte Auftragsdeklaration,
-keine semantische Promptgarantie oder Remote-Sandbox. Dry-run bestätigt keine Cloud-Umgebung. Reales Submit prüft
-weiterhin Branchfreigabe, sauberen veröffentlichten HEAD, Login und die ausdrücklich gewählte verfügbare Umgebung.
 `ce_contract.py` ergänzt Schema-/Typprüfungen durch gültige Referenzziele und zyklusfreie Elternketten; das ersetzt
 keinen semantischen Produzenten-/Abnehmertest. Unity-spezifische Kamera-/MCP-Erweiterungen bleiben im Unity-Fachrepo.
 
