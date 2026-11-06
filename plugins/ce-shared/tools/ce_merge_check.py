@@ -74,7 +74,8 @@ ASSERTION = re.compile(r"\bassert|\bAssert\.|\bexpect\(")
 SKIP = re.compile(r"^\s*@(?:unittest\.skip|pytest\.mark\.(?:skip|xfail))\b|^\s*\[Ignore\b|^\s*(?:it|test|describe)\.(?:skip|only)\(|"
                   r"^\s*x(?:it|describe)\(|^\s*self\.skipTest\(")
 PATH_TOKEN = re.compile(r"[\w./-]*[\w-]\.\w+")  # a path or file name with an extension
-IMPORT_LINE = re.compile(r"^\s*(?:import|from|using)\s|\brequire\(")
+QUOTED_MODULE = re.compile(r"""(?:\bfrom\s+|\brequire\()['"]([\w./-]+)['"]""")  # JS and TS
+PYTHON_IMPORT = re.compile(r"\s*from\s+([\w.]+)\s+import\s+(.+)|\s*import\s+([\w., ]+)$")
 CI_BAD = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 CI_FINE = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -368,25 +369,43 @@ def ci_passed(rollup):
 
 
 def removed_sources(files):
-    """Deleted files a test can have checked: neither tests nor .md, the same line code_lines draws."""
+    """Deleted files a test can have checked: neither tests nor .md."""
     return [f["filename"] for f in files if f.get("status") == "removed" and not TEST_PATH.search(f["filename"]) and not f["filename"].lower().endswith(".md")]
+
+
+def module_paths(line):
+    """What an import line loads, as paths without extension: `from a.b import c` is a/b or a/b/c, `import a.b as c` is a/b. An alias or
+    an imported name alone is no module (`from subprocess import run` says nothing about src/run.py)."""
+    quoted = QUOTED_MODULE.search(line)
+    if quoted:
+        return [re.sub(r"^(?:\.{0,2}/)+", "", quoted[1])]
+    found = PYTHON_IMPORT.match(line.split("#")[0])
+    if not found:
+        return []
+    base = (found[1] or "").strip(".").replace(".", "/")
+    names = [part.split()[0].replace(".", "/") for part in re.sub(r"[()]", "", found[2] or found[3]).split(",") if part.strip()]
+    return ([base] if base else []) + [f"{base}/{name}".lstrip("/") for name in names]
 
 
 def named_sources(patch, sources):
     """The sources the removed lines of a patch name: by path, a tail of it or the file name, whole tokens only, so data.py is not a.py and
-    other/a.py not src/a.py; by module name only on an import line, a bare word proves nothing (subprocess.run against run.py)."""
+    other/a.py not src/a.py; by module only as what an import line loads, under the same tail rule."""
     lines = [line[1:] for line in patch.split("\n") if line[:1] == "-"]
     paths = {re.sub(r"^(?:\.{0,2}/)+", "", token) for line in lines for token in PATH_TOKEN.findall(line)}
-    modules = {word for line in lines if IMPORT_LINE.search(line) for word in re.findall(r"\w+", line)}
-    return [name for name in sources if any(name == path or name.endswith("/" + path) for path in paths) or Path(name).stem in modules]
+    modules = {path for line in lines for path in module_paths(line)}
+
+    def tail_of(name, candidates):
+        return any(name == path or name.endswith("/" + path) for path in candidates)
+    return [name for name in sources if tail_of(name, paths) or (TEST_CODE.search(name) and tail_of(os.path.splitext(name)[0], modules))]
 
 
 def test_changes(files):
     """(reasons, unread files, spared): removed test code that nothing replaces, and new skip markers. Counts run over the whole
     pull request, so a test that moves to another file is no loss. A test file deleted with the code it checks leaves the count:
-    spared lists it as (file, test cases, assertions, sources)."""
-    defs = asserts = 0
-    skips, deleted, unread, renamed, spared = [], [], [], [], []
+    spared lists it as (file, test cases, assertions, sources). Its numbers must not pay for a loss elsewhere: beside a spared file the
+    other files no longer balance each other, every loss counts."""
+    defs = asserts = lost_defs = lost_asserts = 0
+    skips, deleted, unread, renamed, spared, shrunk = [], [], [], [], [], []
     sources = removed_sources(files)
     for f in files:
         name, old = f["filename"], f.get("previous_filename") or ""
@@ -418,9 +437,16 @@ def test_changes(files):
             continue
         defs += file_defs
         asserts += file_asserts
+        lost_defs += min(file_defs, 0)
+        lost_asserts += min(file_asserts, 0)
+        if min(file_defs, file_asserts) < 0 and name not in deleted:
+            shrunk.append(name)
+    if spared:
+        defs, asserts = lost_defs, lost_asserts
     reasons = []
     if defs < 0 or asserts < 0:
         where = f" (gelöscht: {', '.join(deleted[:5])})" if deleted else ""
+        where += f" (gekürzt: {', '.join(shrunk[:5])})" if spared and shrunk else ""
         reasons.append(f"Tests abgeschwächt: {-min(defs, 0)} Testfälle und {-min(asserts, 0)} Prüfungen weniger{where}")
     elif any(name in unread for name in deleted):
         reasons.append(f"Testdatei gelöscht, Inhalt nicht lesbar: {', '.join(n for n in deleted if n in unread)}")

@@ -129,7 +129,8 @@ class EvaluateTests(unittest.TestCase):
 
     def test_the_source_counts_by_path_tail_file_name_or_import(self):
         lines = ('"tools/old_tool.py"', '"pkg/tools/old_tool.py"', '"./tools/old_tool.py"', 'ROOT / "pkg" / "old_tool.py"', "import old_tool as t",
-                 "    from pkg.tools import old_tool", "from pkg.old_tool import x", "const t = require('./old_tool');", "import t from './old_tool';")
+                 "    from pkg.tools import old_tool", "from pkg.tools.old_tool import x", "from . import old_tool", "from .old_tool import x",
+                 "import os, old_tool", "const t = require('./old_tool');", "import t from './old_tool';")
         for line in lines:
             test = test_file("tests/test_old.py", f"@@\n-{line}\n-def test_x():\n-    assert y", status="removed")
             self.assertTrue(self.spared_result(test, removed("pkg/tools/old_tool.py"))["green"], line)
@@ -149,10 +150,16 @@ class EvaluateTests(unittest.TestCase):
 
     def test_a_similar_word_is_no_source(self):
         cases = (("src/a.py", 'P = "data.py"'), ("src/a.py", 'P = "my-a.py"'), ("src/a.py", 'P = "other/a.py"'), ("src/run.py", "subprocess.run(x)"),
-                 ("bin/tool", 'P = "bin/tool"'))
+                 ("src/run.py", "from subprocess import run"), ("src/a.py", "from other.a import x"), ("tools/mock.py", "from unittest import mock"),
+                 ("src/config.py", "import core as config"), ("src/config.py", 'from the config file"""'), ("pkg/tools/old_tool.py", "from pkg.old_tool import x"),
+                 ("legacy/config.json", "import config"))
         for source, line in cases:
             test = test_file("tests/test_old.py", f"@@\n-{line}\n-def test_x():\n-    assert y", status="removed")
             self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed(source))["reasons"]), line)
+
+    def test_a_path_without_an_extension_stays_red(self):
+        test = test_file("tests/test_old.py", '@@\n-P = "bin/tool"\n-def test_x():\n-    assert y', status="removed")
+        self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed("bin/tool"))["reasons"]))
 
     def test_only_removed_lines_name_a_source(self):
         test = test_file("tests/test_old.py", '@@\n "src/a.py"\n+"src/a.py"\n-def test_x():\n-    assert y', status="removed")
@@ -170,7 +177,15 @@ class EvaluateTests(unittest.TestCase):
         fit = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_a():\n-    assert a", status="removed")
         edited = test_file("tests/test_core.py", "@@\n-        self.assertEqual(a, 1)")
         reasons = self.spared_result(fit, edited, removed("tools/old_tool.py"))["reasons"]
-        self.assertEqual(reasons, ["Tests abgeschwächt: 0 Testfälle und 1 Prüfungen weniger"])
+        self.assertEqual(reasons, ["Tests abgeschwächt: 0 Testfälle und 1 Prüfungen weniger (gekürzt: tests/test_core.py)"])
+
+    def test_new_tests_do_not_pay_for_a_loss_beside_a_spared_file(self):
+        fit = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_a():\n-    assert a\n-def test_b():\n-    assert b", status="removed")
+        new = test_file("tests/test_new.py", "@@\n+import new_tool\n+def test_a():\n+    assert a\n+def test_b():\n+    assert b", status="added")
+        cut = test_file("tests/test_core.py", "@@\n-def test_c():\n-    assert c\n-def test_d():\n-    assert d")
+        reasons = self.spared_result(fit, new, cut, removed("tools/old_tool.py"))["reasons"]
+        self.assertEqual(reasons, ["Tests abgeschwächt: 2 Testfälle und 2 Prüfungen weniger (gekürzt: tests/test_core.py)"])
+        self.assertTrue(self.spared_result(fit, new, removed("tools/old_tool.py"))["green"])
 
     def test_a_merely_changed_test_stays_red_when_the_source_goes(self):
         test = test_file("tests/test_core.py", "@@\n-import old_tool\n-def test_x():\n-    assert y")
