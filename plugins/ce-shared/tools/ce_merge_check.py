@@ -16,9 +16,15 @@ path, core_paths listed in the base, .ce-repo.json unchanged. No human stands at
 does not say: the session's own pull request (same repository, head = this folder) into the default branch (a receipt survives
 `gh pr edit --base`), no cloud session (stage 3), nothing left unchecked, and a successful check where CI can come at all (right
 after a push none has reported yet; a repository without workflows and a pull request of .md files wait for nothing).
-`ja_noetig_weil` names what stands against it. Everything
+`ja_noetig_weil` names what stands against it. A pull request that only moves .ce-repo.json > tools_version (0.37 Waybill) keeps
+stage 1 and, when .ce-repo.json is a core path, the classification Patch - if ce-agent-tools answers that the new commit is on its main,
+carries the named version and does not go back (pin_problem); anything else, a failed query too, is stage 2 as before. Everything
 else is stage 2 (after the user's Ja) or stage 3 (merge request to Sightline). From JUDGE_LINES lines of code (diff without .md) a
 warning asks for the judge; whether one ran is not visible here, that stays a rule.
+
+Repositories without GitHub CI (0.37 Waybill): no workflow file at the base, whatever the Actions list still names (it keeps a
+workflow that once ran on a branch). There a change beyond .md needs the receipt of `./ce verify` for this very head (ce_verify.py), or
+merge-check is red; a new head has none. Where CI runs nothing changes.
 
 Output: the result as JSON on stdout, one text line on stderr. Exit 0 green, 1 red, 2 not checkable (never green).
 
@@ -41,12 +47,16 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_common  # noqa: E402
 import ce_session_name  # noqa: E402
+import heavy_lock  # noqa: E402  (0.37: cache folder of the verify receipts)
 
 BIG_FILE = 5_000_000  # bytes; the same limit as BIG_BINARY in githooks/ce_githooks.py (a test compares them)
 VERSION_LINES = 300  # classification: over this a change is a Version (Punkt 15)
 NO_JA_LINES = 100  # stage 1: over this a merge needs the user's Ja (Punkt 13)
 JUDGE_LINES = 100  # from this many lines of code a patch needs the judge too (regeln-details > Patch-Aufträge)
 RECEIPT_FILE = "ce-merge-check.json"  # read by guard.py
+TOOLS_REPO = "ffunkfabian-hash/ce-agent-tools"  # the same as ce_loader.REPO (a test compares them)
+TOOLS_BRANCH = "main"
+TOOLS_PLUGIN = "plugins/ce-shared/.claude-plugin/plugin.json"
 PAGE = 100
 MAX_PAGES = 30
 MERGEABLE_TRIES = 4
@@ -191,6 +201,65 @@ def workflow_count(repo):
     return 1 if found is None else len(found)
 
 
+def workflow_files(repo, ref):
+    """Workflow files at a ref, what GitHub actually runs; the Actions list keeps a workflow that once ran on a branch (Formgen v2
+    after its closed PR 13). None when the answer is unreadable: nothing is concluded from that."""
+    text = gh("api", f"repos/{repo}/contents/.github/workflows?ref={quote(ref)}")
+    if text is None:
+        return 0
+    try:
+        found = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(found, list):
+        return None
+    return sum(1 for item in found if isinstance(item, dict) and str(item.get("name")).endswith((".yml", ".yaml")))
+
+
+def verify_path(repo, head):
+    """Where ./ce verify keeps the receipt of a head; CE_VERIFY_CACHE moves the folder."""
+    folder = Path(os.environ.get("CE_VERIFY_CACHE") or heavy_lock.cache_dir("ce_verify"))
+    return folder / "receipts" / repo.replace("/", "__") / f"{head}.json"
+
+
+def read_verify(repo, head):
+    try:
+        return json.loads(verify_path(repo, head).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def pin_of(config):
+    """(version, commit) of tools_version in the shape ce_loader accepts, else None."""
+    value = (config or {}).get("tools_version")
+    version, commit = (value.get("version"), value.get("commit")) if isinstance(value, dict) else (None, None)
+    return (version, commit) if isinstance(version, str) and re.fullmatch(r"\d+\.\d+(?:\.\d+)*", version) and isinstance(commit, str) \
+        and re.fullmatch(r"[0-9a-f]{40}", commit) else None
+
+
+def pin_problem(base_config, head_config):
+    """"" when the new pin is a commit on main of ce-agent-tools, carries the version it names and does not go back; else why not.
+    A failed query is an answer here, not an abort: the pull request then only loses stage 1."""
+    old, new = pin_of(base_config), pin_of(head_config)
+    if not old or not new:
+        return "tools_version nicht lesbar"
+    if version_key(new[0]) < version_key(old[0]):
+        return f"Version sinkt ({old[0]} → {new[0]})"
+    try:
+        plugin = read_file(TOOLS_REPO, TOOLS_PLUGIN, new[1])
+        real = json.loads(plugin).get("version") if plugin else None
+        if real != new[0]:
+            return f"Commit {new[1][:7]} trägt Version {real}, nicht {new[0]}"
+        if gh_json("api", f"repos/{TOOLS_REPO}/compare/{new[1]}...{TOOLS_BRANCH}?per_page=1").get("status") not in ("ahead", "identical"):
+            return f"Commit {new[1][:7]} liegt nicht auf {TOOLS_BRANCH} von ce-agent-tools"
+        move = gh_json("api", f"repos/{TOOLS_REPO}/compare/{old[1]}...{new[1]}?per_page=1").get("status")
+    except (NotCheckable, ValueError, AttributeError) as error:
+        return f"nicht prüfbar: {error}"
+    if move == "ahead" or (move == "diverged" and version_key(new[0]) > version_key(old[0])):  # the old pin may sit on a branch
+        return ""
+    return f"Pin geht nicht vorwärts ({old[1][:7]} → {new[1][:7]}: {move})"
+
+
 def on_cloud():
     return ce_session_name.detect_place(platform.system(), dict(os.environ), "auto").endswith("Cloud")
 
@@ -226,7 +295,9 @@ def gather(repo, number):
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
     compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}?per_page=1")
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
-    facts = {"repo": repo, "workflows": workflow_count(repo), "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
+    workflows = workflow_count(repo)
+    facts = {"repo": repo, "workflows": workflows, "workflow_files": workflow_files(repo, base) if workflows else 0, "verify": read_verify(repo, head),
+             "pin_problem": pin_problem(base_config, head_config) if only_pin_changed(base_config, head_config) else None, "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
              "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
              "base_config": base_config, "head_config": head_config, "versions": versions, "changelog_name": changelog_name,
              "changelog": read_file(repo, changelog_name, head) if changelog_name else None}
@@ -371,6 +442,24 @@ def config_without_version(config):
     return {key: value for key, value in (config or {}).items() if not (key == "version" and isinstance(value, str))}
 
 
+def only_pin_changed(base_config, head_config):
+    """True when tools_version is all that differs, next to a version kept as a string."""
+    base, head = config_without_version(base_config), config_without_version(head_config)
+    base_rest, head_rest = ({key: value for key, value in side.items() if key != "tools_version"} for side in (base, head))
+    return bool(base) and bool(head) and base != head and base_rest == head_rest
+
+
+def verify_problem(receipt, repo, head, config):
+    """"" when the receipt of ./ce verify fits this head and the check.quick of the base; else why not."""
+    if not isinstance(receipt, dict):
+        return f"Keine Quittung von ./ce verify zu Head {head[:7]}"
+    if receipt.get("green") is not True or receipt.get("repo") != repo or receipt.get("head") != head:
+        return f"Quittung von ./ce verify gilt nicht für Head {head[:7]}"
+    if receipt.get("check") != (config.get("check") or {}).get("quick"):
+        return "Quittung von ./ce verify prüfte nicht das check.quick der Basis"
+    return ""
+
+
 def evaluate(facts, expected_sha=""):
     pr, files = facts["pr"], facts["files"]
     head = pr["headRefOid"]
@@ -394,7 +483,9 @@ def evaluate(facts, expected_sha=""):
     checks = facts.get("checks")
     failed, pending = ci_state(checks)
     pending += [name for name in facts.get("runs_open") or [] if name not in pending]  # a queued run has no check entry yet
-    if not checks and not pending:
+    no_ci = facts.get("workflow_files") == 0  # None: not read or unreadable, the old way then
+    doc_only = all(f["filename"].lower().endswith(".md") for f in files)
+    if not checks and not pending and not no_ci:
         warnings.append("Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen")
     if failed:
         reasons.append(f"CI rot: {', '.join(failed[:5])}")
@@ -413,13 +504,19 @@ def evaluate(facts, expected_sha=""):
     if unread:
         warnings.append(f"Testdateien ohne Diff von GitHub, nicht bewertet: {', '.join(unread[:5])}")
     config = facts.get("base_config") or {}
+    verify_due = no_ci and not doc_only
+    problem = verify_problem(facts.get("verify"), facts["repo"], head, config) if verify_due else ""
+    if problem:
+        reasons.append(f"{problem}: Repo ohne GitHub-CI, ./ce verify {facts['repo']} {pr['number']} am Mac (Cloud: Merge-Bitte an Sightline)")
     patterns = config.get("core_paths")
     listed = isinstance(patterns, list) and any(isinstance(p, str) and p.strip() for p in patterns)  # an empty list guards nothing either
     if not listed:
         patterns = []
         warnings.append("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1")
-    config_changed = listed and config_without_version(facts.get("head_config")) != config_without_version(config)  # the next patch would profit
-    touched = core_hits(files, patterns)
+    pin_only, pin_why = only_pin_changed(config, facts.get("head_config")), facts.get("pin_problem")
+    pin_fine = pin_only and pin_why == ""  # None: nobody asked ce-agent-tools
+    config_changed = listed and not pin_fine and config_without_version(facts.get("head_config")) != config_without_version(config)  # the next patch would profit
+    touched = [name for name in core_hits(files, patterns) if not (pin_fine and name == ce_common.CONFIG_NAME)]
     lines = (pr.get("additions") or 0) + (pr.get("deletions") or 0)
     code_lines = sum(f.get("changes") or 0 for f in files if not f["filename"].lower().endswith(".md"))
     classification = "Version" if touched or lines > VERSION_LINES else "Patch"
@@ -428,10 +525,10 @@ def evaluate(facts, expected_sha=""):
     warnings += version_warnings
     if code_lines >= JUDGE_LINES:
         warnings.append(f"{code_lines} Zeilen Code (ohne .md): Richter nötig (`./ce judge`); ob einer lief, sieht merge-check nicht")
-    ci_due = facts.get("workflows", 1) > 0 and not all(f["filename"].lower().endswith(".md") for f in files)
+    ci_due = facts.get("workflows", 1) > 0 and not no_ci and not doc_only
     unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings)
     stage_one = ((bool(reasons), "merge-check nicht grün"), (ci_due and not ci_passed(checks), "keine erfolgreichen Checks zum Head gemeldet"),
-                 (not listed, "core_paths fehlt in der Basis"), (config_changed, ".ce-repo.json im PR geändert"), (bool(touched), "Kernpfad berührt"),
+                 (not listed, "core_paths fehlt in der Basis"), (config_changed, ".ce-repo.json im PR geändert" + (f" (Pin nicht bestätigt: {pin_why})" if pin_only and pin_why else "")), (bool(touched), "Kernpfad berührt"),
                  (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),
                  (pr.get("baseRefName") != pr.get("defaultBranch"), "Basis ist nicht der Standardbranch"),
                  (not pr.get("sameRepo"), "PR aus einem anderen Repo"), (facts.get("local_head") != head, "Head ist nicht der Stand dieses Ordners"),
@@ -439,7 +536,8 @@ def evaluate(facts, expected_sha=""):
     why = [text for failed, text in stage_one if failed]
     return {"repo": facts["repo"], "pr": pr["number"], "url": pr.get("url"), "head": head, "base": pr["baseRefName"],
             "green": not reasons, "classification": classification, "lines": lines, "code_lines": code_lines, "files": len(files),
-            "ohne_ja": not why, "ja_noetig_weil": why, "core_paths_touched": touched, "reasons": reasons, "warnings": warnings}
+            "ohne_ja": not why, "ja_noetig_weil": why, "core_paths_touched": touched, "pin_bestaetigt": pin_fine, "verify_noetig": verify_due,
+            "reasons": reasons, "warnings": warnings}
 
 
 def text_line(result):

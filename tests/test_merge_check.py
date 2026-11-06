@@ -509,6 +509,247 @@ class GatherTests(unittest.TestCase):
                 mc.gh("api", "x")
 
 
+OLD_COMMIT, NEW_COMMIT = "a" * 40, "b" * 40
+OLD_PIN = {"version": "0.36.2", "commit": OLD_COMMIT}
+NEW_PIN = {"version": "0.37.0", "commit": NEW_COMMIT}
+PINNED = {**CONFIG, "tools_version": OLD_PIN}
+MOVED = {**CONFIG, "tools_version": NEW_PIN}
+
+
+def pin_facts(**change):
+    change.setdefault("base_config", PINNED)
+    change.setdefault("head_config", MOVED)
+    change.setdefault("pin_problem", "")
+    return ci_facts(**change)
+
+
+def tools_gh(on_main="ahead", move="ahead", version="0.37.0", fail=""):
+    """gh for pin_problem: what ce-agent-tools answers; `fail` names the part of a path that breaks."""
+    def answer(*args):
+        target = args[-1]
+        if fail and fail in target:
+            raise mc.NotCheckable(f"gh api: HTTP 502 ({fail})")
+        if "/contents/" in target:
+            return json.dumps({"version": version}) if version else None
+        return json.dumps({"status": on_main if target.split("?")[0].endswith("...main") else move})
+    return answer
+
+
+class PinTests(unittest.TestCase):
+    """Entscheidung 300: a pull request that only moves tools_version keeps stage 1, if ce-agent-tools confirms the pin."""
+
+    def stage_two(self, **change):
+        result = mc.evaluate(pin_facts(**change))
+        self.assertFalse(result["ohne_ja"], result)
+        return result
+
+    def test_the_pin_alone_is_stage_one(self):
+        result = mc.evaluate(pin_facts())
+        self.assertEqual((result["green"], result["ohne_ja"], result["ja_noetig_weil"], result["pin_bestaetigt"]), (True, True, [], True))
+
+    def test_a_pin_with_a_changed_core_path_list_is_stage_two(self):
+        result = self.stage_two(head_config={**MOVED, "core_paths": ["contracts/**"]})
+        self.assertEqual(result["ja_noetig_weil"], [".ce-repo.json im PR geändert"])
+        self.stage_two(head_config={**MOVED, "check": {"quick": ["true"]}})
+        self.stage_two(head_config={**MOVED, "version": {"file": "other.json", "pattern": "x"}})
+
+    def test_only_the_pin_key_is_excused_and_a_version_string_may_move_with_it(self):
+        self.assertTrue(mc.only_pin_changed({**PINNED, "version": "1.2"}, {**MOVED, "version": "1.3"}))
+        self.assertFalse(mc.only_pin_changed(PINNED, PINNED))
+        self.assertFalse(mc.only_pin_changed(PINNED, None))
+        self.assertFalse(mc.only_pin_changed(None, MOVED))
+        self.assertFalse(mc.only_pin_changed(PINNED, {**MOVED, "tools_dir": "x"}))
+        self.assertTrue(mc.only_pin_changed(CONFIG, MOVED), "the key itself; pin_problem refuses a first pin")
+        self.assertEqual(mc.pin_problem(CONFIG, MOVED), "tools_version nicht lesbar")
+
+    def test_a_pin_outside_main_of_the_tools_is_stage_two(self):
+        for status in ("diverged", "behind"):
+            with mock.patch.object(mc, "gh", tools_gh(on_main=status)):
+                problem = mc.pin_problem(PINNED, MOVED)
+            self.assertIn("liegt nicht auf main von ce-agent-tools", problem)
+            result = self.stage_two(pin_problem=problem)
+            self.assertEqual(result["ja_noetig_weil"], [f".ce-repo.json im PR geändert (Pin nicht bestätigt: {problem})"])
+        with mock.patch.object(mc, "gh", tools_gh(on_main="identical")):
+            self.assertEqual(mc.pin_problem(PINNED, MOVED), "", "the tip of main is on main")
+
+    def test_a_pin_that_goes_back_is_stage_two(self):
+        back = {"version": "0.35.0", "commit": NEW_COMMIT}
+        with mock.patch.object(mc, "gh", tools_gh(version="0.35.0")):
+            problem = mc.pin_problem(PINNED, {**CONFIG, "tools_version": back})
+        self.assertEqual(problem, "Version sinkt (0.36.2 → 0.35.0)")
+        self.stage_two(head_config={**CONFIG, "tools_version": back}, pin_problem=problem)
+        for move in ("behind", "identical"):
+            with mock.patch.object(mc, "gh", tools_gh(move=move)):
+                self.assertIn("Pin geht nicht vorwärts", mc.pin_problem(PINNED, MOVED), "an older commit behind a raised number")
+        same = {**CONFIG, "tools_version": {"version": "0.36.2", "commit": NEW_COMMIT}}
+        with mock.patch.object(mc, "gh", tools_gh(version="0.36.2", move="diverged")):
+            self.assertIn("Pin geht nicht vorwärts", mc.pin_problem(PINNED, same))
+        with mock.patch.object(mc, "gh", tools_gh(move="diverged")):
+            self.assertEqual(mc.pin_problem(PINNED, MOVED), "", "an old pin on a branch, the number rises")
+
+    def test_the_commit_must_carry_the_version_the_pin_names(self):
+        with mock.patch.object(mc, "gh", tools_gh(version="0.30.0")):
+            self.assertEqual(mc.pin_problem(PINNED, MOVED), f"Commit {NEW_COMMIT[:7]} trägt Version 0.30.0, nicht 0.37.0")
+        with mock.patch.object(mc, "gh", tools_gh(version=None)):
+            self.assertIn("trägt Version None", mc.pin_problem(PINNED, MOVED))
+
+    def test_a_malformed_pin_is_stage_two(self):
+        for value in ("0.37.0 abc", {"version": "0.37.0"}, {"version": "neu", "commit": NEW_COMMIT}, {"version": "0.37.0", "commit": "main"},
+                      {"version": "0.37.0", "commit": NEW_COMMIT[:12]}):
+            self.assertEqual(mc.pin_problem(PINNED, {**CONFIG, "tools_version": value}), "tools_version nicht lesbar", value)
+
+    def test_a_failed_query_is_stage_two_and_not_an_abort(self):
+        for part in ("/contents/", "...main", f"{OLD_COMMIT}..."):
+            with mock.patch.object(mc, "gh", tools_gh(fail=part)):
+                problem = mc.pin_problem(PINNED, MOVED)
+            self.assertIn("nicht prüfbar", problem, part)
+            result = self.stage_two(pin_problem=problem)
+            self.assertTrue(result["green"], "merge-check itself stays answerable")
+        with mock.patch.object(mc, "gh", lambda *args: "kein json"):
+            self.assertIn("nicht prüfbar", mc.pin_problem(PINNED, MOVED))
+
+    def test_without_an_answer_from_the_tools_the_pin_counts_as_unconfirmed(self):
+        self.assertEqual(self.stage_two(pin_problem=None)["ja_noetig_weil"], [".ce-repo.json im PR geändert"])
+        self.stage_two(pin_problem="x")
+
+    def test_where_the_config_is_a_core_path_the_pin_alone_stays_a_patch(self):
+        """Nexogen and Agent Tools list .ce-repo.json: without this the pin would be a Version and a raised patch number red."""
+        listed = {**CONFIG, "core_paths": [*CONFIG["core_paths"], ".ce-repo.json"]}
+        config_file = {"filename": ".ce-repo.json", "status": "modified", "changes": 2, "patch": "@@\n+x\n-y"}
+        files = [CHANGELOG, config_file]
+        change = {"base_config": {**listed, "tools_version": OLD_PIN}, "head_config": {**listed, "tools_version": NEW_PIN}, "files": files,
+                  "versions": {"base": "1.2.0", "head": "1.2.1"}, "changelog": "## 1.2.1\n"}
+        result = mc.evaluate(pin_facts(**change))
+        self.assertEqual((result["green"], result["classification"], result["ohne_ja"], result["core_paths_touched"]), (True, "Patch", True, []), result)
+        unconfirmed = mc.evaluate(pin_facts(pin_problem="x", **change))
+        self.assertEqual((unconfirmed["classification"], unconfirmed["ohne_ja"], unconfirmed["core_paths_touched"]), ("Version", False, [".ce-repo.json"]))
+        other = {"filename": "hooks/guard.py", "status": "modified", "changes": 1, "patch": "@@\n+x"}
+        mixed = mc.evaluate(pin_facts(**{**change, "files": [*files, other]}))
+        self.assertEqual((mixed["ohne_ja"], mixed["core_paths_touched"]), (False, ["hooks/guard.py"]))
+
+    def test_every_other_condition_of_stage_one_stays(self):
+        for change, text in (({"checks": []}, "keine erfolgreichen Checks zum Head gemeldet"), ({"local_head": "d" * 40}, "Head ist nicht der Stand dieses Ordners"),
+                             ({"cloud": True}, "Cloud-Sitzung: Merge-Bitte an Sightline"), ({"pr": {"additions": 200}}, "205 Zeilen, ohne Ja höchstens 100")):
+            self.assertIn(text, mc.evaluate(pin_facts(**change))["ja_noetig_weil"], change)
+        self.assertFalse(mc.evaluate(pin_facts(versions={"base": "1.3.0", "head": "1.3.0"}))["green"], "the version of the repository still has to rise")
+
+    def test_gather_asks_the_tools_only_for_a_pure_pin(self):
+        def configs(head_config):
+            fake = FakeGh()
+
+            def answer(*args):
+                target = args[-1]
+                if mc.TOOLS_REPO in target:
+                    return tools_gh()(*args)
+                if ".ce-repo.json" in target:
+                    return json.dumps(head_config if target.endswith(HEAD) else PINNED_GATHER)
+                return fake(*args)
+            return answer
+        PINNED_GATHER = {**json.loads(FakeGh().answers["config"]), "tools_version": OLD_PIN}
+        with mock.patch.object(mc, "gh", configs({**PINNED_GATHER, "tools_version": NEW_PIN})):
+            self.assertEqual(mc.gather("o/r", 7)["pin_problem"], "")
+        with mock.patch.object(mc, "gh", configs(PINNED_GATHER)):
+            self.assertIsNone(mc.gather("o/r", 7)["pin_problem"])
+        with mock.patch.object(mc, "gh", configs({**PINNED_GATHER, "tools_version": NEW_PIN, "lint": {}})):
+            self.assertIsNone(mc.gather("o/r", 7)["pin_problem"])
+
+    def test_the_tools_repository_is_the_one_the_loader_downloads(self):
+        import ce_loader
+        self.assertEqual(mc.TOOLS_REPO, ce_loader.REPO)
+        self.assertTrue((ROOT / mc.TOOLS_PLUGIN).is_file())
+
+
+def receipt(**change):
+    return {"repo": "o/r", "pr": 7, "head": HEAD, "green": True, "check": ["sh", "check"], **change}
+
+
+def no_ci_facts(**change):
+    config = {**CONFIG, "check": {"quick": ["sh", "check"]}}
+    change.setdefault("checks", [])
+    change.setdefault("workflow_files", 0)
+    change.setdefault("verify", receipt())
+    return ci_facts(base_config=config, head_config=config, **change)
+
+
+class VerifyReceiptTests(unittest.TestCase):
+    """Entscheidung 301: without GitHub CI the receipt of ./ce verify takes the place of a green check, per head SHA."""
+
+    def test_without_ci_and_without_a_receipt_merge_check_is_red(self):
+        result = mc.evaluate(no_ci_facts(verify=None))
+        self.assertFalse(result["green"])
+        self.assertTrue(result["verify_noetig"])
+        self.assertIn(f"Keine Quittung von ./ce verify zu Head {HEAD[:7]}: Repo ohne GitHub-CI, ./ce verify o/r 7 am Mac", " ".join(result["reasons"]))
+
+    def test_a_receipt_of_this_head_is_green_and_takes_the_place_of_the_check(self):
+        result = mc.evaluate(no_ci_facts())
+        self.assertEqual((result["green"], result["ohne_ja"], result["warnings"]), (True, True, []), result)
+
+    def test_a_new_head_makes_the_receipt_worthless(self):
+        self.assertIn("gilt nicht für Head", " ".join(mc.evaluate(no_ci_facts(verify=receipt(head="d" * 40)))["reasons"]))
+
+    def test_a_receipt_that_is_not_green_or_from_elsewhere_is_none(self):
+        for change in ({"green": False}, {"green": "true"}, {"repo": "o/other"}):
+            self.assertFalse(mc.evaluate(no_ci_facts(verify=receipt(**change)))["green"], change)
+        for broken in ("kaputt", [], 1):
+            self.assertFalse(mc.evaluate(no_ci_facts(verify=broken))["green"], broken)
+
+    def test_a_receipt_must_have_run_the_check_of_the_base(self):
+        self.assertIn("nicht das check.quick der Basis", " ".join(mc.evaluate(no_ci_facts(verify=receipt(check=["true"])))["reasons"]))
+
+    def test_where_ci_runs_all_stays_as_it_was(self):
+        for files in (1, 2):
+            result = mc.evaluate(ci_facts(workflow_files=files))
+            self.assertEqual((result["green"], result["ohne_ja"], result["verify_noetig"]), (True, True, False), files)
+        self.assertEqual(mc.evaluate(ci_facts(checks=[], workflow_files=1))["ja_noetig_weil"], ["keine erfolgreichen Checks zum Head gemeldet"])
+        self.assertFalse(mc.evaluate(ci_facts(workflow_files=None))["verify_noetig"], "unreadable: nothing is concluded")
+
+    def test_a_workflow_left_in_the_actions_list_is_no_ci(self):
+        """Formgen v2: the closed PR 13 stays in the list although main has no workflow file."""
+        self.assertFalse(mc.evaluate(no_ci_facts(workflows=1, verify=None))["green"])
+        self.assertTrue(mc.evaluate(no_ci_facts(workflows=1))["ohne_ja"])
+
+    def test_a_text_change_needs_no_receipt(self):
+        docs = {"filename": "docs/a.md", "status": "modified", "changes": 2, "patch": "@@\n+x"}
+        result = mc.evaluate(no_ci_facts(verify=None, files=[CHANGELOG, docs]))
+        self.assertEqual((result["green"], result["ohne_ja"], result["verify_noetig"]), (True, True, False))
+
+    def test_the_ja_does_not_replace_the_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.run(["git", "init", "-q", folder], check=True)
+            self.assertEqual(mc.update_receipt(mc.evaluate(no_ci_facts(verify=None)), "Ja", cwd=folder), "")
+
+    def test_a_cloud_session_gets_no_exception(self):
+        result = mc.evaluate(no_ci_facts(cloud=True, verify=None))
+        self.assertFalse(result["green"])
+        self.assertIn("Merge-Bitte an Sightline", " ".join(result["reasons"]))
+
+    def test_workflow_files_counts_what_github_would_run(self):
+        files = json.dumps([{"name": "check.yml"}, {"name": "b.yaml"}, {"name": "README.md"}])
+        for answer, count in ((files, 2), (None, 0), ("[]", 0), ("kein json", None), ('{"type": "file"}', None)):
+            with mock.patch.object(mc, "gh", lambda *args: answer):
+                self.assertEqual(mc.workflow_files("o/r", "main"), count, answer)
+
+    def test_gather_reads_the_files_of_the_base_and_the_receipt(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, {"CE_VERIFY_CACHE": folder}):
+            path = mc.verify_path("o/r", HEAD)
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(receipt()), encoding="utf-8")
+            fake = FakeGh(workflows=json.dumps({"workflows": []}))
+            with mock.patch.object(mc, "gh", fake):
+                found = mc.gather("o/r", 7)
+            self.assertEqual((found["workflow_files"], found["verify"]), (0, receipt()))
+            self.assertFalse(any(".github/workflows" in call[-1] for call in fake.calls), "no workflow at all: nothing to read")
+            answers = FakeGh()
+
+            def ghost(*args):
+                return None if ".github/workflows?ref=main" in args[-1] else answers(*args)
+            with mock.patch.object(mc, "gh", ghost):
+                self.assertEqual(mc.gather("o/r", 7)["workflow_files"], 0)
+            path.write_text("kaputt", encoding="utf-8")
+            self.assertIsNone(mc.read_verify("o/r", HEAD))
+            self.assertIsNone(mc.read_verify("o/r", "d" * 40))
+
+
 class ReceiptTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
