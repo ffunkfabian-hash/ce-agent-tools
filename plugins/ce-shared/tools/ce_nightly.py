@@ -6,7 +6,7 @@
 sends a macOS notification. Repos without check.nightly are skipped with a note. 0.18: afterwards `ce_tidy.py --nightly` (removes
 only categories with nightly: true in .ce-repo.json › tidy, lists the rest; --dry-run: probe only). Never a GitHub workflow (private repos pay minutes).
 0.36: a checkout that is not clean main stops a repo as red (checkout), unless own_main_script() shows that everything the
-run starts from it is a state of origin/main and the repo's nightly.sh tests origin/main in a worktree of its own: then it
+run enters through is a state of origin/main and the repo's nightly.sh tests origin/main in a worktree of its own: then it
 runs with a warning in the report and the notification. Unsure means red; the warning does not change the exit code.
 
     python3 ce_nightly.py --all                   run now, all repos
@@ -44,6 +44,7 @@ DEFAULT_REPOS = ["cubeescape", "cubeescape-toolgen", "cubeescape-robogen", "cube
 LOG_DIR = Path(heavy_lock.cache_dir("nightly"))  # 0.31: %LOCALAPPDATA%\CubeEscape\nightly on Windows
 LABEL = "com.cubeescape.ce-nightly"
 WARNED = " (Warnung)"  # suffix of a state: the run went on from a checkout that is not clean main
+SHELLS = ("sh", "bash", "zsh")
 OWN_WORKTREE = re.compile(r"\bworktree\s+add\b")
 
 
@@ -101,10 +102,11 @@ def git_text(root: Path, *argv: str) -> str | None:
 def own_main_script(root: Path, launcher: list[str]) -> str | None:
     """0.36: the repo's nightly.sh when it may run from a checkout that is not clean main, else None. The name alone says
     nothing: Toolgen's nightly.sh tests the checkout it lies in. So everything is read at `base`, the last commit the
-    checkout shares with origin/main: check.nightly must be that one script and nothing else, its code lines (not
-    comments) must name origin/main and add a worktree of their own, and the files this run starts from the checkout
-    (`launcher`, .ce-repo.json, the script) must equal `base` - otherwise it would run foreign work after all. A main
-    that merely lags behind passes (Cube Escape: 7 commits behind on 06.11.), the script fetches and tests the newest."""
+    checkout shares with origin/main: check.nightly must be that one script under a plain shell and nothing else, its code
+    lines (not comments) must name origin/main and add a worktree of their own, the entry files of this run (`launcher`,
+    .ce-repo.json, the script) must equal `base`, and no unversioned .py may lie in the root (`python3 <root>/ce` would
+    import it). Helpers the script sources are not compared. A main that merely lags behind passes only if its own script
+    has this form: Cube Escape's main of 06.11., seven commits behind, still tests local main and stays red until pulled."""
     base = (git_text(root, "merge-base", "HEAD", "origin/main") or "").strip()
     if not base:
         return None
@@ -112,17 +114,19 @@ def own_main_script(root: Path, launcher: list[str]) -> str | None:
         argvs = commands_of(json.loads(git_text(root, "show", f"{base}:.ce-repo.json") or "{}")["check"]["nightly"])
     except (ValueError, KeyError, TypeError, RepoError):  # no usable check.nightly: the strict way stays
         return None
-    scripts = [part for part in argvs[0][:2] if Path(part).name == "nightly.sh"]
-    if len(argvs) != 1 or len(scripts) != 1:
+    if len(argvs) != 1 or len(argvs[0]) < 2 or argvs[0][0] not in SHELLS or Path(argvs[0][1]).name != "nightly.sh":
         return None
-    text = git_text(root, "show", f"{base}:{scripts[0]}") or ""
+    script = argvs[0][1]
+    text = git_text(root, "show", f"{base}:{script}") or ""
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     if "origin/main" not in code or not OWN_WORKTREE.search(code):
         return None
-    files = [*launcher, ".ce-repo.json", scripts[0]]
+    if git_text(root, "ls-files", "--others", "--", ":(glob)*.py"):
+        return None
+    files = [*launcher, ".ce-repo.json", script]
     if any(git_text(root, "cat-file", "-e", f"{base}:{name}") is None for name in files):
         return None
-    return scripts[0] if git_text(root, "diff", "--quiet", base, "--", *files) is not None else None
+    return script if git_text(root, "diff", "--quiet", base, "--", *files) is not None else None
 
 
 def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:

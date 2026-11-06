@@ -17,6 +17,8 @@ import ce_nightly  # noqa: E402
 OWN = '#!/bin/sh\ntouch "$(git rev-parse --git-common-dir)/ran"\nref=origin/main\ngit fetch -q origin main\ngit worktree add --detach "$TMP_TREE" "$ref" >/dev/null 2>&1\n'
 # the shape of Toolgen's and Robogen's: it tests the checkout it lies in
 IN_PLACE = '#!/bin/sh\ntouch "$(git rev-parse --git-common-dir)/ran"\ncd "$(dirname "$0")/.."\nsh scripts/check_output.sh\n'
+# the older shape of Cube Escape's (main of 06.11., 7 commits behind): an own worktree, but of local main
+OLD_LOCAL = '#!/bin/sh\ntouch "$(git rev-parse --git-common-dir)/ran"\ngit worktree add --detach "$TMP_TREE" main >/dev/null 2>&1\n'
 ONLY_COMMENT = "#!/bin/sh\n# works on origin/main with git worktree add\n" + 'touch "$(git rev-parse --git-common-dir)/ran"\n'
 SCRIPT = "scripts/nightly.sh"
 FLAT = ["sh", SCRIPT, "run"]  # Cube Escape's form of check.nightly: one argv, not a list of argvs
@@ -99,7 +101,7 @@ class RunOneCheckout(unittest.TestCase):
         self.assert_warned(root, "ohne Branch")
 
     def test_main_behind_origin_with_a_newer_script_warns_and_runs(self):
-        """Cube Escape on 06.11.: main seven commits behind origin/main, one untracked file. Behind is not foreign work."""
+        """Behind is not foreign work when the checkout's own script already has the origin/main form."""
         root = self.repo()
         git(root, "checkout", "-qb", "neuer")
         (root / SCRIPT).write_text(OWN + "# neuer\n", encoding="utf-8")
@@ -109,6 +111,27 @@ class RunOneCheckout(unittest.TestCase):
         git(root, "fetch", "-q", "origin")
         (root / "neu.txt").write_text("fremd\n", encoding="utf-8")
         self.assert_warned(root, "1 geänderte Dateien")
+
+    def test_main_behind_origin_with_the_old_local_script_stops(self):
+        root = self.repo(script=OLD_LOCAL)
+        git(root, "checkout", "-qb", "neuer")
+        (root / SCRIPT).write_text(OWN, encoding="utf-8")
+        git(root, "commit", "-qam", "neuer")
+        git(root, "push", "-q", "origin", "neuer:main")
+        git(root, "checkout", "-q", "main")
+        git(root, "fetch", "-q", "origin")
+        (root / "neu.txt").write_text("fremd\n", encoding="utf-8")
+        self.assert_stopped(root)
+
+    def test_unversioned_python_in_the_root_stops(self):
+        root = self.repo()
+        (root / "tarfile.py").write_text("raise SystemExit('fremd')\n", encoding="utf-8")
+        self.assert_stopped(root)
+
+    def test_wrapper_of_the_repo_instead_of_a_shell_stops(self):
+        root = self.repo(nightly=["./wrap.sh", SCRIPT])
+        (root / "neu.txt").write_text("fremd\n", encoding="utf-8")
+        self.assert_stopped(root)
 
     def test_nested_form_of_check_nightly_counts_too(self):
         root = self.repo(nightly=[["sh", SCRIPT]])

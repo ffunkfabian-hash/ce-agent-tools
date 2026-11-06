@@ -35,7 +35,7 @@ TOOL_LINE = ("Werkzeuge dieser Sitzung (Pflicht, globale Regeln): `ce_search` (M
              "Bericht = PR-Beschreibung, Ist-Zeit als Warten/Rechnen/Lesen/Umsetzen.")
 KERN_FILE = Path(__file__).resolve().parent / "kern.md"
 KERN_RULE = re.compile(r"^\d+\. .+$", re.MULTILINE)
-KERN_HEAD = "Harter Kern (Nexogen `templates/kern.md`; globale Regeln dieser Sitzung nicht geladen):"
+KERN_HEAD = "Harter Kern (Plugin-Kopie von Nexogen `templates/kern.md`; weicht eine geladene Fassung ab, gilt die neuere):"
 KERN_MISSING = "WARNUNG: Der harte Kern fehlt im Plugin (hooks/kern.md); er steht in Nexogen `templates/kern.md`, Plugin neu installieren."
 STATS_FILE = "ce-session-stats.log"  # in the git dir of the worktree: outside the tree, gone with the worktree
 CLAUDE_FILES = ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.md"))
@@ -318,6 +318,8 @@ def main() -> int:
             result = session_start(payload)
     except Exception as error:  # noqa: BLE001
         result = {"systemMessage": f"ce-shared session hook: {error}"}
+        if event not in ("Stop", "PostToolUse"):  # 0.36: the model does not see a systemMessage; the core survives any other part
+            result["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": kern_block(Path(payload.get("cwd") or "."))}
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

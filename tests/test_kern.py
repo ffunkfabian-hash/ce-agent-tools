@@ -1,5 +1,7 @@
 """0.36 Capstan: the hard core reaches a session through SessionStart, also without the global CLAUDE.md."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -96,6 +98,17 @@ class KernAtSessionStart(unittest.TestCase):
             text = session.session_start({"cwd": str(self.repo)})["hookSpecificOutput"]["additionalContext"]
         self.assertTrue(text.startswith(session.KERN_MISSING))
         self.assertIn("Werkzeuge dieser Sitzung", text)
+
+    def test_a_failing_part_of_the_context_does_not_cost_the_core(self):
+        """Judge 0.36: an unreadable docs/LESSONS.md left only a systemMessage, which the model does not see."""
+        out = io.StringIO()
+        stdin = io.StringIO(json.dumps({"hook_event_name": "SessionStart", "cwd": str(self.repo)}))
+        with mock.patch.object(session, "lessons", side_effect=PermissionError("gesperrt")), mock.patch.object(session.sys, "stdin", stdin), \
+             mock.patch.object(session, "version_hint", return_value=""), contextlib.redirect_stdout(out):
+            self.assertEqual(session.main(), 0)
+        result = json.loads(out.getvalue())
+        self.assertIn("gesperrt", result["systemMessage"])
+        self.assertIn(rules()[0], result["hookSpecificOutput"]["additionalContext"])
 
     def test_copy_without_rules_counts_as_missing(self):
         empty = self.base / "leer.md"
