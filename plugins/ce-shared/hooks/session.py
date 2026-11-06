@@ -267,7 +267,7 @@ def pulse(payload: dict) -> dict:
     if records > MESSAGE_LIMIT and due(payload, f"messages>{records // MESSAGE_LIMIT * MESSAGE_LIMIT}"):
         hints.append(f"Sitzung über {MESSAGE_LIMIT} Nachrichten ({records}): Etappe abschließen und an eine frische "
                      "Sitzung übergeben (› Sitzungen kurz halten, Übergabe nur ohne Verlauf).")
-    limit = input_limit(payload)
+    limit = input_limit(payload) if last_input > INPUT_LIMIT else INPUT_LIMIT  # no git call below the default
     if last_input > limit and due(payload, "input>limit"):
         hints.append(f"Letzte Anfrage {last_input:,} Input-Tokens (> {limit:,}): Kontext ist groß – Etappe "
                      "abschließen und an eine frische Sitzung übergeben (› Sitzungen kurz halten).")
