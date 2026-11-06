@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.37.0 „Waybill“ – unveröffentlicht (06.11.2026)
+
+Entscheidungen 300 und 301.
+
+- **Pin-Ausnahme in `merge-check`** (Entscheidung 300): Ändert ein PR in `.ce-repo.json` nur `tools_version`, sperrt das Stufe 1 nicht mehr; steht `.ce-repo.json` in den `core_paths`, bleibt er auch Patch. Bedingung: ce-agent-tools bestätigt, dass der Commit auf `main` liegt, die genannte Version trägt und der Pin nicht zurückgeht. Sonst, auch bei gescheiterter Abfrage, Stufe 2 wie bisher; alle anderen Bedingungen bleiben.
+- **`./ce verify <owner/repo> <PR>`** (Entscheidung 301, neu `ce_verify.py`): sauberer Lauf von `check.quick` der Basis auf dem Head-SHA am Mac, in einer Wegwerf-Kopie im Cache, ohne Nachtlauf. Quittung je Head-SHA, nur bei Grün. Ohne Workflow-Datei in der Basis ist `merge-check` ohne diese Quittung rot, reine `.md`-PRs ausgenommen; eine Basis ohne `check.quick` gibt eine Warnung und keine Stufe 1; wo CI läuft, ändert sich nichts.
+- **CI-Erkennung:** `merge-check` liest die Workflow-Dateien der Basis; die Actions-Liste nennt auch Reste geschlossener PRs.
+- Tests: `test_merge_check` (`PinTests`, `VerifyReceiptTests`), neu `test_verify` (echtes Git-Repo als Quelle, echte Läufe). [Version](docs/versions/0.37.md).
+
 ## 0.36.2 – Patch sightline-grenze-tests (06.11.2026)
 
 - **Testlücken der Sightline-Grenze geschlossen:** Stop-Weg über den Hook (Sightline mit 200.000 ohne `Spitzen-Input` im `ce-session-stats.log`, andere Sitzung mit Treffer), CLI `ce_report.main`, Pulse-Text `(> 300,000)`.
