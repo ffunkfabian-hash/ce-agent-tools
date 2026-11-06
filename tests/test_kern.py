@@ -110,6 +110,12 @@ class KernAtSessionStart(unittest.TestCase):
         self.assertIn("gesperrt", result["systemMessage"])
         self.assertIn(rules()[0], result["hookSpecificOutput"]["additionalContext"])
 
+    def test_unusable_cwd_keeps_the_hook_fail_open(self):
+        done = subprocess.run([sys.executable, str(HOOK)], input=json.dumps({"hook_event_name": "SessionStart", "cwd": 123}),
+                              capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("systemMessage", json.loads(done.stdout))
+
     def test_copy_without_rules_counts_as_missing(self):
         empty = self.base / "leer.md"
         empty.write_text("# nichts\n", encoding="utf-8")

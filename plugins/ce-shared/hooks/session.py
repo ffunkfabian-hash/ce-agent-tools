@@ -319,7 +319,7 @@ def main() -> int:
     except Exception as error:  # noqa: BLE001
         result = {"systemMessage": f"ce-shared session hook: {error}"}
         if event not in ("Stop", "PostToolUse"):  # 0.36: the model does not see a systemMessage; the core survives any other part
-            result["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": kern_block(Path(payload.get("cwd") or "."))}
+            result["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": kern_block(Path(str(payload.get("cwd") or ".")))}
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

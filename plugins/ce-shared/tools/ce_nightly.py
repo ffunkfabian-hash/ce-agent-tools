@@ -121,7 +121,7 @@ def own_main_script(root: Path, launcher: list[str]) -> str | None:
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     if "origin/main" not in code or not OWN_WORKTREE.search(code):
         return None
-    if git_text(root, "ls-files", "--others", "--", ":(glob)*.py"):
+    if git_text(root, "ls-files", "--others", "--", ":(glob)*.py") != "":  # None: git failed, unsure means red
         return None
     files = [*launcher, ".ce-repo.json", script]
     if any(git_text(root, "cat-file", "-e", f"{base}:{name}") is None for name in files):
