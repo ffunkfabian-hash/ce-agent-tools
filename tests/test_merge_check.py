@@ -130,7 +130,7 @@ class EvaluateTests(unittest.TestCase):
     def test_the_source_counts_by_path_tail_file_name_or_import(self):
         lines = ('"tools/old_tool.py"', '"pkg/tools/old_tool.py"', '"./tools/old_tool.py"', 'ROOT / "pkg" / "old_tool.py"', "import old_tool as t",
                  "    from pkg.tools import old_tool", "from pkg.tools.old_tool import x", "from . import old_tool", "from .old_tool import x",
-                 "import os, old_tool", "const t = require('./old_tool');", "import t from './old_tool';")
+                 "import os, old_tool", "const t = require('./old_tool');", "import t from './old_tool';", "export * from './old_tool';", "} from './old_tool';")
         for line in lines:
             test = test_file("tests/test_old.py", f"@@\n-{line}\n-def test_x():\n-    assert y", status="removed")
             self.assertTrue(self.spared_result(test, removed("pkg/tools/old_tool.py"))["green"], line)
@@ -152,7 +152,8 @@ class EvaluateTests(unittest.TestCase):
         cases = (("src/a.py", 'P = "data.py"'), ("src/a.py", 'P = "my-a.py"'), ("src/a.py", 'P = "other/a.py"'), ("src/run.py", "subprocess.run(x)"),
                  ("src/run.py", "from subprocess import run"), ("src/a.py", "from other.a import x"), ("tools/mock.py", "from unittest import mock"),
                  ("src/config.py", "import core as config"), ("src/config.py", 'from the config file"""'), ("pkg/tools/old_tool.py", "from pkg.old_tool import x"),
-                 ("legacy/config.json", "import config"))
+                 ("legacy/config.json", "import config"), ("src/config.py", """self.assertIn("read from 'config'", out)"""),
+                 ("src/users.py", """cur.execute('select * from "users"')"""), ("src/run.py", "# moved from 'run' earlier"), ("src/run.py", "yield from 'run'"))
         for source, line in cases:
             test = test_file("tests/test_old.py", f"@@\n-{line}\n-def test_x():\n-    assert y", status="removed")
             self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed(source))["reasons"]), line)

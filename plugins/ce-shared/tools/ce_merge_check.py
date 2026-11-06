@@ -73,9 +73,9 @@ TEST_DEF = re.compile(r"^\s*(?:async\s+)?def\s+test|^\s*\[(?:Test|UnityTest|Test
 ASSERTION = re.compile(r"\bassert|\bAssert\.|\bexpect\(")
 SKIP = re.compile(r"^\s*@(?:unittest\.skip|pytest\.mark\.(?:skip|xfail))\b|^\s*\[Ignore\b|^\s*(?:it|test|describe)\.(?:skip|only)\(|"
                   r"^\s*x(?:it|describe)\(|^\s*self\.skipTest\(")
-PATH_TOKEN = re.compile(r"[\w./-]*[\w-]\.\w+")  # a path or file name with an extension
-QUOTED_MODULE = re.compile(r"""(?:\bfrom\s+|\brequire\()['"]([\w./-]+)['"]""")  # JS and TS
-PYTHON_IMPORT = re.compile(r"\s*from\s+([\w.]+)\s+import\s+(.+)|\s*import\s+([\w., ]+)$")
+PATH_TOKEN = re.compile(r"[\w./-]{0,255}[\w-]\.\w+")  # a path or file name with an extension; the bound keeps a very long line linear
+QUOTED_MODULE = re.compile(r"""^\s*(?:import\b|export\b|\}).*\bfrom\s+['"]([\w./-]+)['"]|\brequire\(['"]([\w./-]+)['"]""")  # JS and TS
+PYTHON_IMPORT = re.compile(r"\s*from\s+([\w.]+)\s+import\s+(.+)|\s*import\s+(\S[\w., ]*)$")
 CI_BAD = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 CI_FINE = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -378,7 +378,7 @@ def module_paths(line):
     an imported name alone is no module (`from subprocess import run` says nothing about src/run.py)."""
     quoted = QUOTED_MODULE.search(line)
     if quoted:
-        return [re.sub(r"^(?:\.{0,2}/)+", "", quoted[1])]
+        return [re.sub(r"^(?:\.{0,2}/)+", "", quoted[1] or quoted[2])]
     found = PYTHON_IMPORT.match(line.split("#")[0])
     if not found:
         return []
@@ -430,7 +430,7 @@ def test_changes(files):
             file_asserts += step if ASSERTION.search(text) else 0
             if sign == "+" and SKIP.search(text):
                 skips.append(name)
-        gone = named_sources(patch, sources) if f.get("status") == "removed" and min(file_defs, file_asserts) < 0 else []
+        gone = named_sources(patch, sources) if sources and f.get("status") == "removed" and min(file_defs, file_asserts) < 0 else []
         if gone:
             spared.append((name, -file_defs, -file_asserts, gone))
             deleted.remove(name)
