@@ -158,6 +158,12 @@ class RefsTests(unittest.TestCase):
         for query in ("Assets\\Art\\Glow.mat", str(self.project / "Assets/Art/Glow.mat")):
             self.assertEqual(self.query("uses", query)["asset"], "Assets/Art/Glow.mat")
 
+    def test_file_name_is_found_from_a_folder_inside_the_project(self):
+        before = os.getcwd()
+        os.chdir(self.project / "Assets" / "Scenes")
+        self.addCleanup(os.chdir, before)
+        self.assertEqual(self.query("uses", "Glow.mat")["asset"], "Assets/Art/Glow.mat")
+
     def test_longer_key_ending_in_guid_is_no_reference(self):
         targets = {r["guid"] for r in self.query("uses", "ProjectSettings/Data.asset")["uses"]}
         self.assertEqual(targets, {"9" * 32})

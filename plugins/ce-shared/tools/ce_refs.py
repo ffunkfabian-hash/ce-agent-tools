@@ -202,17 +202,19 @@ def resolve(index, query, project="."):
     """GUID, path or file name -> list of guids; more than one entry means the name is ambiguous."""
     if HEX32.fullmatch(query):
         return [query.encode()]
-    wanted = query.replace("\\", "/").removeprefix("./")
+    plain = query.replace("\\", "/").removeprefix("./")
     try:
-        wanted = Path(wanted).resolve().relative_to(Path(project).resolve()).as_posix()  # a path from where the shell stands
+        texts = [Path(plain).resolve().relative_to(Path(project).resolve()).as_posix(), plain]  # first as a path from the shell
     except (OSError, ValueError):
-        pass
-    wanted = wanted.lower()
-    exact = [g for g, p in index.path.items() if p.lower() == wanted]
-    if exact:
-        return exact
-    named = [g for g, p in index.path.items() if wanted in (Path(p).name.lower(), Path(p).stem.lower())]
-    return named or [g for g, p in index.path.items() if p.lower().endswith("/" + wanted)]
+        texts = [plain]
+    for text in texts:
+        wanted = text.lower()
+        hits = ([g for g, p in index.path.items() if p.lower() == wanted]
+                or [g for g, p in index.path.items() if wanted in (Path(p).name.lower(), Path(p).stem.lower())]
+                or [g for g, p in index.path.items() if p.lower().endswith("/" + wanted)])
+        if hits:
+            return hits
+    return []
 
 
 def label(index, guid):
