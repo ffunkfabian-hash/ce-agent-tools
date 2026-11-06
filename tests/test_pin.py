@@ -130,6 +130,7 @@ class RunCase(unittest.TestCase):
         self.entries = [{"id": "nx", "name": "Nexogen", "github": "o/nx"}, {"id": "gone", "name": "Alt", "github": "o/gone", "status": "stillgelegt"},
                         {"id": "held", "name": "Halt", "github": "o/held", "hold": "Prüfung"}, {"id": "a", "name": "Eins", "github": "o/a"},
                         {"id": "b", "name": "Zwei", "github": "o/b", "status": "Öffentlich auf GitHub, Standardbranch main"}]
+        self.closed = {}
         self.heads, self.pulls, self.branches, self.calls, self.tools, self.workflows = {}, {}, set(), [], [], {"o/a": ["check.yml"], "o/b": []}
         self.make("o/a", "cubeescape-a")
         self.make("o/b", "cubeescape-b")
@@ -184,8 +185,12 @@ class RunCase(unittest.TestCase):
             raise AssertionError(args)
         repo = "/".join(target.split("/")[1:3]).split("?")[0]
         if "/pulls?" in target:
-            pull = self.pulls.get(repo)
-            return json.dumps([pull] if pull else [])
+            found = [self.pulls[repo]] if repo in self.pulls else []
+            return json.dumps(found + ([self.closed[repo]] if repo in self.closed and "state=all" in target else []))
+        if "/compare/" in target:
+            spread = target.split("/compare/")[1].split("?")[0]
+            names = git(self.folder / f"remote-{repo}", "diff", "--name-only", spread).split()
+            return json.dumps({"files": [{"filename": name} for name in names]})
         if "/branches/" in target:
             return "{}" if target.rsplit("/", 1)[1].replace("%2F", "/") in self.branches else None
         if "/commits/claude" in target:
@@ -326,7 +331,7 @@ class RealRunTests(RunCase):
         head = self.foreign_branch()
         code, out, _ = self.run_pin("--only", "a")
         self.assertEqual(code, 1)
-        self.assertIn("trägt nicht den Commit dieses Laufs", out)
+        self.assertIn("nicht genau der Plan dieses Laufs", out)
         self.assertEqual(git(self.folder / "remote-o/a", "rev-parse", "claude/a-patch-pin42"), head)
         self.assertEqual(self.pulls, {})
 
@@ -334,7 +339,7 @@ class RealRunTests(RunCase):
         self.pr_fails = True
         code, out, _ = self.run_pin("--only", "a")
         self.assertEqual(code, 1)
-        self.assertIn("gepusht, PR nicht angelegt, ein zweiter Lauf holt das nach: HTTP 502", out)
+        self.assertIn("gepusht, PR nicht angelegt, ein zweiter Lauf holt das bei gleicher Basis nach: HTTP 502", out)
         self.assertEqual(list((self.folder / "cache" / "runs").iterdir()), [])
         head = git(self.folder / "remote-o/a", "rev-parse", "claude/a-patch-pin42")
         self.pr_fails = False
@@ -344,6 +349,69 @@ class RealRunTests(RunCase):
         self.assertEqual(self.tools[-1], ("ce_merge_check.py", ["o/a", "7", "--sha", head], head))
         self.assertEqual(git(self.folder / "remote-o/a", "rev-parse", "claude/a-patch-pin42"), head)  # nothing pushed again
         self.assertEqual(list((self.folder / "cache" / "runs").iterdir()), [])
+
+    def pushed_without_pull_request(self):
+        self.pr_fails = True
+        self.run_pin("--only", "a")
+        self.pr_fails = False
+        self.branches.add("claude/a-patch-pin42")
+        return self.folder / "remote-o/a"
+
+    def test_same_title_and_parent_with_foreign_content_stops(self):
+        remote = self.pushed_without_pull_request()
+        git(remote, "checkout", "-q", "claude/a-patch-pin42")
+        (remote / "fremd.txt").write_text("x\n", encoding="utf-8")
+        git(remote, "add", ".")
+        git(remote, "commit", "-q", "--amend", "--no-edit")
+        git(remote, "checkout", "-q", "main")
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 1)
+        self.assertIn("nicht genau der Plan dieses Laufs", out)
+        self.assertEqual(self.pulls, {})
+        self.assertNotIn("gh pr merge", out)
+
+    def test_same_files_with_other_content_stops(self):
+        remote = self.pushed_without_pull_request()
+        git(remote, "checkout", "-q", "claude/a-patch-pin42")
+        with (remote / "ce").open("a", encoding="utf-8") as file:
+            file.write("# fremd\n")
+        git(remote, "add", ".")
+        git(remote, "commit", "-q", "--amend", "--no-edit")
+        git(remote, "checkout", "-q", "main")
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 1)
+        self.assertIn("nicht genau der Plan dieses Laufs", out)
+        self.assertEqual(self.pulls, {})
+
+    def test_closed_pull_request_stops_a_second_run(self):
+        self.pushed_without_pull_request()
+        self.closed["o/a"] = {"number": 5}
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 1)
+        self.assertIn("PR 5 ist geschlossen", out)
+        self.assertEqual(self.pulls, {})
+
+    def test_open_pull_request_on_the_plan_keeps_the_merge_line(self):
+        remote = self.pushed_without_pull_request()
+        head = git(remote, "rev-parse", "claude/a-patch-pin42")
+        self.pulls["o/a"] = {"number": 9, "head": {"sha": head}}
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"gh pr merge 9 -R o/a --match-head-commit {head} --squash", out)
+
+    def test_open_pull_request_off_the_plan_gets_no_merge_line(self):
+        remote = self.pushed_without_pull_request()
+        git(remote, "checkout", "-q", "claude/a-patch-pin42")
+        (remote / "fremd.txt").write_text("x\n", encoding="utf-8")
+        git(remote, "add", ".")
+        git(remote, "commit", "-q", "-m", "fremd")
+        git(remote, "checkout", "-q", "main")
+        head = git(remote, "rev-parse", "claude/a-patch-pin42")
+        self.pulls["o/a"] = {"number": 9, "head": {"sha": head}}
+        _, out, _ = self.run_pin("--only", "a")
+        self.assertNotIn("gh pr merge", out)
+        self.assertIn("keine Merge-Zeile", out)
+        self.assertIn("Head weicht vom Plan ab: fremd.txt", out)
 
     def test_failed_push_stops_and_leaves_no_copy(self):
         hook = self.folder / "remote-o/a" / ".git" / "hooks" / "pre-receive"

@@ -12,13 +12,14 @@ another commit stays and is named. A version kept as plain text stops that repos
 Run, one repository after the other, each stopping on its own: first branch claude/<repo>-patch-pin<number> and pull request from a throwaway
 copy in the cache (sparse and partial, Cube Escape is 600 MB), then ./ce verify where the base has no workflow file, the wait for CI, and
 ./ce merge-check from that copy (only there its head is "this folder", the condition of stage 1). A second run continues at an open pull
-request, and at a branch that holds exactly this tool's commit on the current base (a push whose pull request failed); any other branch stops, nothing
-is overwritten. --dry-run reads and shows every diff (an open pull request has none to show): no copy, no commit, no push, no pull request.
+request, and at a branch that holds exactly this plan as one commit on the current base (a push whose pull request failed); any other branch stops,
+nothing is overwritten, and so does one whose pull request was closed. Content counts, not the title: an open pull request whose head differs from the
+plan keeps its row but gets no merge line. The plan is made anew, so a moved base or a new date in an entry also counts as a difference, the safe side. --dry-run reads and shows every diff (an open pull request has none to show): no copy, no commit, no push, no pull request.
 
 It never merges. The guard reads Bash lines: a `gh pr merge` started from here would pass the merge door unseen, a fourth way beside Sightline
 and the two receipts (guard.py > merge_attempt). So a stage 1 row carries the plain merge line for Sightline, every other row what is missing;
 after the user's Ja a session runs `./ce merge-check <repo> <PR> --ja "<words>"` itself. Sightline's door has no time limit, so a line that has grown old
-is checked again first. A real run is Mac only: a cloud session sends a request.
+gets a new `./ce pin` first: that continues at the open pull request and checks from a copy again. A real run is Mac only: a cloud session sends a request.
 
 Output: the diffs (dry run), one table row per repository on stdout, progress on stderr. Exit 0 all fine, 1 a repository stopped or is red, 2 no such version.
 """
@@ -119,10 +120,9 @@ def workflow_names(repo, ref):
     return [f"{WORKFLOWS}/{item['name']}" for item in found if str(item.get("name")).endswith((".yml", ".yaml"))]
 
 
-def open_pull(repo, branch):
+def pulls_of(repo, branch, state):
     owner = repo.split("/")[0]
-    found = mc.gh_json("api", f"repos/{repo}/pulls?state=open&head={quote(owner + ':' + branch, safe='')}&per_page=5")
-    return found[0] if found else None
+    return mc.gh_json("api", f"repos/{repo}/pulls?state={state}&head={quote(owner + ':' + branch, safe='')}&per_page=5")
 
 
 def branch_exists(repo, branch):
@@ -130,10 +130,19 @@ def branch_exists(repo, branch):
 
 
 def own_commit(repo, branch, base_sha, title):
-    """The head of a branch when it is this run's commit on this very base, else None: only then may a pull request be opened for it."""
+    """The head of a branch when its one commit has this title on this very base, else None. What it holds says differences()."""
     found = mc.gh_json("api", f"repos/{repo}/commits/{quote(branch, safe='')}")
     parents = [item.get("sha") for item in found.get("parents") or []]
     return found.get("sha") if parents == [base_sha] and str((found.get("commit") or {}).get("message")).strip() == title else None
+
+
+def differences(repo, base_sha, head, plan):
+    """The files in which a head is not this plan: others than planned, or planned ones with other content. Empty when it is exactly the plan."""
+    listed = mc.gh_json("api", f"repos/{repo}/compare/{base_sha}...{head}?per_page=100").get("files") or []
+    names = {item["filename"] for item in listed}
+    other = names ^ set(plan["changes"])
+    other |= {path for path in names & set(plan["changes"]) if read_raw(repo, path, head) != plan["changes"][path]}
+    return sorted(other)
 
 
 # --------------------------------------------------------------------------------------------------- planning
@@ -359,25 +368,31 @@ def prepare(entry, target, data, dry, today, row):
     row["check"] = "./ce verify" if no_ci else "GitHub-CI"
     branch = f"claude/{ce_session_name.patch_word(config.get('name', repo.split('/')[-1]))}-patch-pin{pin_number(version)}"
     row["where"] = branch
-    pull = open_pull(repo, branch)
-    if pull:
-        row["where"] = f"PR {pull['number']}"
-        row["state"] = "PR offen, ein echter Lauf setzt hier fort"
-        if dry:
-            return None
-        head = pull["head"]["sha"]
-        return {"repo": repo, "pr": pull["number"], "head": head, "base": base, "no_ci": no_ci, "config": config, "copy": open_copy(repo, head, [ce_common.CONFIG_NAME]), "row": row}
     plan = plan_repo(key, config, text, functools.lru_cache(maxsize=None)(lambda path: read_raw(repo, path, sha)), workflow_names(repo, sha), target, data, today)
     diff, lines = diff_of(plan)
     title = f"Patch pin{pin_number(version)} {plan['version'][1]}: Pin auf Agent Tools {version}"
-    head = None
-    if branch_exists(repo, branch):
-        head = own_commit(repo, branch, sha, title)
-        if head is None:
-            raise Stop(f"Branch {branch} besteht ohne offenen PR und trägt nicht den Commit dieses Laufs: nichts überschrieben, Branch prüfen oder löschen")
     row["version"] = " → ".join(plan["version"])
     row["lines"] = str(lines)
     row["notes"] = plan["notes"]
+    pulls = pulls_of(repo, branch, "open")
+    if pulls:
+        pull = pulls[0]
+        head = pull["head"]["sha"]
+        differs = differences(repo, sha, head, plan)
+        row["where"] = f"PR {pull['number']}"
+        row["state"] = "PR offen, ein echter Lauf setzt hier fort"
+        row["notes"] = plan["notes"] + ([f"Head weicht vom Plan ab: {', '.join(differs)}"] if differs else [])
+        if dry:
+            return None
+        return {"repo": repo, "pr": pull["number"], "head": head, "base": base, "no_ci": no_ci, "config": config, "copy": open_copy(repo, head, [ce_common.CONFIG_NAME]), "row": row, "differs": differs}
+    head = None
+    if branch_exists(repo, branch):
+        gone = pulls_of(repo, branch, "all")
+        if gone:
+            raise Stop(f"Branch {branch} besteht, PR {gone[0]['number']} ist geschlossen: nichts angelegt, Branch prüfen oder löschen")
+        head = own_commit(repo, branch, sha, title)
+        if head is None or differences(repo, sha, head, plan):
+            raise Stop(f"Branch {branch} besteht ohne offenen PR und ist nicht genau der Plan dieses Laufs (Basis, Titel, Inhalt oder Datum im Eintrag): nichts überschrieben, Branch prüfen oder löschen")
     row["state"] = forecast(config, plan, lines)
     if dry:
         if head:
@@ -385,16 +400,16 @@ def prepare(entry, target, data, dry, today, row):
         print(f"### {row['repo']} ({repo})\n```diff\n{diff}```\n", flush=True)
         return None
     root = open_copy(repo, head or sha, sorted(plan["changes"]))
-    job = {"repo": repo, "base": base, "no_ci": no_ci, "config": config, "copy": root, "row": row}
+    job = {"repo": repo, "base": base, "no_ci": no_ci, "config": config, "copy": root, "row": row, "differs": []}
     try:
         job["head"] = head or commit_and_push(root, plan, branch, title)
         try:
             answer = mc.gh("pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body", pr_body(version, commit, plan, lines))
         except mc.NotCheckable as error:
-            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt, ein zweiter Lauf holt das nach: {error}") from error
+            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt, ein zweiter Lauf holt das bei gleicher Basis nach: {error}") from error
         number = re.search(r"/pull/(\d+)", answer or "")
         if not number:
-            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt, ein zweiter Lauf holt das nach: {(answer or '').strip()[:100]}")
+            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt, ein zweiter Lauf holt das bei gleicher Basis nach: {(answer or '').strip()[:100]}")
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -434,6 +449,8 @@ def finish(job, minutes):
     if not answer["green"]:
         row["bad"] = True
         row["state"] = "merge-check rot: " + "; ".join(answer.get("reasons") or [])
+    elif job["differs"]:
+        row["state"] = "merge-check grün, keine Merge-Zeile: Head ist nicht dieser Plan, der Nutzer entscheidet"
     elif answer.get("ohne_ja") is True:
         row["state"] = "merge-check grün, Stufe 1"
         row["merge"] = f"gh pr merge {number} -R {repo} --match-head-commit {head} --squash"
@@ -520,7 +537,7 @@ def main(argv=None):
     print(table(rows))
     merges = [row["merge"] for row in rows if row["merge"]]
     if merges:
-        print("\nStufe 1, nichts ist gemergt; Sightline führt jede Zeile allein aus, nach 30 Minuten erst nach einem neuen ./ce merge-check:\n" + "\n".join(merges))
+        print("\nStufe 1, nichts ist gemergt; Sightline führt jede Zeile allein aus, nach 30 Minuten erst nach einem neuen ./ce pin:\n" + "\n".join(merges))
     return 1 if any(row["bad"] for row in rows) else 0
 
 
