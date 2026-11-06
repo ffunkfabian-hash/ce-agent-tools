@@ -42,6 +42,7 @@ SYNC_FILES += ["ce_plugins.py"]  # 0.16: ./ce plugins check|fix
 SYNC_FILES += ["ce_tidy.py"]  # 0.18: ./ce tidy (needs ce_common, ce_worktrees)
 SYNC_FILES += ["ce_merge_check.py"]  # 0.34: ./ce merge-check (needs ce_common, heavy_lock)
 SYNC_FILES += ["ce_verify.py"]  # 0.37: ./ce verify (needs ce_check, ce_merge_check, heavy_lock)
+SYNC_FILES += ["ce_refs.py"]  # 0.41: ./ce refs (standalone)
 SYNC_FILES += ["ce_loader.py"]  # 0.20: check of repos with tools_version, `tools pin` for a repo leaving its copy
 LOADER, LOADER_TARGET = "ce_loader.py", "ce"  # 0.20: repos with tools_version keep only the loader, as ./ce
 LEGACY_TOOLS_DIRS = ["scripts/ce_tools", "tools/ce_tools", "Tools/ce_tools"]

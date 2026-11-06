@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.41.0 „Backlink“ – unveröffentlicht (06.11.2026)
+
+- **`./ce refs` (`ce_refs.py`):** `who`, `uses`, `missing`, `stats` lesen die GUID-Verweise eines Unity-Projekts aus YAML-, `.meta`- und JSON-artigen Dateien. Der Code-Seite (`csharp-lsp`) fehlte bisher die Verdrahtung in Prefabs und Szenen. Eigenständig, nur Standardbibliothek, für jedes Unity-Projekt; vom Nutzer beauftragt.
+
 ## 0.40.0 „Offcut“ – unveröffentlicht (06.11.2026)
 
 Trimline 23, vom Nutzer freigegeben.
