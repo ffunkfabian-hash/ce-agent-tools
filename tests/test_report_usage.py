@@ -198,6 +198,13 @@ class SessionInputLimitTests(unittest.TestCase):
             texts = " ".join(ce_report.hints(self.peak(310_000), ce_report.input_limit(root)))
             self.assertIn("Spitzen-Input 310,000 Tokens (> 300,000)", texts)
 
+    def test_homing_another_session_in_the_sightline_checkout_keeps_150000(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.repo(tmp, '{"name": "Sightline", "session_id": "s1"}')
+            self.assertEqual(ce_report.input_limit(root, "s1"), 300_000)
+            self.assertEqual(ce_report.input_limit(root, "stranger"), 150_000)
+            self.assertEqual(ce_report.input_limit(root), 300_000, "no id known: the name decides as before")
+
     def test_other_session_above_150000_is_flagged(self):
         for name in ("CE-AGENT-TOOLS Patch x · Mac", "Sightline 2", "sightline", ""):
             with tempfile.TemporaryDirectory() as tmp:

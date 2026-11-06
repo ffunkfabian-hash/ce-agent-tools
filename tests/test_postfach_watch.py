@@ -122,6 +122,50 @@ class Watch(Worktree):
                           parent=parent, err=err)
         return code, err.getvalue(), calls
 
+    def owned(self, owner="owner-1", **extra):
+        (self.git / am.SESSION_FILE).write_text(json.dumps(dict({"name": NAME, "session_id": owner}, **extra)), encoding="utf-8")
+
+    def stop_as(self, sid, transcript=""):
+        calls = []
+        code = hook.watch(self.payload(session_id=sid, transcript_path=transcript), fetch=lambda s: calls.append(s) or [],
+                          sleep=lambda _: None, clock=iter(range(0, 10 ** 7, 60)).__next__, parent=lambda: 42, err=io.StringIO())
+        return code, calls
+
+    def test_homing_a_second_session_in_the_checkout_starts_no_watcher_and_says_nothing(self):
+        self.owned("owner-1")
+        code, calls = self.stop_as("stranger")
+        self.assertEqual((code, calls), (0, []))
+        self.assertEqual(hook.remind(self.payload(session_id="stranger"), sleep=lambda _: None, which=lambda _: "/usr/bin/gh"), {})
+        self.assertEqual(json.loads((self.git / am.SESSION_FILE).read_text())["session_id"], "owner-1")
+        code, calls = self.stop_as("owner-1")
+        self.assertEqual(code, 0)
+        self.assertTrue(calls, "the owner still listens")
+        self.assertEqual(hook.remind(self.payload(session_id="owner-1"), sleep=lambda _: None, which=lambda _: "/usr/bin/gh")["decision"], "block")
+
+    def test_homing_an_unowned_reservation_is_claimed_by_the_first_stop(self):
+        code, calls = self.stop_as("sightline-2")
+        self.assertTrue(calls)
+        self.assertEqual(json.loads((self.git / am.SESSION_FILE).read_text())["session_id"], "sightline-2")
+        self.assertEqual(self.stop_as("stranger"), (0, []))
+
+    def test_homing_a_silent_owner_is_replaced_by_its_successor_but_a_missing_transcript_proves_nothing(self):
+        self.owned("old", name=NAME)
+        folder = self.repo / "transcripts"; folder.mkdir()
+        mine = folder / "new.jsonl"; mine.write_text("{}\n")
+        self.assertEqual(self.stop_as("new", str(mine)), (0, []), "owner transcript missing: not proven silent")
+        old = folder / "old.jsonl"; old.write_text("{}\n")
+        self.assertEqual(self.stop_as("new", str(mine)), (0, []), "owner active just now")
+        past = _time.time() - (hook.OWNER_IDLE_H + 1) * 3600
+        os.utime(old, (past, past))
+        code, calls = self.stop_as("new", str(mine))
+        self.assertTrue(calls)
+        self.assertEqual(json.loads((self.git / am.SESSION_FILE).read_text())["session_id"], "new")
+
+    def test_homing_without_a_session_id_in_the_payload_the_old_rule_holds(self):
+        self.owned("owner-1")
+        _code, text, calls = self.run_watch([[]])
+        self.assertTrue(calls)
+
     def test_a_message_wakes_with_exit_2_and_is_remembered(self):
         pages = [[], [comment(7, "Sightline · Cloud → TG 0.24 „Salvo“: Freigabe\nm\n")]]
         code, text, _ = self.run_watch(pages)

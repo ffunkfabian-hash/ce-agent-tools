@@ -167,6 +167,30 @@ def tool_results(record: dict):
             yield text
 
 
+# Trimline 21: heavy_lock.py prints "heavy lock: free after N s" exactly once per lock it had to wait for, on its own line
+# (HeavyLock.acquire). "held, waited N s" is only HeavyLock.state(), the same wait again, never output of a real run.
+LOCK_WAIT = re.compile(r"^heavy lock: free after (\d+) s\s*$", re.M)
+QUOTING = re.compile(r"^\s*(cat|head|tail|less|more|grep|rg|egrep|sed|awk|echo|printf|nl|bat|jq)\b")
+
+
+def lock_wait_seconds(text: str, command: str) -> int:
+    """Seconds waited for locks according to a Bash result: each announcement line once, and not when the command only
+    shows older text (cat/grep/echo of a log or of this very message)."""
+    if any(QUOTING.match(part) for part in re.split(r"&&|\|\||;|\n", command)):
+        return 0
+    return sum(int(match[1]) for match in LOCK_WAIT.finditer(text))
+
+
+def tool_result_ids(record: dict):
+    """(tool_use_id, text) of the tool results in one record; the id is "" when the transcript carries none."""
+    content = (record.get("message") or {}).get("content") if isinstance(record.get("message"), dict) else None
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            inner = block.get("content")
+            yield str(block.get("tool_use_id") or ""), inner if isinstance(inner, str) else "".join(
+                c.get("text", "") for c in inner or [] if isinstance(c, dict))
+
+
 def analyse(path: Path, since=None) -> dict:
     messages = 0
     tools: Counter = Counter()
@@ -175,6 +199,9 @@ def analyse(path: Path, since=None) -> dict:
     largest = (0, "")
     waited = 0.0
     last_command = ""
+    last_tool = ""
+    full_command = ""
+    bash_commands = {}  # tool_use_id -> command: parallel calls must not swap their results
     usage_requests = {}
     for record in events(path, since):
         message = record.get("message") if isinstance(record.get("message"), dict) else {}
@@ -198,6 +225,8 @@ def analyse(path: Path, since=None) -> dict:
             messages += 1
         for name, data in tool_uses(record):
             tools[name] += 1
+            last_tool = name
+            full_command = str(data.get("command") or "") if name == "Bash" else ""
             if name == "Agent":
                 agents[str(data.get("model") or "inherit")] += 1
             if name == "Bash":
@@ -217,13 +246,19 @@ def analyse(path: Path, since=None) -> dict:
                     pass
             if name.startswith("mcp__") and "search" in name:
                 searches += 1
+        message_content = message.get("content")
+        for block in message_content if isinstance(message_content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                bash_commands[str(block["id"])] = (str((block.get("input") or {}).get("command") or "") if block.get("name") == "Bash" else None)
+        if record.get("type") == "GENERIC" and isinstance(record.get("content"), str) and last_tool == "Bash":
+            waited += lock_wait_seconds(record["content"], full_command)
+        for use_id, text in tool_result_ids(record):
+            command = bash_commands.get(use_id) if use_id in bash_commands else (full_command if not use_id and last_tool == "Bash" else None)
+            if command is not None:
+                waited += lock_wait_seconds(text, command)
         for text in tool_results(record):
             if len(text.encode("utf-8")) > largest[0]:
                 largest = (len(text.encode("utf-8")), last_command)
-            for match in re.finditer(r"heavy lock[^\n]*?free after (\d+) s", text):
-                waited += int(match[1])
-            for match in re.finditer(r"held, waited (\d+) s", text):
-                waited += int(match[1])
     repeated = sum(count - 1 for count in check_signatures.values() if count > 1)
     return {"transcript": str(path), "messages": messages, "tools": dict(tools), "agents": dict(agents), "checks": checks,
             "checks_repeated_same_command": repeated, "searches": searches, "big_doc_reads": big_reads,
@@ -257,15 +292,19 @@ def one_line(info: dict) -> str:
             f"{usage_line}")
 
 
-def input_limit(cwd=None) -> int:
+def input_limit(cwd=None, session_id: str = "") -> int:
     """Input-token limit of the session in `cwd`: 300,000 when <git-dir>/ce-session.json names exactly "Sightline", else 150,000
-    (no file, broken file, no name, no git: the default). The same reading way as heavy_lock.session_of; the message limit stays."""
+    (no file, broken file, no name, no git: the default). The same reading way as heavy_lock.session_of; the message limit stays.
+    Homing: a file that names its session (`session_id`, written by --reserve) raises the limit only for that session; another
+    session in the same checkout (given `session_id` differs) keeps 150,000. Without either id the name alone counts, as before."""
     try:
         git_dir = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=str(cwd or os.getcwd()), capture_output=True,
                                  text=True, timeout=2).stdout.strip()  # < 5 s PostToolUse timeout (hooks.json): fall back before Claude ends the hook
         with open(os.path.join(git_dir, "ce-session.json"), encoding="utf-8") as handle:
             saved = json.load(handle)
-        if git_dir and isinstance(saved, dict) and saved.get("name") == "Sightline":
+        owner = saved.get("session_id") if isinstance(saved, dict) else None
+        if git_dir and isinstance(saved, dict) and saved.get("name") == "Sightline" \
+                and not (owner and session_id and owner != session_id):
             return SIGHTLINE_CONTEXT_TOKENS
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         pass

@@ -11,6 +11,7 @@ It ends quietly when nothing comes, when the process that started it is gone (th
 the stop once (`decision: block`) with the exact command – at most once every REMIND_EVERY_H hours, never without `gh` and not after
 a recent GitHub failure, so a session that cannot listen is not woken again and again. `stop_hook_active` ends a loop in one round.
 Nothing happens without a reservation or with CE_WATCH=0; every error lets the session stop normally.
+Homing: only the owning session (`owns`) starts the watcher or the reminder.
 0.21: a message that hooks/postfach_inbox.py already handed to the working session (`hinted`) does not wake it again; a message
 speaking of a release gets the hint (ce_await_mail.release_note) in front.
 """
@@ -27,6 +28,7 @@ sys.path.insert(0, str(PLUGIN_ROOT / "tools"))
 
 MAX_HOURS = 12            # keep equal to the timeout of the async entry in hooks.json (43200 s)
 REMIND_EVERY_H = 2
+OWNER_IDLE_H = 6          # Homing: an owner whose transcript was silent this long may be replaced by another session of the checkout
 GRACE_S = 5               # remind waits this long for the async watcher of the same Stop to register
 INTERVAL_S = 60
 
@@ -64,12 +66,46 @@ def start_command(name: str) -> str:
     return f'./ce session mail --name "{recipient(name)}"'
 
 
+def owns(folder: Path, session: dict, payload: dict, now=time.time) -> bool:
+    """Homing (Entscheidung 311): only the session the reservation belongs to starts the watcher. The owner is `session_id` in
+    ce-session.json (--reserve writes CLAUDE_CODE_SESSION_ID, which equals the hook payload's `session_id`). Without a `session_id` in
+    the payload nothing is known and the old rule holds. A reservation without owner (older file, inherited `Sightline`) is claimed by the
+    first session that stops there. A different owner is replaced only when its transcript (same folder, `<owner>.jsonl`) proves it
+    silent for OWNER_IDLE_H hours - the hand-over to a successor that inherits the file; a missing transcript proves nothing."""
+    sid = payload.get("session_id")
+    if not isinstance(sid, str) or not sid:
+        return True
+    owner = session.get("session_id")
+    if owner == sid:
+        return True
+    if owner:
+        transcript = payload.get("transcript_path")
+        try:
+            silent = now() - (Path(transcript).parent / f"{owner}.jsonl").stat().st_mtime > OWNER_IDLE_H * 3600 if transcript else False
+        except (OSError, TypeError, ValueError):
+            silent = False
+        if not silent:
+            return False
+    try:
+        path = folder / am.SESSION_FILE
+        current = am.read_json(path)
+        if current.get("name") != session.get("name") or current.get("session_id") != owner:
+            return False  # reserved or claimed meanwhile
+        temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        temp.write_text(json.dumps(dict(current, session_id=sid), ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, path)
+        return True
+    except (OSError, ValueError):
+        return not owner  # an unowned file stays usable when it cannot be written; a takeover needs the write
+
+
 def remind(payload: dict, sleep=time.sleep, now=time.time, which=shutil.which) -> dict:
     if payload.get("stop_hook_active"):
         return {}
-    folder, name = am.reserved(payload.get("cwd") or os.getcwd())
-    if folder is None:
+    folder, session = am.reservation(payload.get("cwd") or os.getcwd())
+    if folder is None or not owns(folder, session, payload):
         return {}
+    name = session.get("name", "")
     am.settle(folder, payload.get("transcript_path") or "")
     for _ in range(GRACE_S * 2):
         if am.watcher_pid(folder):
@@ -95,7 +131,7 @@ def hinted(folder: Path, number: int) -> bool:
 
 def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, parent=PARENT, err=sys.stderr) -> int:
     folder, session = am.reservation(payload.get("cwd") or os.getcwd())
-    if folder is None:
+    if folder is None or not owns(folder, session, payload):
         return 0
     after = am.settle(folder, payload.get("transcript_path") or "")
     if not am.register(folder):

@@ -90,6 +90,18 @@ class ReserveTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", str(self.bare)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "push", "-q", "-u", "origin", "main"], check=True, env=self.env)
 
+    def test_homing_reserve_records_the_reserving_session_as_owner(self):
+        import json, os
+        from unittest import mock
+        git = self.repo / ".git"
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "abc-123"}):
+            sn.remember(self.repo, "X Patch a · Mac", "claude/x")
+        self.assertEqual(json.loads((git / "ce-session.json").read_text())["session_id"], "abc-123")
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            sn.remember(self.repo, "Y Patch b · Mac", "claude/y")
+        self.assertNotIn("session_id", json.loads((git / "ce-session.json").read_text()), "a new reservation never keeps the old owner")
+
     def run_cli(self, *args):
         import subprocess, sys
         return subprocess.run([sys.executable, str(SCRIPT), "--repo", str(self.repo), *args], capture_output=True, text=True, encoding="utf-8", env=self.env)
