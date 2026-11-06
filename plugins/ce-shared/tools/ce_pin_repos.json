@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "changelog": "CHANGELOG.md",
+    "heading": "## {version} Patch pin{number}",
+    "body": "- Pin auf Agent Tools {tools_version} (`{commit7}`), Lader `ce` folgt; sonst keine Änderung."
+  },
+  "repos": {
+    "ce": {
+      "heading": "## {version} (Patch)",
+      "body": "Pin-Runde: `tools_version` auf Agent Tools {tools_version} (`{commit7}`); Lader `ce` folgt dem Pin.",
+      "also": [
+        {
+          "file": "Docs/ROADMAP.md",
+          "after": "| **{old_version}** |",
+          "line": "| **{version}** | **Pin{number}** | *Patch, {date}.* Pin-Runde: `tools_version` {tools_version}, Lader folgt. Kein Code, kein Formatwechsel. |"
+        }
+      ]
+    },
+    "toolgen": {
+      "heading": "## {version} – Patch pin{number}",
+      "body": "Pin auf Agent Tools {tools_version} (`{commit7}`); nur `.ce-repo.json` › `tools_version` und Lader `ce`."
+    },
+    "motiongen": {
+      "heading": "## {version} Patch „pin{number}“ – Pin auf Agent Tools {tools_version}",
+      "body": "- Agent-Tools-Pin {old_tools} → {tools_version} (`{commit7}`), Lader `ce` folgt. `core_paths` bleibt `[]`."
+    },
+    "ballon": {
+      "heading": "## {version} Patch „pin{number}“ – Pin auf Agent Tools {tools_version}",
+      "body": "- `.ce-repo.json`: Werkzeugstand {tools_version} (`{commit7}`), `./ce` als Lader dieses Stands. Sonst unverändert."
+    },
+    "critic": {
+      "body": "- `.ce-repo.json`: Pin auf Agent Tools {tools_version} (`{commit7}`), `ce` als Lader dieses Stands neu geschrieben. Nur Konfiguration."
+    }
+  }
+}
