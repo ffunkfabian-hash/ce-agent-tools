@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.40.0 „Offcut“ – unveröffentlicht (06.11.2026)
+
+Trimline 23, vom Nutzer freigegeben.
+
+- **`./ce codex cloud` entfernt:** `ce_codex_cloud.py` samt `test_codex_cloud.py` und `test_cloud_eligibility.py` (beide prüften nur dieses Werkzeug) gelöscht; Lader, `SYNC_FILES`, Richter-Muster `INFRASTRUCTURE` und README nachgezogen. Vorab geprüft: kein echter Lauf in 828 Transkripten, die Claude-Cloud-Umgebung „Default“ nutzt das Werkzeug nicht. `./ce codex quota` und `./ce judge` unverändert; `./ce codex cloud` meldet die Nutzung. [Version](docs/versions/0.40.md).
+  Die Nummer 0.38 kam auf `main` nie vor: der PR blieb offen, bis 0.39 „Sunset“ `merge-check` für gelöschte Tests öffnete, und wurde danach auf 0.40.0 umnummeriert.
+
 ## 0.39.0 „Sunset“ – unveröffentlicht (06.11.2026)
 
 Entscheidung 304.
