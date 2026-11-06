@@ -2,11 +2,14 @@
 import contextlib
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugins" / "ce-shared"
@@ -139,6 +142,61 @@ class RefsTests(unittest.TestCase):
         put(self.project, "Assets/UI/Main.uxml", f'<Style src="project://database/x.uss?fileID=1&amp;guid={G["script"]}&amp;type=3"/>', "5" * 32)
         self.assertEqual({r["asset"] for r in self.query("who", "Bot.cs")["who"]},
                          {"Assets/Prefabs/Bot.prefab", "Assets/Scripts/Game.asmdef", "Assets/UI/Main.uxml"})
+
+    def test_crlf_files_as_on_windows(self):
+        path = self.project / "Assets/Prefabs/Bot.prefab"
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        meta = self.project / "Assets/Art/Glow.mat.meta"
+        meta.write_bytes(meta.read_bytes().replace(b"\n", b"\r\n"))
+        code, out, _ = run("missing", "--project", str(self.project), "--json")
+        self.assertEqual((code, list(json.loads(out)["missing"])), (1, [G["gone"]]))
+        rows = {r["asset"]: r for r in self.query("uses", "Assets/Prefabs/Bot.prefab")["uses"]}
+        self.assertEqual(rows[G["gone"]]["fields"], ["brokenField"])
+        self.assertEqual(rows["Assets/Art/Glow.mat"]["fields"], ["eyeMaterial"])
+
+    def test_windows_separators_and_paths_from_the_shell_find_the_asset(self):
+        for query in ("Assets\\Art\\Glow.mat", str(self.project / "Assets/Art/Glow.mat")):
+            self.assertEqual(self.query("uses", query)["asset"], "Assets/Art/Glow.mat")
+
+    def test_longer_key_ending_in_guid_is_no_reference(self):
+        targets = {r["guid"] for r in self.query("uses", "ProjectSettings/Data.asset")["uses"]}
+        self.assertEqual(targets, {"9" * 32})
+
+    @unittest.skipIf(os.name == "nt", "Symlinks brauchen dort Rechte")
+    def test_unreadable_file_is_skipped_and_counted(self):
+        (self.project / "Assets/Art/Dead.prefab").symlink_to(self.project / "nowhere")
+        code, out, err = run("stats", "--project", str(self.project), "--json")
+        self.assertEqual((code, json.loads(out)["unreadable"]), (0, 1))
+        self.assertIn("Dead.prefab", err)
+
+    def test_script_inside_a_dll_is_undecided_not_gone(self):
+        put(self.project, "Assets/Prefabs/Ui.prefab", YAML + f"  m_Script: {{fileID: 1392445389, guid: {'3' * 32}, type: 3}}\n", "4" * 32)
+        _, out, _ = run("missing", "--project", str(self.project), "--json")
+        result = json.loads(out)
+        self.assertEqual((list(result["missing"]), list(result["undecided"])), ([G["gone"]], ["3" * 32]))
+
+    def test_deleted_cs_script_stays_gone(self):
+        put(self.project, "Assets/Prefabs/Old.prefab", YAML + f"  m_Script: {{fileID: 11500000, guid: {'3' * 32}, type: 3}}\n", "4" * 32)
+        self.assertIn("3" * 32, json.loads(run("missing", "--project", str(self.project), "--json")[1])["missing"])
+
+    def test_local_file_package_counts_as_present(self):
+        outside = self.project / "shared" / "com.y"
+        put(outside, "Runtime/Thing.cs", "", G["gone"])
+        put(self.project, "Packages/manifest.json", json.dumps({"dependencies": {"com.y": "file:../shared/com.y", "com.z": "1.0.0"}}))
+        code, out, _ = run("missing", "--project", str(self.project), "--json")
+        self.assertEqual((code, json.loads(out)["missing"]), (0, {}))
+
+    def test_other_package_versions_in_the_cache_make_everything_undecided(self):
+        put(self.project, "Packages/packages-lock.json", "{}")
+        with tempfile.TemporaryDirectory() as other:
+            main_checkout = Path(other)
+            put(main_checkout, "Packages/packages-lock.json", '{"x": 1}')
+            shutil.copytree(self.cache, main_checkout / "Library" / "PackageCache")
+            shutil.rmtree(self.cache)
+            with mock.patch.object(ce_refs, "package_cache", return_value=main_checkout / "Library" / "PackageCache"):
+                index = ce_refs.build(self.project)
+            self.assertEqual(ce_refs.missing(index)[0], {})
+            self.assertIn(G["gone"].encode(), ce_refs.missing(index)[1])
 
     def test_registered_in_ce_and_sync(self):
         self.assertIn("ce_refs.py", ce_sync.SYNC_FILES)
