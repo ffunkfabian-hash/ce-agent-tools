@@ -42,7 +42,7 @@ CLAUDE_FILES = ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.
 IMPORT = re.compile(r"^\s*@(\S+)", re.MULTILINE)
 PULSE_EVERY = 20              # PostToolUse: look at the transcript every 20th tool call
 MESSAGE_LIMIT = int(os.environ.get("CE_MESSAGE_LIMIT") or 300)  # records (user + assistant) per session (› Sitzungen kurz halten); the variable is a probe aid
-INPUT_LIMIT = 150_000         # input tokens of one request (ce_report.MAX_CONTEXT_TOKENS)
+INPUT_LIMIT = 150_000         # input tokens of one request (ce_report.MAX_CONTEXT_TOKENS); 300,000 for Sightline (input_limit)
 TAIL_BYTES = 512 * 1024       # the last requests of the transcript are enough for the current input
 RECORD_MARK = re.compile(rb'"type":\s*"(user|assistant)"')  # a record line, with or without blanks after the colon
 USAGE_MARK = b'"usage"'
@@ -244,6 +244,17 @@ def due(payload: dict, key: str, every: int = 0) -> bool:
     return hint_state.due(str(payload.get("session_id") or ""), key, every)
 
 
+def input_limit(payload: dict) -> int:
+    """The input limit of this session (ce_report.input_limit: Sightline 300,000, all others INPUT_LIMIT); never raises."""
+    try:
+        if str(TOOLS) not in sys.path:
+            sys.path.insert(0, str(TOOLS))
+        import ce_report  # type: ignore
+        return ce_report.input_limit(payload.get("cwd") or os.getcwd())
+    except Exception:  # noqa: BLE001 - a hint limit must not wedge a tool call
+        return INPUT_LIMIT
+
+
 def pulse(payload: dict) -> dict:
     """PostToolUse: every PULSE_EVERY tool calls, hints on the session limits as additionalContext (once each)."""
     transcript = payload.get("transcript_path")
@@ -256,8 +267,9 @@ def pulse(payload: dict) -> dict:
     if records > MESSAGE_LIMIT and due(payload, f"messages>{records // MESSAGE_LIMIT * MESSAGE_LIMIT}"):
         hints.append(f"Sitzung über {MESSAGE_LIMIT} Nachrichten ({records}): Etappe abschließen und an eine frische "
                      "Sitzung übergeben (› Sitzungen kurz halten, Übergabe nur ohne Verlauf).")
-    if last_input > INPUT_LIMIT and due(payload, "input>limit"):
-        hints.append(f"Letzte Anfrage {last_input:,} Input-Tokens (> {INPUT_LIMIT:,}): Kontext ist groß – Etappe "
+    limit = input_limit(payload)
+    if last_input > limit and due(payload, "input>limit"):
+        hints.append(f"Letzte Anfrage {last_input:,} Input-Tokens (> {limit:,}): Kontext ist groß – Etappe "
                      "abschließen und an eine frische Sitzung übergeben (› Sitzungen kurz halten).")
     if not hints:
         return {}
@@ -281,7 +293,7 @@ def stop(payload: dict) -> dict:
             import ce_report  # type: ignore
             info = ce_report.analyse(Path(transcript))
             line = ce_report.one_line(info)
-            hints = ce_report.hints(info)
+            hints = ce_report.hints(info, ce_report.input_limit(root))
             unchecked = changed_code(root) and info["checks"] == 0
             if unchecked:
                 hints.append("Code/Assets geändert, aber kein ./check oder Testlauf in dieser Sitzung (check-before-stop, DoD 2)")
