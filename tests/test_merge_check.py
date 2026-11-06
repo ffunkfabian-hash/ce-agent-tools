@@ -45,6 +45,10 @@ def test_file(name, patch, status="modified"):
     return {"filename": name, "status": status, "changes": patch.count("\n"), "patch": patch}
 
 
+def removed(name):
+    return test_file(name, "@@\n-x = 1", status="removed")
+
+
 class EvaluateTests(unittest.TestCase):
     def reasons(self, **change):
         return " | ".join(mc.evaluate(facts(**change))["reasons"])
@@ -110,6 +114,99 @@ class EvaluateTests(unittest.TestCase):
         for case in cases:
             self.assertIn("Tests abgeschwächt", self.reasons(files=files + [case]), case)
         self.assertIn("gelöscht: tests/test_gone.py", self.reasons(files=files + [cases[-1]]))
+
+    def spared_result(self, *extra, base=ci_facts):
+        return mc.evaluate(base(files=facts()["files"] + list(extra)))
+
+    def test_a_test_deleted_with_its_source_is_green_but_needs_the_ja(self):
+        test = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_x():\n-    assert old_tool.y\n-def test_z():\n-    assert old_tool.z", status="removed")
+        result = self.spared_result(test, removed("tools/old_tool.py"))
+        self.assertTrue(result["green"], result)
+        self.assertFalse(result["ohne_ja"])
+        self.assertEqual(len(result["ja_noetig_weil"]), 1)
+        self.assertIn("Tests gelöscht, weil ihre Quelle entfällt: tests/test_old.py", result["ja_noetig_weil"][0])
+        self.assertEqual(result["warnings"], ["Testdatei mit ihrer Quelle gelöscht, nicht gezählt: tests/test_old.py (2 Testfälle, 2 Prüfungen), Quelle: tools/old_tool.py"])
+
+    def test_the_source_counts_by_path_tail_file_name_or_import(self):
+        lines = ('"tools/old_tool.py"', '"pkg/tools/old_tool.py"', '"./tools/old_tool.py"', 'ROOT / "pkg" / "old_tool.py"', "import old_tool as t",
+                 "    from pkg.tools import old_tool", "from pkg.tools.old_tool import x", "from . import old_tool", "from .old_tool import x",
+                 "import os, old_tool", "const t = require('./old_tool');", "import t from './old_tool';", "export * from './old_tool';", "} from './old_tool';")
+        for line in lines:
+            test = test_file("tests/test_old.py", f"@@\n-{line}\n-def test_x():\n-    assert y", status="removed")
+            self.assertTrue(self.spared_result(test, removed("pkg/tools/old_tool.py"))["green"], line)
+
+    def test_a_test_whose_source_stays_is_red(self):
+        test = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_x():\n-    assert y", status="removed")
+        self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test)["reasons"]))
+        self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed("tools/unrelated.py"))["reasons"]))
+
+    def test_only_a_deleted_non_test_file_counts_as_source(self):
+        test = test_file("tests/test_old.py", '@@\n-from tests.test_helper import h\n-PATH = "src/a.py"\n-DOC = "docs/README.md"\n-def test_x():\n-    assert y', status="removed")
+        others = (removed("tests/test_helper.py"), test_file("src/a.py", "@@\n-x\n+y"), removed("sub/README.md"), removed("docs/README.md"))
+        for other in others:
+            result = self.spared_result(test, other)
+            self.assertIn("Tests abgeschwächt", " ".join(result["reasons"]), other)
+            self.assertIn("gelöscht: tests/test_old.py", " ".join(result["reasons"]), other)
+
+    def test_a_similar_word_is_no_source(self):
+        cases = (("src/a.py", 'P = "data.py"'), ("src/a.py", 'P = "my-a.py"'), ("src/a.py", 'P = "other/a.py"'), ("src/run.py", "subprocess.run(x)"),
+                 ("src/run.py", "from subprocess import run"), ("src/a.py", "from other.a import x"), ("tools/mock.py", "from unittest import mock"),
+                 ("src/config.py", "import core as config"), ("src/config.py", 'from the config file"""'), ("pkg/tools/old_tool.py", "from pkg.old_tool import x"),
+                 ("legacy/config.json", "import config"), ("src/config.py", """self.assertIn("read from 'config'", out)"""),
+                 ("src/users.py", """cur.execute('select * from "users"')"""), ("src/run.py", "# moved from 'run' earlier"), ("src/run.py", "yield from 'run'"))
+        for source, line in cases:
+            test = test_file("tests/test_old.py", f"@@\n-{line}\n-def test_x():\n-    assert y", status="removed")
+            self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed(source))["reasons"]), line)
+
+    def test_a_path_without_an_extension_stays_red(self):
+        test = test_file("tests/test_old.py", '@@\n-P = "bin/tool"\n-def test_x():\n-    assert y', status="removed")
+        self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed("bin/tool"))["reasons"]))
+
+    def test_only_removed_lines_name_a_source(self):
+        test = test_file("tests/test_old.py", '@@\n "src/a.py"\n+"src/a.py"\n-def test_x():\n-    assert y', status="removed")
+        self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed("src/a.py"))["reasons"]))
+
+    def test_in_a_mix_only_the_unfit_test_counts(self):
+        fit = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_a():\n-    assert a\n-def test_b():\n-    assert b", status="removed")
+        unfit = test_file("tests/test_core.py", "@@\n-def test_c():\n-    assert c", status="removed")
+        result = self.spared_result(fit, unfit, removed("tools/old_tool.py"))
+        self.assertEqual(result["reasons"], ["Tests abgeschwächt: 1 Testfälle und 1 Prüfungen weniger (gelöscht: tests/test_core.py)"])
+        self.assertEqual(result["warnings"], ["Testdatei mit ihrer Quelle gelöscht, nicht gezählt: tests/test_old.py (2 Testfälle, 2 Prüfungen), Quelle: tools/old_tool.py"])
+        self.assertIn("Tests gelöscht, weil ihre Quelle entfällt: tests/test_old.py", " ".join(result["ja_noetig_weil"]))
+
+    def test_a_spared_file_does_not_cover_a_weakened_one(self):
+        fit = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_a():\n-    assert a", status="removed")
+        edited = test_file("tests/test_core.py", "@@\n-        self.assertEqual(a, 1)")
+        reasons = self.spared_result(fit, edited, removed("tools/old_tool.py"))["reasons"]
+        self.assertEqual(reasons, ["Tests abgeschwächt: 0 Testfälle und 1 Prüfungen weniger (gekürzt: tests/test_core.py)"])
+
+    def test_new_tests_do_not_pay_for_a_loss_beside_a_spared_file(self):
+        fit = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_a():\n-    assert a\n-def test_b():\n-    assert b", status="removed")
+        new = test_file("tests/test_new.py", "@@\n+import new_tool\n+def test_a():\n+    assert a\n+def test_b():\n+    assert b", status="added")
+        cut = test_file("tests/test_core.py", "@@\n-def test_c():\n-    assert c\n-def test_d():\n-    assert d")
+        reasons = self.spared_result(fit, new, cut, removed("tools/old_tool.py"))["reasons"]
+        self.assertEqual(reasons, ["Tests abgeschwächt: 2 Testfälle und 2 Prüfungen weniger (gekürzt: tests/test_core.py)"])
+        self.assertTrue(self.spared_result(fit, new, removed("tools/old_tool.py"))["green"])
+
+    def test_a_merely_changed_test_stays_red_when_the_source_goes(self):
+        test = test_file("tests/test_core.py", "@@\n-import old_tool\n-def test_x():\n-    assert y")
+        self.assertIn("Tests abgeschwächt", " ".join(self.spared_result(test, removed("tools/old_tool.py"))["reasons"]))
+
+    def test_a_deleted_test_without_a_patch_stays_red(self):
+        test = {"filename": "tests/test_old.py", "status": "removed", "changes": 900}
+        self.assertEqual(self.spared_result(test, removed("tools/old_tool.py"))["reasons"], ["Testdatei gelöscht, Inhalt nicht lesbar: tests/test_old.py"])
+
+    def test_a_deleted_helper_without_tests_needs_no_exception(self):
+        helper = test_file("tests/helper.py", "@@\n-import old_tool\n-X = 1", status="removed")
+        result = self.spared_result(helper, removed("tools/old_tool.py"))
+        self.assertTrue(result["green"])
+        self.assertTrue(result["ohne_ja"], result)
+
+    def test_a_spared_test_writes_no_patch_receipt(self):
+        test = test_file("tests/test_old.py", "@@\n-import old_tool\n-def test_x():\n-    assert y", status="removed")
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(mc, "receipt_path", return_value=Path(folder) / mc.RECEIPT_FILE):
+            mc.update_receipt(self.spared_result(test, removed("tools/old_tool.py")), "")
+            self.assertFalse((Path(folder) / mc.RECEIPT_FILE).exists())
 
     def test_a_rename_that_takes_a_test_out_of_the_run_is_red(self):
         def moved(old, new):
