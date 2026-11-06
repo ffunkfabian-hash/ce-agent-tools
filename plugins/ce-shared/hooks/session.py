@@ -250,7 +250,7 @@ def input_limit(payload: dict) -> int:
         if str(TOOLS) not in sys.path:
             sys.path.insert(0, str(TOOLS))
         import ce_report  # type: ignore
-        return ce_report.input_limit(payload.get("cwd") or os.getcwd())
+        return ce_report.input_limit(payload.get("cwd") or os.getcwd(), str(payload.get("session_id") or ""))
     except Exception:  # noqa: BLE001 - a hint limit must not wedge a tool call
         return INPUT_LIMIT
 
@@ -293,7 +293,7 @@ def stop(payload: dict) -> dict:
             import ce_report  # type: ignore
             info = ce_report.analyse(Path(transcript))
             line = ce_report.one_line(info)
-            hints = ce_report.hints(info, ce_report.input_limit(root))
+            hints = ce_report.hints(info, ce_report.input_limit(root, str(payload.get("session_id") or "")))
             unchecked = changed_code(root) and info["checks"] == 0
             if unchecked:
                 hints.append("Code/Assets geändert, aber kein ./check oder Testlauf in dieser Sitzung (check-before-stop, DoD 2)")

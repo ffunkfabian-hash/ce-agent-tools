@@ -1,5 +1,10 @@
 # Changelog
 
+## Patch waechter-messung (06.11.2026)
+
+- **Trimline 21:** `heavy_lock_waited_s` zählt jede Wartezeit einmal: nur die Zeile `heavy lock: free after N s` aus Bash-Läufen, nicht „held, waited“ (dieselbe Wartezeit) und nicht aus `cat`/`grep` alter Logs.
+- **Entscheidung 311:** `--reserve` schreibt `session_id` (optional) in `ce-session.json`; Stop-Wächter und Erinnerung laufen nur für diese Sitzung. Ohne Besitzer übernimmt der erste Stopp, ein Nachfolger nach 6 h Stille des Besitzers. Die 300.000-Grenze von Sightline gilt nur für den Besitzer.
+
 ## 0.41.0 „Backlink“ – unveröffentlicht (06.11.2026)
 
 - **`./ce refs` (`ce_refs.py`):** `who`, `uses`, `missing`, `stats` lesen die GUID-Verweise eines Unity-Projekts aus YAML-, `.meta`- und JSON-artigen Dateien. Der Code-Seite (`csharp-lsp`) fehlte bisher die Verdrahtung in Prefabs und Szenen. Eigenständig, nur Standardbibliothek, für jedes Unity-Projekt; vom Nutzer beauftragt.

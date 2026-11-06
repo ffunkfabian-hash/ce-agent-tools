@@ -901,6 +901,29 @@ class ReportAndSessionHookTests(unittest.TestCase):
         path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
         return path
 
+    def lock_wait(self, command, output, *, tool="Bash"):
+        import tempfile, ce_report
+        records = [{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": tool, "input": {"command": command, "file_path": command}}]}},
+                   {"type": "user", "message": {"content": [{"type": "tool_result", "content": output}]}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.jsonl"
+            path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            return ce_report.analyse(path)["heavy_lock_waited_s"]
+
+    def test_lock_wait_counts_each_real_wait_once(self):
+        # Trimline 21: heavy_lock prints "free after" per wait; "held, waited" is the same wait as state() and never counts on top
+        waited = ("heavy lock (unity): waiting for x - held by y\nheavy lock: free after 120 s\n"
+                  "heavy lock: held, waited 120 s\nheavy lock: still waiting after 1 min for y\nok\n")
+        self.assertEqual(self.lock_wait("./ce lock unity -- ./run", waited), 120)
+        self.assertEqual(self.lock_wait("./ce lock unity -- ./run", "heavy lock: free after 30 s\nheavy lock: free after 45 s\n"), 75)
+
+    def test_lock_wait_ignores_quoted_output(self):
+        quoted = "heavy lock: free after 900 s\n"
+        self.assertEqual(self.lock_wait("cat logs/old-run.log", quoted), 0)
+        self.assertEqual(self.lock_wait("grep -n 'free after' logs/a.log", quoted), 0)
+        self.assertEqual(self.lock_wait("src/x.py", quoted, tool="Read"), 0)
+        self.assertEqual(self.lock_wait("./run", "log said: heavy lock: free after 900 s today\n"), 0)
+
     def test_report_counts_the_rules(self):
         import tempfile, ce_report
         with tempfile.TemporaryDirectory() as tmp:

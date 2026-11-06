@@ -216,6 +216,9 @@ def remember(repo: Path, name: str, branch: str, model: str = "", about: str = "
             model, about = model or earlier.get("model", ""), about or earlier.get("about", "")
         record = {"name": name, "branch": branch, "reserved_at": time.time()}
         record.update({key: value for key, value in (("model", model), ("about", about)) if value})
+        owner = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()  # Homing: the reserving session owns the watcher (hooks/postfach_watch.owns)
+        if owner:
+            record["session_id"] = owner
         (folder / SESSION_FILE).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
         if previous and previous != name:
             forget_foreign_state(folder / WATCH_STATE)
