@@ -243,8 +243,9 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(mc.evaluate(ci_facts(checks=[{"context": "ci", "state": "SUCCESS"}]))["ohne_ja"])
 
     def test_where_no_ci_can_come_stage_one_does_not_wait_for_it(self):
-        """Richter 0.35 Runde 3, Nr 7.5: Nexogen has no workflow, a pull request of .md files starts none here."""
-        self.assertTrue(mc.evaluate(ci_facts(checks=[], workflows=0))["ohne_ja"])
+        """Richter 0.35 Runde 3, Nr 7.5: a pull request of .md files starts no CI; without a workflow file 0.37 wants the receipt instead."""
+        self.assertTrue(mc.evaluate(ci_facts(checks=[], workflows=0))["ohne_ja"])  # old facts; gather now adds workflow_files, see VerifyReceiptTests
+        self.assertFalse(mc.evaluate(no_ci_facts(workflows=0, verify=None))["ohne_ja"], "0.37: the receipt of ./ce verify replaces the check")
         docs = {"filename": "docs/a.md", "status": "modified", "changes": 2, "patch": "@@\n+x"}
         self.assertTrue(mc.evaluate(ci_facts(checks=[], files=[CHANGELOG, docs], workflows=2))["ohne_ja"])
         self.assertFalse(mc.evaluate(ci_facts(checks=[], workflows=1))["ohne_ja"])
@@ -712,6 +713,20 @@ class VerifyReceiptTests(unittest.TestCase):
         docs = {"filename": "docs/a.md", "status": "modified", "changes": 2, "patch": "@@\n+x"}
         result = mc.evaluate(no_ci_facts(verify=None, files=[CHANGELOG, docs]))
         self.assertEqual((result["green"], result["ohne_ja"], result["verify_noetig"]), (True, True, False))
+
+    def test_a_rename_to_a_text_is_no_text_change(self):
+        """Richter 0.37, Nr 4.2: run.py → run.md takes code out of the run, in both worlds."""
+        moved = {"filename": "src/run.md", "previous_filename": "src/run.py", "status": "renamed", "changes": 0}
+        self.assertFalse(mc.evaluate(no_ci_facts(verify=None, files=[CHANGELOG, moved]))["green"])
+        self.assertIn("keine erfolgreichen Checks zum Head gemeldet", mc.evaluate(ci_facts(checks=[], files=[CHANGELOG, moved]))["ja_noetig_weil"])
+
+    def test_a_base_without_check_quick_is_no_dead_end_and_no_stage_one(self):
+        """Richter 0.37, Nr 4.3: ./ce verify refuses there, so a red run could never turn green, not even the pull request that adds the check."""
+        for config in ({**CONFIG}, {**CONFIG, "check": {"full": ["x"]}}, {**CONFIG, "check": ["x"]}):
+            result = mc.evaluate(ci_facts(checks=[], workflow_files=0, base_config=config, head_config=config))
+            self.assertEqual((result["green"], result["ohne_ja"], result["verify_noetig"]), (True, False, False), config)
+            self.assertIn("Teile nicht geprüft", result["ja_noetig_weil"])
+            self.assertIn("ohne check.quick in der Basis", " ".join(result["warnings"]))
 
     def test_the_ja_does_not_replace_the_receipt(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -15,7 +15,7 @@ Merge stages (regeln-details > Freigaben und Merge, 0.35): `ohne_ja` is true for
 path, core_paths listed in the base, .ce-repo.json unchanged. No human stands at this door, so it also wants what a green run alone
 does not say: the session's own pull request (same repository, head = this folder) into the default branch (a receipt survives
 `gh pr edit --base`), no cloud session (stage 3), nothing left unchecked, and a successful check where CI can come at all (right
-after a push none has reported yet; a repository without workflows and a pull request of .md files wait for nothing).
+after a push none has reported yet; a pull request of .md files waits for nothing, a repository without workflows for the receipt below).
 `ja_noetig_weil` names what stands against it. A pull request that only moves .ce-repo.json > tools_version (0.37 Waybill) keeps
 stage 1 and, when .ce-repo.json is a core path, the classification Patch - if ce-agent-tools answers that the new commit is on its main,
 carries the named version and does not go back (pin_problem); anything else, a failed query too, is stage 2 as before. Everything
@@ -24,7 +24,7 @@ warning asks for the judge; whether one ran is not visible here, that stays a ru
 
 Repositories without GitHub CI (0.37 Waybill): no workflow file at the base, whatever the Actions list still names (it keeps a
 workflow that once ran on a branch). There a change beyond .md needs the receipt of `./ce verify` for this very head (ce_verify.py), or
-merge-check is red; a new head has none. Where CI runs nothing changes.
+merge-check is red; a new head has none. A base without check.quick has nothing to verify: a warning, and no stage 1. Where CI runs nothing changes.
 
 Output: the result as JSON on stdout, one text line on stderr. Exit 0 green, 1 red, 2 not checkable (never green).
 
@@ -449,13 +449,19 @@ def only_pin_changed(base_config, head_config):
     return bool(base) and bool(head) and base != head and base_rest == head_rest
 
 
+def quick_of(config):
+    """check.quick of a config, None when there is none."""
+    check = (config or {}).get("check")
+    return check.get("quick") if isinstance(check, dict) else None
+
+
 def verify_problem(receipt, repo, head, config):
     """"" when the receipt of ./ce verify fits this head and the check.quick of the base; else why not."""
     if not isinstance(receipt, dict):
         return f"Keine Quittung von ./ce verify zu Head {head[:7]}"
     if receipt.get("green") is not True or receipt.get("repo") != repo or receipt.get("head") != head:
         return f"Quittung von ./ce verify gilt nicht für Head {head[:7]}"
-    if receipt.get("check") != (config.get("check") or {}).get("quick"):
+    if receipt.get("check") != quick_of(config):
         return "Quittung von ./ce verify prüfte nicht das check.quick der Basis"
     return ""
 
@@ -484,7 +490,7 @@ def evaluate(facts, expected_sha=""):
     failed, pending = ci_state(checks)
     pending += [name for name in facts.get("runs_open") or [] if name not in pending]  # a queued run has no check entry yet
     no_ci = facts.get("workflow_files") == 0  # None: not read or unreadable, the old way then
-    doc_only = all(f["filename"].lower().endswith(".md") for f in files)
+    doc_only = all(name.lower().endswith(".md") for f in files for name in (f["filename"], f.get("previous_filename")) if name)  # run.py → run.md is code
     if not checks and not pending and not no_ci:
         warnings.append("Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen")
     if failed:
@@ -504,7 +510,10 @@ def evaluate(facts, expected_sha=""):
     if unread:
         warnings.append(f"Testdateien ohne Diff von GitHub, nicht bewertet: {', '.join(unread[:5])}")
     config = facts.get("base_config") or {}
-    verify_due = no_ci and not doc_only
+    runnable = bool(quick_of(config))
+    verify_due = no_ci and not doc_only and runnable
+    if no_ci and not doc_only and not runnable:
+        warnings.append("Repo ohne GitHub-CI und ohne check.quick in der Basis: nichts geprüft, keine Stufe 1")
     problem = verify_problem(facts.get("verify"), facts["repo"], head, config) if verify_due else ""
     if problem:
         reasons.append(f"{problem}: Repo ohne GitHub-CI, ./ce verify {facts['repo']} {pr['number']} am Mac (Cloud: Merge-Bitte an Sightline)")
@@ -526,7 +535,7 @@ def evaluate(facts, expected_sha=""):
     if code_lines >= JUDGE_LINES:
         warnings.append(f"{code_lines} Zeilen Code (ohne .md): Richter nötig (`./ce judge`); ob einer lief, sieht merge-check nicht")
     ci_due = facts.get("workflows", 1) > 0 and not no_ci and not doc_only
-    unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings)
+    unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings) or (no_ci and not doc_only and not runnable)
     stage_one = ((bool(reasons), "merge-check nicht grün"), (ci_due and not ci_passed(checks), "keine erfolgreichen Checks zum Head gemeldet"),
                  (not listed, "core_paths fehlt in der Basis"), (config_changed, ".ce-repo.json im PR geändert" + (f" (Pin nicht bestätigt: {pin_why})" if pin_only and pin_why else "")), (bool(touched), "Kernpfad berührt"),
                  (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),

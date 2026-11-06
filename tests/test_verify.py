@@ -122,13 +122,12 @@ class RunTests(VerifyCase):
 
     def test_out_of_time_is_not_checkable_and_nothing_of_the_group_survives(self):
         mark = self.folder / "alive"
-        self.quick = ["sh", "-c", f"(sleep 3; touch {mark}) & sleep 30"]
-        with mock.patch.object(cv.time, "monotonic", side_effect=_Clock(step=30)):
-            with self.assertRaisesRegex(mc.NotCheckable, "Zeitlimit 1 min"):
-                self.verify(minutes=1)
+        self.quick = ["sh", "-c", f"(sleep 2; touch {mark}) & sleep 30"]
+        with self.assertRaisesRegex(mc.NotCheckable, "Zeitlimit 0 min"):
+            self.verify(minutes=0)
         self.assertIsNone(mc.read_verify(REPO, self.head))
         self.assertEqual(self.copies(), [])
-        time.sleep(3.5)
+        time.sleep(2.5)
         self.assertFalse(mark.exists(), "the grandchild went with the group")
 
     def test_no_test_at_all_is_not_checkable(self):
@@ -137,6 +136,41 @@ class RunTests(VerifyCase):
         self.assertEqual((code, result["receipt"]), (2, False))
         self.assertIn("nicht prüfbar, keine Quittung", err)
         self.assertIsNone(mc.read_verify(REPO, self.head))
+
+    def test_only_skips_are_no_test_either(self):
+        """Richter 0.37, Nr 4.1: a missing neighbour can end as nothing but skips."""
+        self.quick = ["sh", "-c", "echo 'Ran 5 tests in 0.1s'; echo 'OK (skipped=5)'"]
+        code, result, err = self.run_main()
+        self.assertEqual((code, result["receipt"]), (2, False))
+        self.assertIn("5 Tests, 5 übersprungen", err)
+        self.assertIsNone(mc.read_verify(REPO, self.head))
+
+    def test_a_term_from_outside_clears_copy_and_group(self):
+        """Richter 0.37, Nr 4.8: an agent's time limit hits the tool, not the tests."""
+        mark, started = self.folder / "alive", self.folder / "started"
+        self.quick = ["sh", "-c", f"touch {started}; (sleep 2; touch {mark}) & sleep 30"]
+        driver = self.folder / "driver.py"
+        driver.write_text(f"""import json, sys
+from unittest import mock
+sys.path.insert(0, {str(PLUGIN / "tools")!r})
+import ce_merge_check as mc, ce_verify as cv
+pr = {{"number": 7, "state": "open", "head": {{"sha": {self.head!r}, "ref": "x", "repo": {{"full_name": "o/r"}}}}, "base": {{"ref": "main", "repo": {{"full_name": "o/r"}}}}}}
+gh = lambda *args: json.dumps(pr if "/pulls/" in args[-1] else {{"check": {{"quick": {self.quick!r}}}}})
+with mock.patch.object(mc, "gh", gh), mock.patch.object(cv, "REMOTE", {self.remote.as_uri()!r}), mock.patch.object(cv, "on_mac", return_value=True):
+    sys.exit(cv.main(["o/r", "7"]))
+""", encoding="utf-8")
+        tool = subprocess.Popen([sys.executable, str(driver)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            if started.exists():
+                break
+            time.sleep(0.1)
+        self.assertTrue(started.exists())
+        tool.terminate()
+        self.assertEqual(tool.wait(10), 143)
+        self.assertEqual(self.copies(), [])
+        self.assertIsNone(mc.read_verify(REPO, self.head))
+        time.sleep(2.5)
+        self.assertFalse(mark.exists())
 
     def test_a_check_without_unittest_output_still_counts(self):
         self.quick = ["true"]
@@ -154,22 +188,17 @@ class RunTests(VerifyCase):
         self.assertIn("KEEP_ME=1", text)
         self.assertIn("CE_VERIFY=1", text, "the sign for a check bound to the checkout")
 
+    def test_a_callers_venv_comes_off_the_path(self):
+        self.quick = ["sh", "-c", f'echo "$PATH" > {self.folder / "path.txt"}']
+        with mock.patch.dict(os.environ, {"VIRTUAL_ENV": "/fremd", "PATH": f"/fremd/bin{os.pathsep}{os.environ['PATH']}"}):
+            self.assertTrue(self.verify()["green"])
+        self.assertNotIn("/fremd/bin", (self.folder / "path.txt").read_text(encoding="utf-8"))
+
     def test_the_log_keeps_what_the_command_said(self):
         self.quick = ["sh", "-c", "echo Fehlerbild; exit 1"]
         code, result, err = self.run_main()
         self.assertIn("Fehlerbild", Path(result["log"]).read_text(encoding="utf-8"))
         self.assertIn("Fehlerbild", err)
-
-
-class _Clock:
-    """monotonic for the deadline: every read a step further, so a limit of a minute passes at once."""
-
-    def __init__(self, step):
-        self.now, self.step = 0.0, step
-
-    def __call__(self):
-        self.now += self.step
-        return self.now
 
 
 class NotCheckableTests(VerifyCase):
@@ -194,6 +223,11 @@ class NotCheckableTests(VerifyCase):
         self.quick = None
         self.assert_refused("check.quick der Basis main unbrauchbar")
 
+    def test_a_config_with_a_broken_check_is_not_checkable(self):
+        real = self.gh
+        with mock.patch.object(mc, "gh", lambda *args: json.dumps({"check": ["x"]}) if ".ce-repo.json" in args[-1] else real(*args)):
+            self.assert_refused("check.quick der Basis main unbrauchbar")
+
     def test_a_head_that_cannot_be_fetched(self):
         self.head = "d" * 40
         self.assert_refused("nicht geladen")
@@ -215,10 +249,10 @@ class VenvTests(VerifyCase):
     def test_a_repository_with_requirements_gets_a_shared_clean_venv(self):
         self.head = self.commit("requirements-lock.txt", "# nichts\n")
         self.commit("other", "x")
-        self.quick = [".venv/bin/python", "-c", "import sys; print('Ran 1 test in 0s'); print(sys.prefix)"]
+        self.quick = [[".venv/bin/python", "-c", "import sys; print('Ran 1 test in 0s'); print(sys.prefix)"], [".venv/bin/pip", "--version"]]  # scripts work too
         first = self.verify()
         self.assertEqual((first["green"], first["venv"]), (True, "requirements-lock.txt"), Path(first["log"]).read_text(encoding="utf-8"))
-        venvs = [item for item in (self.folder / "cache" / "venvs").glob("*")]
+        venvs = [item for item in (self.folder / "cache" / "venvs").glob("*") if item.is_dir()]
         self.assertEqual(len(venvs), 1)
         with mock.patch.object(cv, "step", wraps=cv.step) as step:
             self.assertTrue(self.verify()["green"])
@@ -229,8 +263,26 @@ class VenvTests(VerifyCase):
         self.head = self.commit("requirements-lock.txt", "--no-index\ngibt-es-nicht==1\n")
         with self.assertRaisesRegex(mc.NotCheckable, "pip install -r requirements-lock.txt"):
             self.verify()
-        self.assertEqual(list((self.folder / "cache" / "venvs").glob("*")), [], "no half environment stays")
+        self.assertEqual([item for item in (self.folder / "cache" / "venvs").glob("*") if item.is_dir()], [], "no half environment stays")
         self.assertIsNone(mc.read_verify(REPO, self.head))
+
+    def test_a_half_built_environment_is_built_again(self):
+        self.head = self.commit("requirements.txt", "# nichts\n")
+        self.quick = [".venv/bin/python", "-c", "print('Ran 1 test in 0s')"]
+        self.assertTrue(self.verify()["green"])
+        ready = next(item for item in (self.folder / "cache" / "venvs").glob("*") if item.is_dir())
+        (ready / cv.VENV_DONE).unlink()
+        (ready / "bin" / "python").unlink()
+        self.assertTrue(self.verify()["green"])
+
+    def test_pip_runs_in_the_copy_and_not_where_the_caller_stands(self):
+        """Richter 0.37, Nr 4.6: `-e .` in a requirements file must not reach a checkout."""
+        self.head = self.commit("requirements.txt", "# nichts\n")
+        self.quick = ["true"]
+        with mock.patch.object(cv, "step", wraps=cv.step) as step:
+            self.assertTrue(self.verify()["green"])
+        pip = next(call for call in step.call_args_list if "pip" in map(str, call.args[0]))
+        self.assertEqual(Path(pip.kwargs["cwd"]).parent.name, "runs")
 
     def test_without_requirements_no_venv(self):
         self.assertIsNone(self.verify()["venv"])

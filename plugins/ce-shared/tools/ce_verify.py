@@ -2,14 +2,16 @@
 """ce_verify.py <owner/repo> <PR> [--minutes N] - a clean run of check.quick on the head of a pull request (0.37 Waybill).
 
 For repositories without GitHub CI: the Mac does what a runner would do. Fetches exactly the head SHA into a throwaway folder in the
-cache (never a checkout, never the worktree list of a repo), runs check.quick of the BASE branch there - a pull request cannot swap its own
-check, the same rule as in merge-check - and writes a receipt per head SHA. `./ce merge-check` reads it; a new head has none.
+cache (never a checkout, never the worktree list of a repo), runs check.quick of the BASE branch there - a pull request cannot swap the
+command, the same rule as in merge-check; the scripts and tests that command starts are the head's, weakened tests stay with merge-check
+and the judge - and writes a receipt per head SHA. `./ce merge-check` reads it; a new head has none.
 
-Only a green run writes one. A run first deletes the receipt of its head, so red, broken off, out of time or not checkable leaves none.
+Only a green run writes one. A run first deletes the receipt of its head, so red, broken off, out of time or not checkable leaves none;
+a run without tests, or with every test skipped, is not checkable.
 Mac only: a cloud session has no neighbour repositories and no Mac, it sends a merge request to Sightline, who runs this. A pull
 request from a fork is refused, its code would run on the Mac.
 
-Clean means: fresh tree, no .venv from a checkout, no GIT_*/PYTHONPATH/VIRTUAL_ENV from the caller. A repository with
+Clean means: fresh tree, no .venv from a checkout, no GIT_*/PYTHONPATH/VIRTUAL_ENV from the caller, and a caller's venv off the PATH. A repository with
 requirements-lock.txt or requirements.txt gets a .venv: a link to a virtual environment in the cache, one per requirements file and
 Python, built on first use. CE_VERIFY=1 tells check.quick it stands in a copy: a check of this machine's installation against the
 checkout (Nexogen's links) has to skip itself there, or it is red in every copy. HOME stays: neighbour repositories are read from their checkout on this Mac, each repository pins the commit
@@ -43,6 +45,7 @@ import heavy_lock  # noqa: E402
 MINUTES = 60  # Formgen v2 needs about 9
 REMOTE = "https://github.com/{repo}.git"
 REQUIREMENTS = ("requirements-lock.txt", "requirements.txt")
+VENV_DONE = ".ce-ready"
 DROPPED_ENV = ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "__PYVENV_LAUNCHER__")
 FETCH_SECONDS = 1800  # Cube Escape is 600 MB
 SETUP_SECONDS = 900
@@ -61,13 +64,17 @@ def cache():
 
 
 def clean_env():
-    return {key: value for key, value in os.environ.items() if key not in DROPPED_ENV and not key.startswith("GIT_")}
+    env = {key: value for key, value in os.environ.items() if key not in DROPPED_ENV and not key.startswith("GIT_")}
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        env["PATH"] = os.pathsep.join(part for part in env.get("PATH", "").split(os.pathsep) if part != os.path.join(venv, "bin"))
+    return env
 
 
-def step(argv, seconds, what, env=None):
+def step(argv, seconds, what, env=None, cwd=None):
     """One preparing command; NotCheckable when it fails."""
     try:
-        done = subprocess.run([str(part) for part in argv], capture_output=True, text=True, timeout=seconds, env=env or clean_env(), stdin=subprocess.DEVNULL)
+        done = subprocess.run([str(part) for part in argv], capture_output=True, text=True, timeout=seconds, env=env or clean_env(), stdin=subprocess.DEVNULL, cwd=cwd)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise mc.NotCheckable(f"{what}: {error}") from error
     if done.returncode:
@@ -95,18 +102,20 @@ def link_venv(root):
     key = hashlib.sha256(found.read_bytes() + sys.version.encode() + platform.machine().encode()).hexdigest()[:16]
     ready = cache() / "venvs" / key
     ready.parent.mkdir(parents=True, exist_ok=True)
-    if not ready.is_dir():
-        build = Path(tempfile.mkdtemp(prefix=".build-", dir=ready.parent))
-        try:
-            step([sys.executable, "-m", "venv", build], SETUP_SECONDS, "venv")
-            step([build / "bin" / "python", "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", found], SETUP_SECONDS, f"pip install -r {found.name}")
+    gate = os.open(f"{ready}.lock", os.O_CREAT | os.O_RDWR)
+    try:
+        heavy_lock.lock_fd(gate, True, True)  # two runs at once: the first builds, the second uses it; built in place, scripts name this path
+        if not (ready / VENV_DONE).is_file():
+            shutil.rmtree(ready, ignore_errors=True)
             try:
-                build.rename(ready)  # two runs at once: the first wins, the second uses it
-            except OSError:
-                if not ready.is_dir():
-                    raise
-        finally:
-            shutil.rmtree(build, ignore_errors=True)
+                step([sys.executable, "-m", "venv", ready], SETUP_SECONDS, "venv")
+                step([ready / "bin" / "python", "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", found], SETUP_SECONDS, f"pip install -r {found.name}", cwd=root)
+            except mc.NotCheckable:
+                shutil.rmtree(ready, ignore_errors=True)
+                raise
+            (ready / VENV_DONE).touch()
+    finally:
+        os.close(gate)
     os.utime(ready)
     (root / ".venv").symlink_to(ready, target_is_directory=True)
     return found.name
@@ -172,7 +181,7 @@ def verify(repo, number, minutes=MINUTES, say=None):
         raise mc.NotCheckable("PR aus einem anderen Repo: fremder Code läuft nicht am Mac")
     mc.verify_path(repo, head).unlink(missing_ok=True)  # first: an old receipt must not outlive a run that breaks off
     try:
-        quick = ((mc.read_config(repo, base) or {}).get("check") or {}).get("quick")
+        quick = mc.quick_of(mc.read_config(repo, base))
         argvs = ce_check.commands_of(quick)
     except ce_common.RepoError as error:
         raise mc.NotCheckable(f"check.quick der Basis {base} unbrauchbar: {error}") from error
@@ -186,7 +195,10 @@ def verify(repo, number, minutes=MINUTES, say=None):
     start = time.monotonic()
     try:
         fetch(repo, head, root)
-        venv = link_venv(root)
+        try:
+            venv = link_venv(root)
+        except OSError as error:
+            raise mc.NotCheckable(f"Umgebung nicht gebaut: {error}") from error
         ready = time.monotonic()
         deadline = ready + minutes * 60
         env, commands = {**clean_env(), "CE_VERIFY": "1"}, []
@@ -197,8 +209,8 @@ def verify(repo, number, minutes=MINUTES, say=None):
             if code is None:
                 raise mc.NotCheckable(f"Zeitlimit {minutes} min überschritten bei {' '.join(argv)}; Protokoll {log}")
         tests, skipped = counts(log.read_text(encoding="utf-8", errors="replace"))
-        if tests == 0:
-            raise mc.NotCheckable(f"check.quick lief ohne einen einzigen Test; Protokoll {log}")
+        if tests is not None and tests <= skipped:  # a neighbour that is missing can end as nothing but skips
+            raise mc.NotCheckable(f"check.quick lief keinen einzigen Test ({tests} Tests, {skipped} übersprungen); Protokoll {log}")
         green = all(item["code"] == 0 for item in commands)
         result = {"repo": repo, "pr": number, "head": head, "base": base, "green": green, "tests": tests, "skipped": skipped, "venv": venv,
                   "commands": commands, "setup_seconds": round(ready - start, 1), "seconds": round(time.monotonic() - ready, 1), "log": str(log)}
@@ -225,8 +237,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error("owner/repo erwartet")
-    for name in (signal.SIGTERM, signal.SIGHUP):  # a time limit from outside still clears the copy and the process group
-        signal.signal(name, lambda signum, _frame: sys.exit(128 + signum))
+    for name in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):  # a time limit from outside still clears the copy and the process group
+        if name is not None:
+            signal.signal(name, lambda signum, _frame: sys.exit(128 + signum))
     try:
         result = verify(args.repo, args.pr, args.minutes)
     except mc.NotCheckable as error:
