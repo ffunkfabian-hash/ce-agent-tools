@@ -136,10 +136,12 @@ class RunCase(unittest.TestCase):
         self.configs = {"o/nx": {"name": "nx"}}
         self.check = {"green": True, "ohne_ja": True, "ja_noetig_weil": [], "reasons": []}
         self.verify = (0, {"green": True})
+        self.pr_fails = False
         for patcher in (mock.patch.dict(os.environ, {"CE_PIN_CACHE": str(self.folder / "cache"), "CE_VERIFY_CACHE": str(self.folder / "verify")}),
                         mock.patch.object(cp, "REMOTE", str(self.folder / "remote-{repo}")), mock.patch.object(cp, "registry", lambda: self.entries),
                         mock.patch.object(cp, "target_commit", return_value=NEW), mock.patch.object(cp, "read_raw", self.read_raw), mock.patch.object(mc, "gh", self.gh),
-                        mock.patch.object(cp, "run_tool", self.run_tool), mock.patch.object(cp, "wait_for_ci", self.wait), mock.patch.object(mc, "on_cloud", return_value=False)):
+                        mock.patch.object(cp, "run_tool", self.run_tool), mock.patch.object(cp, "wait_for_ci", self.wait), mock.patch.object(mc, "on_cloud", return_value=False),
+                        mock.patch.object(cp.ce_verify, "on_mac", return_value=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -174,6 +176,8 @@ class RunCase(unittest.TestCase):
         target = args[-1] if args[0] == "api" else ""
         if args[:2] == ("pr", "create"):
             repo = args[args.index("-R") + 1]
+            if self.pr_fails:
+                raise mc.NotCheckable("HTTP 502")
             self.pulls[repo] = {"number": 7, "head": {"sha": "?"}}
             return f"https://github.com/{repo}/pull/7\n"
         if args[0] != "api":
@@ -184,6 +188,10 @@ class RunCase(unittest.TestCase):
             return json.dumps([pull] if pull else [])
         if "/branches/" in target:
             return "{}" if target.rsplit("/", 1)[1].replace("%2F", "/") in self.branches else None
+        if "/commits/claude" in target:
+            remote, branch = self.folder / f"remote-{repo}", target.rsplit("/", 1)[1].replace("%2F", "/")
+            return json.dumps({"sha": git(remote, "rev-parse", branch), "parents": [{"sha": git(remote, "rev-parse", f"{branch}~1")}],
+                               "commit": {"message": git(remote, "log", "-1", "--format=%B", branch)}})
         if "/commits/" in target:
             return json.dumps({"sha": self.heads.get(repo, "f" * 40)})
         if "/contents/.github/workflows" in target:
@@ -303,12 +311,71 @@ class RealRunTests(RunCase):
         self.assertFalse([item for item in self.tools if item[0] == "ce_merge_check.py" and item[1][0] == "o/b"])
         self.assertTrue([item for item in self.tools if item[0] == "ce_merge_check.py" and item[1][0] == "o/a"])
 
-    def test_branch_without_pull_request_stops_and_stays(self):
+    def foreign_branch(self):
+        remote = self.folder / "remote-o/a"
+        git(remote, "branch", "claude/a-patch-pin42")
+        git(remote, "checkout", "-q", "claude/a-patch-pin42")
+        (remote / "fremd.txt").write_text("x\n", encoding="utf-8")
+        git(remote, "add", ".")
+        git(remote, "commit", "-q", "-m", "fremd")
+        git(remote, "checkout", "-q", "main")
         self.branches.add("claude/a-patch-pin42")
+        return git(remote, "rev-parse", "claude/a-patch-pin42")
+
+    def test_foreign_branch_without_pull_request_stops_and_stays(self):
+        head = self.foreign_branch()
         code, out, _ = self.run_pin("--only", "a")
         self.assertEqual(code, 1)
-        self.assertIn("besteht ohne offenen PR", out)
-        self.assertEqual(git(self.folder / "remote-o/a", "branch", "--format=%(refname:short)"), "main")
+        self.assertIn("trägt nicht den Commit dieses Laufs", out)
+        self.assertEqual(git(self.folder / "remote-o/a", "rev-parse", "claude/a-patch-pin42"), head)
+        self.assertEqual(self.pulls, {})
+
+    def test_failed_pull_request_names_the_push_and_a_second_run_finishes(self):
+        self.pr_fails = True
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 1)
+        self.assertIn("gepusht, PR nicht angelegt, ein zweiter Lauf holt das nach: HTTP 502", out)
+        self.assertEqual(list((self.folder / "cache" / "runs").iterdir()), [])
+        head = git(self.folder / "remote-o/a", "rev-parse", "claude/a-patch-pin42")
+        self.pr_fails = False
+        self.branches.add("claude/a-patch-pin42")
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.tools[-1], ("ce_merge_check.py", ["o/a", "7", "--sha", head], head))
+        self.assertEqual(git(self.folder / "remote-o/a", "rev-parse", "claude/a-patch-pin42"), head)  # nothing pushed again
+        self.assertEqual(list((self.folder / "cache" / "runs").iterdir()), [])
+
+    def test_failed_push_stops_and_leaves_no_copy(self):
+        hook = self.folder / "remote-o/a" / ".git" / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 1)
+        self.assertIn("gestoppt: Push nach claude/a-patch-pin42", out)
+        self.assertEqual(self.pulls, {})
+        self.assertEqual(list((self.folder / "cache" / "runs").iterdir()), [])
+
+    def test_merge_check_not_checkable_stops_the_row(self):
+        with mock.patch.object(self, "check", {"green": False, "error": "gh weg"}), mock.patch.object(cp, "run_tool", lambda *args: (2, self.check)):
+            code, out, _ = self.run_pin("--only", "a")
+        self.assertEqual(code, 1)
+        self.assertIn("gestoppt: merge-check nicht prüfbar: gh weg", out)
+
+    def test_a_fitting_verify_receipt_saves_the_second_run(self):
+        self.pulls["o/b"] = {"number": 9, "head": {"sha": self.heads["o/b"]}}
+        receipt = {"green": True, "repo": "o/b", "head": self.heads["o/b"], "check": None}
+        with mock.patch.object(mc, "read_verify", return_value=receipt):
+            self.run_pin("--only", "b")
+        self.assertEqual([item[0] for item in self.tools], ["ce_merge_check.py"])
+
+    def test_note_of_a_workflow_stays_in_a_real_row(self):
+        line = "uses: ffunkfabian-hash/ce-agent-tools/.github/actions/ce-tools@" + "c" * 40 + "\n"
+        remote = self.folder / "remote-o/a"
+        (remote / ".github" / "workflows" / "check.yml").write_text(line, encoding="utf-8")
+        git(remote, "commit", "-q", "-am", "wf")
+        self.heads["o/a"] = git(remote, "rev-parse", "HEAD")
+        _, out, _ = self.run_pin("--only", "a")
+        self.assertIn("merge-check grün, Stufe 1; .github/workflows/check.yml bleibt auf ccccccc", out)
 
     def test_second_run_continues_at_the_open_pull_request(self):
         self.pulls["o/a"] = {"number": 9, "head": {"sha": self.heads["o/a"]}}
@@ -326,10 +393,16 @@ class RealRunTests(RunCase):
         self.assertIn("ausgelassen: schon auf diesem Stand", out)
         self.assertIn("ausgelassen: steht auf 0.43.0, neuer als das Ziel", out)
 
-    def test_cloud_refuses_a_real_run(self):
+    def test_cloud_and_other_systems_refuse_a_real_run(self):
         with mock.patch.object(mc, "on_cloud", return_value=True):
             self.assertEqual(self.run_pin()[0], 2)
             self.assertEqual(self.run_pin("--dry-run")[0], 0)
+        with mock.patch.object(cp.ce_verify, "on_mac", return_value=False):
+            self.assertEqual(self.run_pin()[0], 2)
+
+    def test_unknown_data_schema_is_exit_2(self):
+        with mock.patch.object(cp, "DATA_SCHEMA", 2):
+            self.assertEqual(self.run_pin("--dry-run")[0], 2)
 
     def test_sweep_keeps_young_copies(self):
         runs = self.folder / "cache" / "runs"
@@ -338,6 +411,35 @@ class RealRunTests(RunCase):
         os.utime(runs / "alt", (1, 1))
         cp.sweep()
         self.assertEqual([item.name for item in runs.iterdir()], ["jung"])
+
+
+class ToolCallTests(unittest.TestCase):
+    """run_tool itself, against a fake tool next to a fake HERE."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.folder = Path(temp.name)
+        patcher = mock.patch.object(cp, "HERE", self.folder)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tool(self, text):
+        (self.folder / "tool.py").write_text(text, encoding="utf-8")
+
+    def test_answer_and_exit_code(self):
+        self.tool("import json,sys\nprint(json.dumps({'a': sys.argv[1]}))\nsys.exit(1)\n")
+        self.assertEqual(cp.run_tool("tool.py", ["x"], self.folder, 30), (1, {"a": "x"}))
+
+    def test_no_json_stops(self):
+        self.tool("print('kaputt')\n")
+        with self.assertRaisesRegex(cp.Stop, "keine JSON-Antwort"):
+            cp.run_tool("tool.py", [], self.folder, 30)
+
+    def test_time_limit_stops(self):
+        self.tool("import time\ntime.sleep(30)\n")
+        with self.assertRaisesRegex(cp.Stop, "tool.py"):
+            cp.run_tool("tool.py", [], self.folder, 0.2)
 
 
 class ReadingTests(unittest.TestCase):

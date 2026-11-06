@@ -5,8 +5,9 @@
 Trimline 22 und Entscheidung 308.
 
 - **`./ce pin <version>` (`ce_pin.py`, Daten `ce_pin_repos.json`):** zieht den Werkzeug-Pin in allen aktiven Repos nach, ohne Sitzung je Repo. Aktive Repos aus Nexogens `repos.json` auf GitHub, Abweichungen je Repo als Daten, `--dry-run` zeigt jeden Diff ohne Schreiben. Je Repo Branch und PR aus einer Wegwerf-Kopie, dann `./ce verify` oder Warten auf CI, dann `./ce merge-check`, eine Tabellenzeile je Repo. `merge-check`, Wächter und Merge-Tür sind unverändert.
+- **Vorbedingung:** `version` muss `{file, pattern}` sein. Bis Motiongen PR 72 und Critic PR 32 gemergt sind, stoppen diese beiden Repos und die Runde schafft vier von sechs.
 - **Kein Merge im Werkzeug:** Stufe 1 ist nur als Bash-Zeile durch die Merge-Tür sichtbar; das Werkzeug gibt sie aus, Sightline führt sie aus.
-- Tests: 33 neue Fälle in `test_pin`, davon Läufe gegen echte Git-Remotes. [Version](docs/versions/0.42.md).
+- Tests: neue Fälle in `test_pin`, davon Läufe gegen echte Git-Remotes. [Version](docs/versions/0.42.md).
 
 ## 0.41.1 „Homing“ – Patch waechter-messung (06.11.2026)
 

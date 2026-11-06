@@ -23,7 +23,7 @@
     },
     "motiongen": {
       "heading": "## {version} Patch „pin{number}“ – Pin auf Agent Tools {tools_version}",
-      "body": "- Agent-Tools-Pin {old_tools} → {tools_version} (`.ce-repo.json`, `ce`, `check.yml`). `core_paths` bleibt `[]`."
+      "body": "- Agent-Tools-Pin {old_tools} → {tools_version} (`{commit7}`), Lader `ce` folgt. `core_paths` bleibt `[]`."
     },
     "ballon": {
       "heading": "## {version} Patch „pin{number}“ – Pin auf Agent Tools {tools_version}",

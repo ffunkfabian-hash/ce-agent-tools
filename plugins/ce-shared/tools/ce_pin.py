@@ -12,11 +12,13 @@ another commit stays and is named. A version kept as plain text stops that repos
 Run, one repository after the other, each stopping on its own: first branch claude/<repo>-patch-pin<number> and pull request from a throwaway
 copy in the cache (sparse and partial, Cube Escape is 600 MB), then ./ce verify where the base has no workflow file, the wait for CI, and
 ./ce merge-check from that copy (only there its head is "this folder", the condition of stage 1). A second run continues at an open pull
-request; a branch without one stops, nothing is overwritten. --dry-run reads and shows every diff: no copy, no commit, no push, no pull request.
+request, and at a branch that holds exactly this tool's commit on the current base (a push whose pull request failed); any other branch stops, nothing
+is overwritten. --dry-run reads and shows every diff (an open pull request has none to show): no copy, no commit, no push, no pull request.
 
 It never merges. The guard reads Bash lines: a `gh pr merge` started from here would pass the merge door unseen, a fourth way beside Sightline
 and the two receipts (guard.py > merge_attempt). So a stage 1 row carries the plain merge line for Sightline, every other row what is missing;
-after the user's Ja a session runs `./ce merge-check <repo> <PR> --ja "<words>"` itself. A real run is Mac only: a cloud session sends a request.
+after the user's Ja a session runs `./ce merge-check <repo> <PR> --ja "<words>"` itself. Sightline's door has no time limit, so a line that has grown old
+is checked again first. A real run is Mac only: a cloud session sends a request.
 
 Output: the diffs (dry run), one table row per repository on stdout, progress on stderr. Exit 0 all fine, 1 a repository stopped or is red, 2 no such version.
 """
@@ -45,6 +47,7 @@ import heavy_lock  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "ce_pin_repos.json"
+DATA_SCHEMA = 1
 REGISTRY_REPO = "ffunkfabian-hash/cubeescape-nexogen"
 REGISTRY_BRANCH = "main"
 LOADER_SOURCE = "plugins/ce-shared/tools/ce_loader.py"
@@ -55,7 +58,7 @@ WAIT_MINUTES = 20
 POLL_SECONDS = 30
 KEEP_RUN_DAYS = 1
 GIT_SECONDS = 600
-VERIFY_SECONDS = ce_verify.MINUTES * 60 + 300
+VERIFY_SECONDS = ce_verify.MINUTES * 60 + ce_verify.FETCH_SECONDS + ce_verify.SETUP_SECONDS + 300  # the tool's own limit only starts after fetch and setup
 CHECK_SECONDS = 300
 CREDENTIALS = ("-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential")
 
@@ -124,6 +127,13 @@ def open_pull(repo, branch):
 
 def branch_exists(repo, branch):
     return mc.gh("api", f"repos/{repo}/branches/{quote(branch, safe='')}") is not None
+
+
+def own_commit(repo, branch, base_sha, title):
+    """The head of a branch when it is this run's commit on this very base, else None: only then may a pull request be opened for it."""
+    found = mc.gh_json("api", f"repos/{repo}/commits/{quote(branch, safe='')}")
+    parents = [item.get("sha") for item in found.get("parents") or []]
+    return found.get("sha") if parents == [base_sha] and str((found.get("commit") or {}).get("message")).strip() == title else None
 
 
 # --------------------------------------------------------------------------------------------------- planning
@@ -316,7 +326,7 @@ def run_tool(name, args, cwd, seconds):
 # ------------------------------------------------------------------------------------------------------- a run
 
 def new_row(entry):
-    return {"repo": entry.get("name") or entry.get("id"), "pin": "", "version": "", "where": "", "lines": "", "check": "", "state": "", "bad": False, "merge": ""}
+    return {"repo": entry.get("name") or entry.get("id"), "pin": "", "version": "", "where": "", "lines": "", "check": "", "state": "", "notes": [], "bad": False, "merge": ""}
 
 
 def pr_body(version, commit, plan, lines):
@@ -357,25 +367,34 @@ def prepare(entry, target, data, dry, today, row):
             return None
         head = pull["head"]["sha"]
         return {"repo": repo, "pr": pull["number"], "head": head, "base": base, "no_ci": no_ci, "config": config, "copy": open_copy(repo, head, [ce_common.CONFIG_NAME]), "row": row}
-    if branch_exists(repo, branch):
-        raise Stop(f"Branch {branch} besteht ohne offenen PR: nichts überschrieben, von Hand klären")
     plan = plan_repo(key, config, text, functools.lru_cache(maxsize=None)(lambda path: read_raw(repo, path, sha)), workflow_names(repo, sha), target, data, today)
     diff, lines = diff_of(plan)
+    title = f"Patch pin{pin_number(version)} {plan['version'][1]}: Pin auf Agent Tools {version}"
+    head = None
+    if branch_exists(repo, branch):
+        head = own_commit(repo, branch, sha, title)
+        if head is None:
+            raise Stop(f"Branch {branch} besteht ohne offenen PR und trägt nicht den Commit dieses Laufs: nichts überschrieben, Branch prüfen oder löschen")
     row["version"] = " → ".join(plan["version"])
     row["lines"] = str(lines)
-    row["state"] = forecast(config, plan, lines) + "".join(f"; {note}" for note in plan["notes"])
+    row["notes"] = plan["notes"]
+    row["state"] = forecast(config, plan, lines)
     if dry:
+        if head:
+            row["state"] += "; Branch gepusht, ein echter Lauf legt den PR an"
         print(f"### {row['repo']} ({repo})\n```diff\n{diff}```\n", flush=True)
         return None
-    title = f"Patch pin{pin_number(version)} {plan['version'][1]}: Pin auf Agent Tools {version}"
-    root = open_copy(repo, sha, sorted(plan["changes"]))
+    root = open_copy(repo, head or sha, sorted(plan["changes"]))
     job = {"repo": repo, "base": base, "no_ci": no_ci, "config": config, "copy": root, "row": row}
     try:
-        job["head"] = commit_and_push(root, plan, branch, title)
-        answer = mc.gh("pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body", pr_body(version, commit, plan, lines))
+        job["head"] = head or commit_and_push(root, plan, branch, title)
+        try:
+            answer = mc.gh("pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body", pr_body(version, commit, plan, lines))
+        except mc.NotCheckable as error:
+            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt, ein zweiter Lauf holt das nach: {error}") from error
         number = re.search(r"/pull/(\d+)", answer or "")
         if not number:
-            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt: {(answer or '').strip()[:100]}")
+            raise Stop(f"Branch {branch} gepusht, PR nicht angelegt, ein zweiter Lauf holt das nach: {(answer or '').strip()[:100]}")
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -438,7 +457,9 @@ def table(rows):
     head = ("Repo", "Pin", "Version", "Branch oder PR", "Zeilen", "Prüfung", "Stand")
     keys = ("repo", "pin", "version", "where", "lines", "check", "state")
     lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
-    lines += ["| " + " | ".join(str(row[key]).replace("|", "/").replace("\n", " ") for key in keys) + " |" for row in rows]
+    for row in rows:
+        cells = {**row, "state": "; ".join([row["state"], *row["notes"]])}
+        lines.append("| " + " | ".join(str(cells[key]).replace("|", "/").replace("\n", " ") for key in keys) + " |")
     return "\n".join(lines)
 
 
@@ -458,11 +479,13 @@ def main(argv=None):
     version = args.version + ".0" if args.version.count(".") == 1 else args.version
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         parser.error("Version wie 0.42.0 erwartet")
-    if not args.dry_run and mc.on_cloud():
+    if not args.dry_run and (mc.on_cloud() or not ce_verify.on_mac()):
         say("./ce pin läuft nur am Mac; Cloud-Sitzungen schicken eine Bitte an Sightline")
         return 2
     try:
         data = json.loads(DATA.read_text(encoding="utf-8"))
+        if data.get("schema_version") != DATA_SCHEMA:
+            raise ValueError(f"{DATA.name}: schema_version {data.get('schema_version')!r}, erwartet {DATA_SCHEMA}")
         commit = target_commit(version)
         entries = registry()
     except (mc.NotCheckable, OSError, ValueError) as error:
@@ -497,7 +520,7 @@ def main(argv=None):
     print(table(rows))
     merges = [row["merge"] for row in rows if row["merge"]]
     if merges:
-        print("\nStufe 1, nichts ist gemergt; Sightline führt jede Zeile allein aus:\n" + "\n".join(merges))
+        print("\nStufe 1, nichts ist gemergt; Sightline führt jede Zeile allein aus, nach 30 Minuten erst nach einem neuen ./ce merge-check:\n" + "\n".join(merges))
     return 1 if any(row["bad"] for row in rows) else 0
 
 
