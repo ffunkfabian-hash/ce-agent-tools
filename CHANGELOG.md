@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.42.0 „Ratchet“ – unveröffentlicht (06.11.2026)
+
+Trimline 22 und Entscheidung 308.
+
+- **`./ce pin <version>` (`ce_pin.py`, Daten `ce_pin_repos.json`):** zieht den Werkzeug-Pin in allen aktiven Repos nach, ohne Sitzung je Repo. Aktive Repos aus Nexogens `repos.json` auf GitHub, Abweichungen je Repo als Daten, `--dry-run` zeigt jeden Diff ohne Schreiben. Je Repo Branch und PR aus einer Wegwerf-Kopie, dann `./ce verify` oder Warten auf CI, dann `./ce merge-check`, eine Tabellenzeile je Repo. `merge-check`, Wächter und Merge-Tür sind unverändert.
+- **Kein Merge im Werkzeug:** Stufe 1 ist nur als Bash-Zeile durch die Merge-Tür sichtbar; das Werkzeug gibt sie aus, Sightline führt sie aus.
+- Tests: 33 neue Fälle in `test_pin`, davon Läufe gegen echte Git-Remotes. [Version](docs/versions/0.42.md).
+
 ## 0.41.1 „Homing“ – Patch waechter-messung (06.11.2026)
 
 - **Trimline 21:** `heavy_lock_waited_s` zählt jede Wartezeit einmal: nur die Zeile `heavy lock: free after N s` aus Bash-Läufen, nicht „held, waited“ (dieselbe Wartezeit) und nicht aus `cat`/`grep` alter Logs.

@@ -9,6 +9,7 @@
 #   merge-check <owner/repo> <PR> [--sha SHA] [--ja ZITAT]   (0.34: mechanische Merge-Prüfung, JSON plus Textzeile; 0.35: ohne_ja, Quittung der Art patch)
 #   verify <owner/repo> <PR> [--minutes N]   (0.37: check.quick der Basis sauber auf dem Head am Mac, Quittung je Head-SHA für Repos ohne GitHub-CI)
 #   refs who|uses|missing|stats [<Asset>] [--depth N] [--json]   (0.41: Asset-Referenzen eines Unity-Projekts aus seinen Textdateien)
+#   pin <version> [--dry-run] [--only IDS] [--skip IDS] [--wait-minutes N]   (0.42: Pin-Runde über alle aktiven Repos, PRs und merge-check, kein Merge)
 here="$(cd "$(dirname "$0")" && pwd)"; tools="$here"
 [ -f "$tools/ce_check.py" ] || tools="$here/ce_tools"
 py=python3
@@ -76,10 +77,11 @@ case "$cmd" in
   merge-check) exec "$py" "$tools/ce_merge_check.py" "$@";;
   verify)   exec "$py" "$tools/ce_verify.py" "$@";;
   refs)     exec "$py" "$tools/ce_refs.py" "$@";;
+  pin)      exec "$py" "$tools/ce_pin.py" "$@";;
   tools)    exec "$py" "$tools/ce_loader.py" tools "$@";;  # 0.20: also in repos that still have a copy (tools pin)
   plugins)  exec "$py" "$tools/ce_plugins.py" "$@";;
   mail)     case "${1:-}" in ""|-*) exec "$py" "$tools/ce_await_mail.py" "$@";; esac; exec "$py" "$tools/ce_await_mail.py" --name "$@";;
   say|who)  exec "$py" "$tools/ce_postfach.py" "$cmd" "$@";;
-  help|--help|-h) sed -n 2,11p "$0";;
-  *)        sed -n 2,11p "$0"; exit 2;;
+  help|--help|-h) sed -n 2,12p "$0";;
+  *)        sed -n 2,12p "$0"; exit 2;;
 esac
