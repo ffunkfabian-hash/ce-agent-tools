@@ -92,7 +92,7 @@ class StandTests(unittest.TestCase):
 
     def test_failed_run_keeps_its_own_red(self):
         root = self.repo('#!/bin/sh\necho "Stand: x"\nexit 3\n')
-        self.assertEqual(self.run_one(root), "red (exit 1)")
+        self.assertEqual(self.run_one(root), "red (exit 1)")  # ce_check reports its own exit 1, not the script's 3
 
 
 if __name__ == "__main__":
