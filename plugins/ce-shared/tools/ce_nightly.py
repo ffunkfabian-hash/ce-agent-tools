@@ -8,6 +8,9 @@ only categories with nightly: true in .ce-repo.json › tidy, lists the rest; --
 0.36: a checkout that is not clean main stops a repo as red (checkout), unless own_main_script() shows that everything the
 run enters through is a state of origin/main and the repo's nightly.sh tests origin/main in a worktree of its own: then it
 runs with a warning in the report and the notification. Unsure means red; the warning does not change the exit code.
+0.42.2: a green run whose nightly.sh writes a `Stand: <sha> (<ref>)` line (Cube Escape) is only green if that line, found in the
+run's output or in the report the script wrote during the run, names origin/main and the sha origin/main has (before or after
+the run); else `red (stand)`. 05.-06.11.: an old launch-clone script tested local main of 24.10. and was reported green.
 
     python3 ce_nightly.py --all                   run now, all repos
     python3 ce_nightly.py --repo ~/Claude/cubeescape-toolgen
@@ -129,6 +132,37 @@ def own_main_script(root: Path, launcher: list[str]) -> str | None:
     return script if git_text(root, "diff", "--quiet", base, "--", *files) is not None else None
 
 
+STAND = re.compile(r"^Stand:\s*`?([0-9a-f]{7,40})\b.*?\(([^()\s]+)\)", re.M)
+
+
+def expects_stand(root: Path) -> bool:
+    """0.42.2: does the repo's nightly.sh (as checked out) write a `Stand:` line? Repos without one are never judged on it."""
+    try:
+        argvs = commands_of(json.loads((root / ".ce-repo.json").read_text(encoding="utf-8"))["check"]["nightly"])
+        return len(argvs) == 1 and len(argvs[0]) > 1 and Path(argvs[0][1]).name == "nightly.sh" \
+            and bool(re.search(r"^[^#\n]*\bStand:", (root / argvs[0][1]).read_text(encoding="utf-8", errors="replace"), re.M))
+    except (OSError, ValueError, KeyError, TypeError, RepoError):
+        return False
+
+
+def stand_problem(root: Path, output: str, started: float, before: str | None, log_dir: Path | None = None) -> str | None:
+    """0.42.2: why a green run does not count (None: the stand is origin/main). Evidence: the run's output, else the newest
+    report_*.md written since `started`. Missing evidence is a problem, as is another ref or a sha that is not origin/main."""
+    found = STAND.findall(output)
+    if not found:
+        reports = sorted((f for f in (log_dir or LOG_DIR).glob("report_*.md") if f.stat().st_mtime >= started - 2), key=lambda f: f.stat().st_mtime)
+        found = STAND.findall(reports[-1].read_text(encoding="utf-8", errors="replace")) if reports else []
+    if not found:
+        return "kein Stand-Nachweis (keine Zeile `Stand: <sha> (<ref>)` im Lauf oder im neuen Bericht)"
+    sha, ref = found[-1]
+    if ref != "origin/main":
+        return f"geprüfter Stand {sha} ist {ref}, nicht origin/main"
+    heads = {h for h in (before, (git_text(root, "rev-parse", "origin/main") or "").strip()) if h}
+    if not any(h.startswith(sha) for h in heads):
+        return f"geprüfter Stand {sha} ist nicht origin/main ({', '.join(h[:8] for h in sorted(heads)) or 'unbekannt'})"
+    return None
+
+
 def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
     tools = root / "Tools" / "ce_tools" / "ce_check.py"
     if not tools.is_file():
@@ -156,10 +190,19 @@ def run_one(root: Path, log, dry_run: bool) -> tuple[str, float]:
         log(f"WARNUNG: Checkout {where}, {len(dirty.splitlines())} geänderte Dateien; {script} arbeitet auf origin/main, Lauf geht weiter")
         warned = WARNED
     start = time.monotonic()
+    wall = time.time()
+    before = (git_text(root, "rev-parse", "origin/main") or "").strip() or None
+    output: list[str] = []
     with subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **UTF8) as proc:
         for line in proc.stdout:
+            output.append(line)
             log(line.rstrip("\n"))
         code = proc.wait()
+    if code == 0 and expects_stand(root):
+        problem = stand_problem(root, "".join(output), wall, before)
+        if problem:
+            log(f"STAND: {problem} - der Lauf gilt nicht als grün")
+            return "red (stand)" + warned, time.monotonic() - start
     return ("green" if code == 0 else f"red (exit {code})") + warned, time.monotonic() - start
 
 

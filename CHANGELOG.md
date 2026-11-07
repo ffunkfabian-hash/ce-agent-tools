@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.42.2 „Ratchet“ – Patch nachtlauf-stand (07.11.2026)
+
+- **Nachtlauf prüft den Stand:** Schreibt das `nightly.sh` eines Repos eine Zeile `Stand: <sha> (<ref>)` (Cube Escape), gilt ein grüner Lauf nur, wenn Zeile (im Lauf oder im während des Laufs geschriebenen `report_*.md`), Klammer `origin/main` und der sha von `origin/main` vor oder nach dem Lauf übereinstimmen. Sonst `red (stand)`, auch in `--report-issues`. Auslöser: Am 05. und 06.11. testete ein altes Launch-Klon-Skript das lokale `main` vom 24.10. und meldete grün. Repos ohne solche Zeile werden nicht beurteilt. Tests in `test_nightly_stand.py`.
+
 ## 0.42.1 „Ratchet“ – Patch post-richter (07.11.2026)
 
 - **Post nur für die Besitzerin:** `postfach_inbox.py` nutzt jetzt `postfach_watch.owns`, die Regel des Stop-Wächters. Eine andere Sitzung im selben Checkout bekommt weder Post noch einen Abruf, eine Reservierung ohne Besitzer geht an die erste Sitzung. Codex übergibt nur den Ordner und behält die alte Regel.
