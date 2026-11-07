@@ -242,8 +242,8 @@ def verify(repo, number, minutes=MINUTES, say=None):
     if not pr["sameRepo"]:
         raise mc.NotCheckable("PR aus einem anderen Repo: fremder Code läuft nicht am Mac")
     mc.verify_path(repo, head).unlink(missing_ok=True)  # first: an old receipt must not outlive a run that breaks off
+    quick = mc.quick_of(mc.read_config(repo, base))  # gh failures are NotCheckable already
     try:
-        quick = mc.quick_of(mc.read_config(repo, base))
         argvs = ce_check.commands_of(quick)
     except ce_common.RepoError as error:
         raise mc.NotCheckable(f"check.quick der Basis {base} unbrauchbar ({mc.quick_text(quick)}; {mc.QUICK_FORM}); "
