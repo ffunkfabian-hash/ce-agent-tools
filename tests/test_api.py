@@ -187,6 +187,12 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("max_tokens", self.calls[0][1])
         self.assertEqual(self.calls[1][1]["max_tokens"], 100)
 
+    def test_effort_is_optional_and_an_unknown_one_stops_before_any_request(self):
+        with mock.patch.object(ce_api, "post") as post:
+            with self.assertRaisesRegex(ce_api.ApiError, "Denkaufwand"):
+                self.ask(effort="huge")
+        post.assert_not_called()
+
     def test_missing_or_nontext_system_file_is_a_controlled_policy_error(self):
         for value in (None, False, 7, [], {}, "", "   "):
             with self.subTest(value=value):

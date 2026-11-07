@@ -340,8 +340,8 @@ def new_row(entry):
 
 def pr_body(version, commit, plan, lines):
     files = ", ".join(f"`{path}`" for path in sorted(plan["changes"]))
-    return (f"**Fertig.** Pin auf Agent Tools {version} (`{commit[:12]}`), `./ce` als Lader dieses Stands.\n\n- Geändert: {files} ({lines} Zeilen).\n"
-            "- Geprüft: CI oder `./ce verify` und `./ce merge-check`, Stand im Lauf von `./ce pin`.\n\nAngelegt von `./ce pin`.\n")
+    return (f"**Nicht fertig, noch ungeprüft.** Pin auf Agent Tools {version} (`{commit[:12]}`), `./ce` als Lader dieses Stands.\n\n- Geändert: {files} ({lines} Zeilen).\n"
+            "- Offen beim Anlegen: CI oder `./ce verify`, danach `./ce merge-check`; das Ergebnis steht im Lauf von `./ce pin`, nicht hier.\n\nAngelegt von `./ce pin`.\n")
 
 
 def prepare(entry, target, data, dry, today, row):

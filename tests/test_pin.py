@@ -537,5 +537,16 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(len(sleeps), 2)
 
 
+
+class PullRequestText(unittest.TestCase):
+    def test_the_text_claims_nothing_that_is_not_checked_yet(self):
+        body = cp.pr_body("0.42.0", "a" * 40, {"changes": {".ce-repo.json": "x"}}, 3)
+        first = body.splitlines()[0]
+        self.assertTrue(first.startswith("**Nicht fertig, noch ungeprüft.**"), first)
+        self.assertNotIn("**Fertig", body)
+        self.assertNotIn("Geprüft:", body)
+        self.assertIn("`.ce-repo.json` (3 Zeilen)", body)
+
+
 if __name__ == "__main__":
     unittest.main()
