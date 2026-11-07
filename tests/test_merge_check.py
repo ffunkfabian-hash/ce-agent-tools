@@ -217,6 +217,20 @@ class EvaluateTests(unittest.TestCase):
                          ("tests/helper.py", "tests/support.py"), ("tests/fixtures/a.json", "fixtures/a.json")):
             self.assertEqual(self.reasons(files=moved(old, new)), "", new)
 
+    def test_a_rename_that_drops_the_code_extension_takes_the_test_out_of_the_run(self):
+        """0.43 Errata (Befund 0.37): previous_filename names test code, the new name does not."""
+        for new in ("tests/test_a.py.off", "tests/test_a.txt", "tests/test_a.md"):
+            files = facts()["files"] + [{"filename": new, "previous_filename": "tests/test_a.py", "status": "renamed", "changes": 0}]
+            self.assertIn("aus dem Testlauf verschoben: tests/test_a.py", self.reasons(files=files), new)
+
+    def test_a_rename_to_a_text_still_needs_the_new_version(self):
+        """0.43 Errata (Befund 0.37): version_reasons reads previous_filename like the rest, run.py → run.md is no doc patch."""
+        moved = {"filename": "src/run.md", "previous_filename": "src/run.py", "status": "renamed", "changes": 0}
+        same = {"base": "1.2.0", "head": "1.2.0"}
+        self.assertIn("Version nicht erhöht (1.2.0 → 1.2.0)", self.reasons(files=[CHANGELOG, moved], versions=same))
+        docs = {"filename": "docs/b.md", "previous_filename": "docs/a.md", "status": "renamed", "changes": 0}
+        self.assertEqual(self.reasons(files=[CHANGELOG, docs], versions=same), "", "a rename among texts stays a doc patch")
+
     def test_skip_markers_in_added_lines_are_red(self):
         for line in ("    @unittest.skip('later')", "@pytest.mark.xfail", "    [Ignore(\"x\")]", "  it.only('x', f)", "  describe.skip('x', f)", "  xit('x', f)", "        self.skipTest('later')"):
             case = test_file("tests/test_a.py", "@@\n+" + line)
@@ -766,7 +780,9 @@ def no_ci_facts(**change):
     change.setdefault("checks", [])
     change.setdefault("workflow_files", 0)
     change.setdefault("verify", receipt())
-    return ci_facts(base_config=config, head_config=config, **change)
+    change.setdefault("base_config", config)
+    change.setdefault("head_config", config)
+    return ci_facts(**change)
 
 
 class VerifyReceiptTests(unittest.TestCase):
@@ -824,6 +840,26 @@ class VerifyReceiptTests(unittest.TestCase):
             self.assertEqual((result["green"], result["ohne_ja"], result["verify_noetig"]), (True, False, False), config)
             self.assertIn("Teile nicht geprüft", result["ja_noetig_weil"])
             self.assertIn("ohne check.quick in der Basis", " ".join(result["warnings"]))
+
+    def test_a_check_quick_of_the_wrong_form_is_not_checkable(self):
+        """0.43 Errata (Befund 0.37): ./ce verify refuses `"quick": "pytest"`, so asking for its receipt was a dead end."""
+        for quick in ("pytest", ["pytest", ["x"]], [[]], {"argv": ["pytest"]}):
+            config = {**CONFIG, "check": {"quick": quick}}
+            with self.assertRaisesRegex(mc.NotCheckable, r"check.quick der Basis main hat keine gültige Form .*erwartet eine argv-Liste.*Ja des Nutzers"):
+                mc.evaluate(no_ci_facts(base_config=config, head_config=config))
+
+    def test_the_pull_request_that_repairs_the_check_is_no_dead_end(self):
+        broken = {**CONFIG, "check": {"quick": "pytest"}}
+        result = mc.evaluate(no_ci_facts(verify=None, base_config=broken, head_config={**CONFIG, "check": {"quick": ["pytest"]}}))
+        self.assertEqual((result["green"], result["ohne_ja"], result["verify_noetig"]), (True, False, False), result)
+        self.assertIn("dieser PR berichtigt es", " ".join(result["warnings"]))
+        self.assertIn("Teile nicht geprüft", result["ja_noetig_weil"])
+
+    def test_where_ci_runs_the_form_of_check_quick_does_not_matter(self):
+        broken = {**CONFIG, "check": {"quick": "pytest"}}
+        self.assertTrue(mc.evaluate(ci_facts(workflow_files=1, base_config=broken, head_config=broken))["ohne_ja"])
+        docs = {"filename": "docs/a.md", "status": "modified", "changes": 2, "patch": "@@\n+x"}
+        self.assertTrue(mc.evaluate(no_ci_facts(verify=None, files=[CHANGELOG, docs], base_config=broken, head_config=broken))["green"])
 
     def test_the_ja_does_not_replace_the_receipt(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -927,6 +963,14 @@ class ReceiptTests(unittest.TestCase):
         code, out, err = self.run_main(given=ci_facts(checks=[]))
         self.assertEqual((code, json.loads(out)["receipt"], self.file.exists()), (0, False, False))
         self.assertIn("keine erfolgreichen Checks zum Head gemeldet", err)
+
+    def test_a_check_quick_of_the_wrong_form_ends_as_not_checkable_without_a_receipt(self):
+        broken = {**CONFIG, "check": {"quick": "pytest"}}
+        self.run_main("--ja", "Ja")
+        self.assertTrue(self.file.exists())
+        code, out, err = self.run_main("--ja", "Ja", given=no_ci_facts(base_config=broken, head_config=broken))
+        self.assertEqual((code, json.loads(out)["green"], self.file.exists()), (2, False, False))
+        self.assertIn("nicht prüfbar · check.quick der Basis main hat keine gültige Form (\"pytest\"", err)
 
     def test_a_red_run_gets_no_receipt_of_either_kind(self):
         red = self.facts | {"behind_by": 1}
