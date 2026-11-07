@@ -4,8 +4,7 @@
 
 - **Post nur für die Besitzerin:** `postfach_inbox.py` nutzt jetzt `postfach_watch.owns`, die Regel des Stop-Wächters. Eine andere Sitzung im selben Checkout bekommt weder Post noch einen Abruf, eine Reservierung ohne Besitzer geht an die erste Sitzung. Codex übergibt nur den Ordner und behält die alte Regel.
 - **`./ce judge --api` liefert ein Urteil oder sagt, warum nicht:** Opus 5.5 denkt immer, und das Nachdenken zählt zu den 2048 Ausgabetokens. Der Richter läuft deshalb mit `effort: low` (`ce_api.ask(effort=…)`, `./ce api ask --effort`) und höchstens sechs Befundzeilen je Abschnitt; das Limit bleibt. Ohne vollständige Antwort nennt die Zeile „kein verwertbares Urteil“ Abschnitt, Ursache und Rückfall. Messung im README › Erfahrungen.
-- **`./ce pin`:** Der PR-Text sagt nur noch, was beim Anlegen stimmt („Nicht fertig, noch ungeprüft“).
-- **`./ce verify`:** Parallele Läufe desselben Heads teilen keine `.tmp`-Datei mehr (niedriger Befund aus 0.37).
+- **Klein:** Der PR-Text von `./ce pin` sagt nur noch, was beim Anlegen stimmt („Nicht fertig, noch ungeprüft“); parallele Läufe von `./ce verify` teilen keine `.tmp`-Datei mehr (niedriger Befund aus 0.37).
 
 ## 0.42.0 „Ratchet“ – unveröffentlicht (06.11.2026)
 
