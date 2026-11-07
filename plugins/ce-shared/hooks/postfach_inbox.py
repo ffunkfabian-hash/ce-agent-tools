@@ -13,6 +13,8 @@ against the transcript, and the Stop watcher (also one that already runs) skips 
 `ce-inbox.json`, bound to the reserved name (another name in a reused worktree finds nothing); one fetch at a time (`ce-inbox.lock`),
 a failure is written and waits for the next interval. A body over MAX_BODY characters is cut visibly, with the link to the full text.
 Nothing happens without a reservation, without `gh`, or with CE_WATCH=0 or CE_INBOX=0; every error prints nothing (fail-open).
+0.42.1: the Stop hook's owner rule (postfach_watch.owns) holds here too: another session in the same checkout gets neither mail nor a read.
+A caller without a payload (Codex passes only the cwd) keeps the old rule, as `owns` does for a payload without `session_id`.
 """
 import json
 import os
@@ -24,6 +26,7 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 sys.path.insert(0, str(PLUGIN_ROOT / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 INBOX_FILE = "ce-inbox.json"
 LOCK_FILE = "ce-inbox.lock"
@@ -34,6 +37,7 @@ MAX_BODY = 4000
 
 try:
     import ce_await_mail as am  # noqa: E402
+    from postfach_watch import owns  # noqa: E402  (one owner rule for the Stop hook and this one)
 except Exception:  # noqa: BLE001 - a broken install must not disturb the tool call
     am = None
 
@@ -110,12 +114,12 @@ def text_of(messages: list) -> str:
     return "\n".join(parts)
 
 
-def pending_text(cwd: str, now=time.time, spawn=start_fetch, which=shutil.which) -> str:
+def pending_text(cwd: str, now=time.time, spawn=start_fetch, which=shutil.which, payload=None) -> str:
     """The context text of new messages for this worktree ("" if none); starts a background read when the last one is old."""
     if am is None or os.environ.get("CE_INBOX", "1") == "0":
         return ""
     folder, session = am.reservation(cwd, fast=True)
-    if folder is None:
+    if folder is None or not owns(folder, session, payload or {}, now):
         return ""
     inbox = am.read_json(folder / INBOX_FILE)
     if inbox.get("name") != session["name"]:  # Richter 0.21, Nr 1: a reused worktree must not hand over the previous session's mail
@@ -145,7 +149,7 @@ def pending_text(cwd: str, now=time.time, spawn=start_fetch, which=shutil.which)
 
 
 def hint(payload: dict, **kwargs) -> dict:
-    text = pending_text(payload.get("cwd") or os.getcwd(), **kwargs)
+    text = pending_text(payload.get("cwd") or os.getcwd(), payload=payload, **kwargs)
     if not text:
         return {}
     first = text.split("Kommentar ", 1)[1].split(" ", 1)[0] if "Kommentar " in text else ""

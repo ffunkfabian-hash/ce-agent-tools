@@ -153,7 +153,7 @@ def write_receipt(result, quick):
     path.parent.mkdir(parents=True, exist_ok=True)
     receipt = {"repo": result["repo"], "pr": result["pr"], "head": result["head"], "base": result["base"], "green": True, "check": quick,
                "tests": result["tests"], "skipped": result["skipped"], "seconds": result["seconds"], "time": time.time()}
-    temp = path.with_suffix(".tmp")
+    temp = path.with_suffix(f".{os.getpid()}.tmp")  # two runs of one head must not share it
     temp.write_text(json.dumps(receipt, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(temp, path)
 

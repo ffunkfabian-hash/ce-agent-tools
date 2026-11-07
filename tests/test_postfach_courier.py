@@ -495,6 +495,47 @@ class DuringWork(Worktree):
         self.assertEqual(out.getvalue(), "", "nothing new: no output")
 
 
+class OwnerRule(Worktree):
+    """0.42.1: the hook read the reservation by name only, so another session in the same checkout got the owner's mail (Sightline's in Nexogen)."""
+
+    def owned(self, owner):
+        path = self.git / am.SESSION_FILE
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), session_id=owner)))
+        self.put(comment(7, f"Sightline → {NAME}: Frage\nOpus\nText"))
+
+    def owner_on_file(self):
+        return json.loads((self.git / am.SESSION_FILE).read_text()).get("session_id")
+
+    def test_another_session_gets_no_mail_starts_no_read_and_takes_nothing_from_the_owner(self):
+        self.owned("owner-1")
+        self.now[0] += inbox.EVERY_S  # the read would be due
+        self.assertEqual(self.text(payload={"session_id": "other"}), "")
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(am.state_int(am.load_state(self.git), "hinted"), 0)
+        self.assertIn("Kommentar 7", self.text(payload={"session_id": "owner-1"}))
+        self.assertEqual(self.spawned, [self.git])
+
+    def test_the_hook_passes_the_session_of_its_payload(self):
+        self.owned("owner-1")
+        kwargs = dict(now=lambda: self.now[0], spawn=self.spawned.append, which=lambda _: None)
+        self.assertEqual(inbox.hint({"cwd": str(self.repo), "session_id": "other"}, **kwargs), {})
+        result = inbox.hint({"cwd": str(self.repo), "session_id": "owner-1"}, **kwargs)
+        self.assertIn("Kommentar 7", result["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_file_without_owner_goes_to_the_first_session_and_then_stays_there(self):
+        self.put(comment(7, f"Sightline → {NAME}: Frage\nOpus\nText"))
+        self.assertIn("Kommentar 7", self.text(payload={"session_id": "first"}))
+        self.assertEqual(self.owner_on_file(), "first")
+        self.put(comment(8, f"Sightline → {NAME}: Noch eine\nOpus\nText"))
+        self.assertEqual(self.text(payload={"session_id": "second"}), "")
+        self.assertEqual(self.owner_on_file(), "first")
+
+    def test_a_caller_that_knows_no_session_keeps_the_old_rule(self):
+        self.owned("owner-1")  # Codex passes only the cwd
+        self.assertIn("Kommentar 7", self.text())
+        self.assertEqual(self.owner_on_file(), "owner-1")
+
+
 class Registration(unittest.TestCase):
     def test_hooks_json_registers_the_inbox_after_every_tool(self):
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]

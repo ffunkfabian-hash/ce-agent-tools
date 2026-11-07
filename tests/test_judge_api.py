@@ -129,6 +129,43 @@ class JudgeApiTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Nachbessern: Richter unvollständig (stop_reason max_tokens)", output)
 
+    def test_requests_run_at_the_measured_effort_and_the_policy_limit_stays(self):
+        code, _output = self.run_judge()
+        self.assertEqual(code, 0)
+        self.assertEqual([item["output_config"] for item in self.messages()], [{"effort": ce_judge.API_EFFORT}] * len(self.messages()))
+        for endpoint, payload in self.calls:
+            if endpoint == "messages/count_tokens":
+                self.assertNotIn("output_config", payload)
+        self.assertEqual(ce_judge.API_EFFORT, "low")
+        self.assertEqual({item["max_tokens"] for item in self.messages()}, {self.policy["max_output_tokens"]})
+
+    def test_an_empty_answer_at_the_limit_says_that_thinking_took_it(self):
+        self.stop_reason, self.answers = "max_tokens", [""]
+        code, output = self.run_judge()
+        self.assertEqual(code, 1)
+        self.assertIn("kein verwertbares Urteil, dieser Lauf zählt nicht", output)
+        self.assertRegex(output, r"keine Antwort, Nachdenken verbrauchte alle 400 von \d+ Ausgabetokens")
+        self.assertIn("ce-shared:ce-judge", output)
+        self.assertIn("kein verwertbares Urteil", self.report())
+
+    def test_a_cut_table_names_the_last_point_it_reached(self):
+        self.stop_reason, self.answers = "max_tokens", ["\n".join(table(rows=range(1, 5)).splitlines()[:-1])]
+        _code, output = self.run_judge()
+        self.assertIn("Antwort nach Punkt 4 abgeschnitten", output)
+
+    def test_a_complete_verdict_is_a_verdict_also_when_it_asks_for_changes(self):
+        self.answers = [table("Nachbessern: 3")]
+        code, output = self.run_judge()
+        self.assertEqual(code, 1)
+        self.assertNotIn("kein verwertbares Urteil", output)
+
+    def test_an_api_error_names_the_section_and_what_was_not_sent(self):
+        sections = [{"names": ["a.py"], "text": ""}, {"names": ["b.py"], "text": ""}, {"names": ["c.py"], "text": ""}]
+        answered = {"text": table(), "stop_reason": "end_turn"}
+        line = ce_judge.no_verdict(sections, [answered], "HTTP 500")
+        self.assertIn("Abschnitt 2: HTTP 500; Abschnitt 3: nicht gesendet", line)
+        self.assertIsNone(ce_judge.no_verdict(sections, [answered] * 3, None))
+
     def test_missing_checklist_rows_or_verdict_line_fail_closed(self):
         for answer, problem in ((table(rows=range(1, 8)), "Prüfpunkte ohne Zeile: 8"),
                                 (table(last="Sieht gut aus."), "Schlusszeile Freigabe/Nachbessern fehlt"),

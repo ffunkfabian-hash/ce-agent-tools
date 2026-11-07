@@ -28,6 +28,7 @@ MODEL_IDS = {'haiku': 'claude-haiku-5-5', 'sonnet': 'claude-sonnet-5-5', 'opus':
 IMAGE_TYPES = {b'\x89PNG\r\n\x1a\n': 'image/png', b'\xff\xd8\xff': 'image/jpeg'}
 MAX_IMAGE_EDGE = 8000          # API limit per side
 FIELDS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens')
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')  # Opus 5.5 always thinks; effort is the only control, and thinking counts toward max_tokens
 
 
 class ApiError(Exception):
@@ -243,7 +244,9 @@ def usage_cost(usage, prices):
     return sum((Decimal(usage[field]) * amount(prices[rate]) for field, rate in zip(FIELDS, rates)), Decimal(0)) / Decimal(1_000_000)
 
 
-def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry_run=False, image_paths=()):
+def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry_run=False, image_paths=(), effort=None):
+    if effort is not None and effort not in EFFORTS:
+        raise ApiError('Unbekannter Denkaufwand')
     system = read_text(system_path or policy_path.parent / policy['system_file'])
     prompt = read_text(prompt_path)
     images = read_images(list(image_paths), policy)
@@ -256,7 +259,10 @@ def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry
                'system': [{'type': 'text', 'text': system, 'cache_control': {'type': 'ephemeral', 'ttl': '5m'}}],
                'messages': [{'role': 'user', 'content': content}]}
     token = access_token()
-    count_payload = {key: value for key, value in payload.items() if key != 'max_tokens'}
+    count_payload = dict(payload)
+    del count_payload['max_tokens']
+    if effort:
+        payload['output_config'] = {'effort': effort}
     counted = post('messages/count_tokens', count_payload, token)
     count = positive_int(counted.get('input_tokens'), policy['max_input_tokens'])
     # Token counting is an estimate. Reserve a cold-cache write plus 10%/256 tokens
@@ -283,7 +289,7 @@ def ask(policy_path, policy, prompt_path, system_path, model, output_tokens, dry
     total = sum(usage[field] for field in FIELDS[:3])
     return {'model': MODEL_IDS[name], 'text': text, 'usage': usage, 'estimated_cost_usd': str(actual),
             'cache_read_fraction': usage['cache_read_input_tokens'] / total if total else None,
-            'stop_reason': response.get('stop_reason'), 'budget': budget}
+            'stop_reason': response.get('stop_reason'), 'max_tokens': maximum, 'budget': budget}
 
 
 def main(argv=None):
@@ -298,6 +304,7 @@ def main(argv=None):
     call.add_argument('--system-file', type=Path)
     call.add_argument('--model', choices=MODEL_IDS)
     call.add_argument('--max-output-tokens', type=int)
+    call.add_argument('--effort', choices=EFFORTS, help='Denkaufwand; Nachdenken zählt zu --max-output-tokens')
     call.add_argument('--image', type=Path, action='append', default=[],
                       help='PNG/JPEG vor dem Text anhängen (mehrfach; nur mit max_images in der Richtlinie)')
     call.add_argument('--dry-run', action='store_true', help='Kostenlos zählen, keine Modellantwort erzeugen')
@@ -316,7 +323,7 @@ def main(argv=None):
             print(json.dumps(BudgetLedger(LEDGER, policy['monthly_usd'], policy['request_usd']).snapshot()))
         else:
             result = ask(args.config, policy, args.prompt_file, args.system_file, args.model,
-                         args.max_output_tokens, args.dry_run, args.image)
+                         args.max_output_tokens, args.dry_run, args.image, args.effort)
             if args.json or args.dry_run:
                 print(json.dumps(result, ensure_ascii=False))
             else:
