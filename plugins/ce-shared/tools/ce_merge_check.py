@@ -29,6 +29,8 @@ warning asks for the judge; whether one ran is not visible here, that stays a ru
 Repositories without GitHub CI (0.37 Waybill): no workflow file at the base, whatever the Actions list still names (it keeps a
 workflow that once ran on a branch). There a change beyond .md needs the receipt of `./ce verify` for this very head (ce_verify.py), or
 merge-check is red; a new head has none. A base without check.quick has nothing to verify: a warning, and no stage 1. Where CI runs nothing changes.
+A check.quick of the wrong form (`"quick": "pytest"`) is not checkable there (0.43 Errata): ./ce verify refuses it, so no receipt could ever
+turn it green. Only the pull request that repairs it gets the warning of a base without check.quick instead.
 
 Output: the result as JSON on stdout, one text line on stderr. Exit 0 green, 1 red, 2 not checkable (never green).
 
@@ -49,6 +51,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ce_check  # noqa: E402  (0.43: the form of check.quick is what ./ce check and ./ce verify run)
 import ce_common  # noqa: E402
 import ce_session_name  # noqa: E402
 import heavy_lock  # noqa: E402  (0.37: cache folder of the verify receipts)
@@ -368,6 +371,15 @@ def ci_passed(rollup):
     return any("SUCCESS" in (item.get("conclusion"), item.get("state")) for item in rollup or [])
 
 
+def doc_only(files):
+    """True when every name of the pull request, old names of renames too, is a .md file: run.py → run.md is code (0.37, 0.43)."""
+    return all(name.lower().endswith(".md") for f in files for name in (f["filename"], f.get("previous_filename")) if name)
+
+
+def is_test_code(name):
+    return bool(TEST_PATH.search(name) and TEST_CODE.search(name))
+
+
 def removed_sources(files):
     """Deleted files a test can have checked: neither tests nor .md."""
     return [f["filename"] for f in files if f.get("status") == "removed" and not TEST_PATH.search(f["filename"]) and not f["filename"].lower().endswith(".md")]
@@ -409,8 +421,8 @@ def test_changes(files):
     sources = removed_sources(files)
     for f in files:
         name, old = f["filename"], f.get("previous_filename") or ""
-        if TEST_PATH.search(old) and TEST_CODE.search(old) and (not TEST_PATH.search(name) or (TEST_NAME.search(old) and not TEST_NAME.search(name))):
-            renamed.append(old)  # no line changes, but the runner no longer finds it
+        if is_test_code(old) and (not is_test_code(name) or (TEST_NAME.search(old) and not TEST_NAME.search(name))):
+            renamed.append(old)  # no line changes, but the runner no longer finds it; test_a.py → test_a.py.off too (0.43)
         if not TEST_PATH.search(name) or not TEST_CODE.search(name):
             continue
         if f.get("status") == "removed":
@@ -488,7 +500,7 @@ def version_reasons(facts, classification, touched_core):
         reasons.append(f"{name} nicht geändert")
     elif versions and versions["head"] and versions["head"] not in (facts.get("changelog") or ""):
         reasons.append(f"{name} nennt Version {versions['head']} nicht")
-    if all(f["filename"].endswith(".md") for f in facts["files"]):  # doc patches without a number are practice in critic, formgen
+    if doc_only(facts["files"]):  # doc patches without a number are practice in critic, formgen
         return [], reasons + warnings
     return reasons, warnings
 
@@ -509,6 +521,22 @@ def quick_of(config):
     """check.quick of a config, None when there is none."""
     check = (config or {}).get("check")
     return check.get("quick") if isinstance(check, dict) else None
+
+
+QUICK_FORM = 'erwartet eine argv-Liste wie ["pytest"] oder eine Liste davon wie [["pytest"], ["python3", "check.py"]]'
+
+
+def quick_fits(quick):
+    """True when check.quick has the form ./ce check and ./ce verify run (ce_check.commands_of)."""
+    try:
+        ce_check.commands_of(quick)
+    except ce_common.RepoError:
+        return False
+    return True
+
+
+def quick_text(quick):
+    return json.dumps(quick, ensure_ascii=False)[:80]
 
 
 def verify_problem(receipt, repo, head, config):
@@ -546,7 +574,7 @@ def evaluate(facts, expected_sha=""):
     failed, pending = ci_state(checks)
     pending += [name for name in facts.get("runs_open") or [] if name not in pending]  # a queued run has no check entry yet
     no_ci = facts.get("workflow_files") == 0  # None: not read or unreadable, the old way then
-    doc_only = all(name.lower().endswith(".md") for f in files for name in (f["filename"], f.get("previous_filename")) if name)  # run.py → run.md is code
+    docs = doc_only(files)
     if not checks and not pending and not no_ci:
         warnings.append("Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen")
     if failed:
@@ -568,9 +596,16 @@ def evaluate(facts, expected_sha=""):
     if unread:
         warnings.append(f"Testdateien ohne Diff von GitHub, nicht bewertet: {', '.join(unread[:5])}")
     config = facts.get("base_config") or {}
-    runnable = bool(quick_of(config))
-    verify_due = no_ci and not doc_only and runnable
-    if no_ci and not doc_only and not runnable:
+    quick = quick_of(config)
+    runnable = bool(quick)
+    if no_ci and not docs and runnable and not quick_fits(quick):  # ./ce verify refuses it: no receipt could ever turn this green (0.43)
+        if not quick_fits(quick_of(facts.get("head_config"))):
+            raise NotCheckable(f"check.quick der Basis {pr['baseRefName']} hat keine gültige Form ({quick_text(quick)}; {QUICK_FORM}): ./ce verify "
+                               f"kann in diesem Repo ohne GitHub-CI nichts prüfen. Ausweg: ein PR, der check.quick berichtigt, geht mit dem Ja des Nutzers durch")
+        warnings.append(f"check.quick der Basis ungültig ({quick_text(quick)}), dieser PR berichtigt es: nichts geprüft, keine Stufe 1")
+        runnable = False
+    verify_due = no_ci and not docs and runnable
+    if no_ci and not docs and not quick:
         warnings.append("Repo ohne GitHub-CI und ohne check.quick in der Basis: nichts geprüft, keine Stufe 1")
     problem = verify_problem(facts.get("verify"), facts["repo"], head, config) if verify_due else ""
     if problem:
@@ -592,8 +627,8 @@ def evaluate(facts, expected_sha=""):
     warnings += version_warnings
     if code_lines >= JUDGE_LINES:
         warnings.append(f"{code_lines} Zeilen Code (ohne .md): Richter nötig (`./ce judge`); ob einer lief, sieht merge-check nicht")
-    ci_due = facts.get("workflows", 1) > 0 and not no_ci and not doc_only
-    unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings) or (no_ci and not doc_only and not runnable)
+    ci_due = facts.get("workflows", 1) > 0 and not no_ci and not docs
+    unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings) or (no_ci and not docs and not runnable)
     stage_one = ((bool(reasons), "merge-check nicht grün"), (ci_due and not ci_passed(checks), "keine erfolgreichen Checks zum Head gemeldet"),
                  (not listed, "core_paths fehlt in der Basis"), (config_changed, ".ce-repo.json im PR geändert" + (f" (Pin nicht bestätigt: {pin_why})" if pin_only and pin_why else "")), (bool(touched), "Kernpfad berührt"),
                  (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.43.0 „Errata“ – unveröffentlicht (07.11.2026)
+
+Die vier offenen niedrigen Befunde aus 0.37 und Trimline 10, Widerspruch 4.
+
+- **`./ce verify` zählt je Befehl und liest pytest:** Ein Befehl, der Tests meldet, aber keinen ausführt oder alle überspringt, ist „nicht prüfbar“, auch wenn ein anderer Befehl Tests hatte. Neben `Ran N tests` liest es die pytest-Zusammenfassung (`3 passed, 1 skipped in 0.12s`, `no tests ran`). Zahlen je Befehl stehen im Ergebnis unter `commands`.
+- **Umgebung von `./ce verify`:** Der Schlüssel der geteilten Umgebung deckt mit `-r` und `-c` eingebundene Dateien ab. Wer das Repo selbst installiert (`-e .`, lokaler Pfad, auch in einer eingebundenen Datei), bekommt eine eigene `.venv` in der Kopie statt eines toten Links in der geteilten.
+- **`merge-check` liest `previous_filename` überall (Kernpfad):** Umbenennung von Code nach `.md` (`run.py` → `run.md`) ist kein Doku-Patch mehr, Version und CHANGELOG werden geprüft. Eine Testdatei, die ihre Code-Endung verliert (`test_a.py` → `test_a.py.off`), zählt als aus dem Testlauf verschoben.
+- **`check.quick` in falscher Form ist keine Sackgasse mehr:** In einem Repo ohne GitHub-CI endet `"quick": "pytest"` in `merge-check` als „nicht prüfbar“ (Exit 2, keine Quittung) mit der erwarteten Form und dem Ausweg. Der PR, der `check.quick` berichtigt, bekommt die Warnung wie bei fehlendem `check.quick` und geht mit dem Ja des Nutzers durch. `./ce verify` nennt die erwartete Form ebenfalls.
+- **`AGENTS.md`:** Die Versionsregel folgt der globalen Patch-Regel (bis 300 Zeilen ohne Format, Vertrag, Kernpfad: Patchnummer, sonst Version).
+- Tests: neue Fälle in `test_verify` und `test_merge_check`, alle vorher rot. [Version](docs/versions/0.43.md).
+
 ## 0.42.2 „Ratchet“ – Patch nachtlauf-stand (07.11.2026)
 
 - **Nachtlauf prüft den Stand:** Schreibt das `nightly.sh` eines Repos eine Zeile `Stand: <sha> (<ref>)` (Cube Escape), gilt ein grüner Lauf nur, wenn Zeile (im Lauf oder im während des Laufs geschriebenen `report_*.md`), Klammer `origin/main` und der sha von `origin/main` vor oder nach dem Lauf übereinstimmen. Sonst `red (stand)`, auch in `--report-issues`. Auslöser: Am 05. und 06.11. testete ein altes Launch-Klon-Skript das lokale `main` vom 24.10. und meldete grün. Repos ohne solche Zeile werden nicht beurteilt. Tests in `test_nightly_stand.py`.

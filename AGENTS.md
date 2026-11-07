@@ -13,8 +13,10 @@ Commit-Messages auf Deutsch; Code, Bezeichner und Kommentare auf Englisch.
   `heavy_lock.py` (Sperre, Prozessgruppe, Cache-Pfad, Skriptstart); Regeln mit Windows- und Mac-Fällen testen.
 - **Der Wächter blockiert nie aus Versehen alles:** Fehler im Hook lassen den Aufruf durch (mit Meldung); Muster
   vorsichtig, Fehlalarme sind Fehler.
-- **Version:** jede Änderung ist eine neue Version (Minor +1, eigener Name, cool und englisch); `plugin.json` und
-  `marketplace.json` gemeinsam, Eintrag in `CHANGELOG.md`. Nutzende Repos ziehen nach mit
+- **Patch oder Version (globale Regel, Nexogen `templates/regeln-details.md` › Patch-Aufträge):** bis 300 Zeilen Diff
+  ohne Format, Vertrag oder Kernpfad (`.ce-repo.json` › `core_paths`) ist ein Patch mit Patchnummer (z. B. 0.42.2),
+  sonst eine Version (Minor +1, eigener Name, cool und englisch). Beide: `plugin.json` und `marketplace.json`
+  gemeinsam, Eintrag in `CHANGELOG.md`. Nutzende Repos ziehen nach mit
   `claude plugin marketplace update ce-agent-tools`; ändert sich eine Regel, auch die Hook-Beschreibung in deren
   `AGENTS.md` › „Plugins und Hooks“.
 - Committen, taggen und pushen nur auf Wunsch des Nutzers; nie `--force`. Kein GitHub-Workflow ohne Wunsch (globale

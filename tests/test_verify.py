@@ -145,6 +145,28 @@ class RunTests(VerifyCase):
         self.assertIn("5 Tests, 5 übersprungen", err)
         self.assertIsNone(mc.read_verify(REPO, self.head))
 
+    def test_each_command_counts_for_itself(self):
+        """0.43 Errata (Befund 0.37): only skips in one command are not paid for by the tests of another."""
+        self.quick = [GREEN, ["sh", "-c", "echo 'Ran 3 tests in 0.1s'; echo 'OK (skipped=3)'"]]
+        code, result, err = self.run_main()
+        self.assertEqual((code, result["receipt"]), (2, False))
+        self.assertIn("lief keinen einzigen Test (3 Tests, 3 übersprungen)", err)
+        self.assertIsNone(mc.read_verify(REPO, self.head))
+
+    def test_the_counts_of_each_command_stay_in_the_result(self):
+        self.quick = [GREEN, ["true"], ["sh", "-c", "echo '3 passed, 1 skipped, 2 warnings in 0.12s'"]]
+        result = self.verify()
+        self.assertEqual((result["green"], result["tests"], result["skipped"]), (True, 8, 2))
+        self.assertEqual([(item["tests"], item["skipped"]) for item in result["commands"]], [(4, 1), (None, 0), (4, 1)])
+
+    def test_a_pytest_run_of_nothing_but_skips_is_not_checkable(self):
+        """0.43 Errata (Befund 0.37): the skip check reads pytest too."""
+        for line in ("======= 2 skipped in 0.05s =======", "no tests ran in 0.01s", "4 deselected in 0.02s"):
+            self.quick = ["sh", "-c", f"echo '{line}'"]
+            code, result, err = self.run_main()
+            self.assertEqual((code, result["receipt"]), (2, False), line)
+            self.assertIn("lief keinen einzigen Test", err, line)
+
     def test_a_term_from_outside_clears_copy_and_group(self):
         """Richter 0.37, Nr 4.8: an agent's time limit hits the tool, not the tests."""
         mark, started = self.folder / "alive", self.folder / "started"
@@ -284,6 +306,45 @@ class VenvTests(VerifyCase):
         pip = next(call for call in step.call_args_list if "pip" in map(str, call.args[0]))
         self.assertEqual(Path(pip.kwargs["cwd"]).parent.name, "runs")
 
+    def venvs(self):
+        return [item for item in (self.folder / "cache" / "venvs").glob("*") if item.is_dir()]
+
+    def test_the_key_covers_the_files_pulled_in_with_r(self):
+        """0.43 Errata (Befund 0.37): a change in an included file is a new environment."""
+        self.commit("requirements.txt", "-r base.txt\n")
+        self.head = self.commit("base.txt", "# eins\n")
+        self.quick = ["true"]
+        self.assertTrue(self.verify()["green"])
+        self.head = self.commit("base.txt", "# zwei\n")
+        self.assertTrue(self.verify()["green"])
+        self.assertEqual(len(self.venvs()), 2)
+
+    def test_a_local_package_gets_an_environment_of_its_own_inside_the_copy(self):
+        """0.43 Errata (Befund 0.37): `-e .` in a shared environment leaves a link to a copy that is gone after the run."""
+        real = cv.step
+
+        def fake(argv, seconds, what, env=None, cwd=None):  # no network: pip would fetch setuptools for `-e .`
+            if what != "venv" and not what.startswith("pip "):
+                return real(argv, seconds, what, env, cwd)
+            if what == "venv":
+                (Path(argv[-1]) / "bin").mkdir(parents=True)
+            calls.append((what, [str(part) for part in argv], cwd))
+            return ""
+        for files in ({"requirements.txt": "-e .\n"}, {"requirements.txt": "-r dev.txt\n", "dev.txt": "  --editable=.  # local\n"}):
+            calls = []
+            for name, text in files.items():
+                self.head = self.commit(name, text)
+            self.quick = ["sh", "-c", "test -d .venv/bin && ! test -L .venv"]
+            with mock.patch.object(cv, "step", fake):
+                result = self.verify()
+            self.assertEqual((result["green"], result["venv"]), (True, "requirements.txt (eigene Umgebung: lokales Paket)"), files)
+            self.assertEqual(self.venvs(), [], "nothing shared")
+            venv, pip = calls[0][1][-1], calls[1]
+            self.assertEqual(Path(venv).name, ".venv")
+            self.assertEqual(Path(venv).parent, Path(pip[2]), "built in the copy")
+            self.assertEqual(Path(pip[1][0]).parent.parent, Path(venv))
+            self.assertEqual(self.copies(), [])
+
     def test_without_requirements_no_venv(self):
         self.assertIsNone(self.verify()["venv"])
 
@@ -321,6 +382,32 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(cv.counts("Ran 535 tests in 480.1s\n\nOK (skipped=7)\n"), (535, 7))
         self.assertEqual(cv.counts("Ran 1 test in 0.1s\n\nFAILED (failures=1, skipped=2)\nRan 3 tests in 1s\nOK\n"), (4, 2))
         self.assertEqual(cv.counts("alles gut\n"), (None, 0))
+
+    def test_the_counts_read_pytest_summaries(self):
+        self.assertEqual(cv.counts("===== 3 passed, 1 skipped, 2 warnings in 0.12s =====\n"), (4, 1))
+        self.assertEqual(cv.counts("1 failed, 2 passed, 1 error, 1 xfailed in 1.20s\n"), (5, 0))
+        self.assertEqual(cv.counts("2 passed, 5 deselected in 0.10s (0:00:00)\n"), (2, 0))
+        self.assertEqual(cv.counts("no tests ran in 0.01s\n"), (0, 0))
+        self.assertEqual(cv.counts("Ran 2 tests in 0.1s\nOK\n3 skipped in 0.2s\n"), (5, 3))
+        for text in ("3 apples in 2s\n", "$ echo '3 passed in 1s'\n", "copied 3 files in 2s\n"):
+            self.assertEqual(cv.counts(text), (None, 0), text)
+
+    def test_requirement_files_follow_r_and_c_as_pip_reads_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            for name, text in {"requirements.txt": "-r sub/a.txt\n--requirement=b.txt\n-cc.txt\n-r https://x/y.txt\n-r fehlt.txt\n# -r d.txt\nx==1\n",
+                               "sub/a.txt": "-r ../requirements.txt\n-r e.txt\n", "sub/e.txt": "y\n", "b.txt": "", "c.txt": "z<2\n", "d.txt": "-e .\n"}.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            files = cv.requirement_files(root / "requirements.txt")
+            self.assertEqual([path.relative_to(root).as_posix() for path in files], ["requirements.txt", "sub/a.txt", "b.txt", "c.txt", "sub/e.txt"])
+            self.assertFalse(cv.installs_itself(files), "a comment installs nothing")
+            for line in ("-e .", "--editable .", "./pkg", "/abs/pkg", "~/pkg", "file:///x/pkg", "name @ file:///x/pkg", "-e git+https://h/r#egg=r"):
+                (root / "b.txt").write_text(line + "\n", encoding="utf-8")
+                self.assertTrue(cv.installs_itself(files), line)
+            for line in ("requests==2", "-r b.txt", "--index-url https://x", "name @ https://x/p.whl"):
+                (root / "b.txt").write_text(line + "\n", encoding="utf-8")
+                self.assertFalse(cv.installs_itself(files), line)
 
     def test_the_tool_travels_with_the_others(self):
         self.assertIn("ce_verify.py", ce_sync.SYNC_FILES)

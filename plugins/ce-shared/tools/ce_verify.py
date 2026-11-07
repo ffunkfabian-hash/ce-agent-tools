@@ -7,13 +7,14 @@ command, the same rule as in merge-check; the scripts and tests that command sta
 and the judge - and writes a receipt per head SHA. `./ce merge-check` reads it; a new head has none.
 
 Only a green run writes one. A run first deletes the receipt of its head, so red, broken off, out of time or not checkable leaves none;
-a run without tests, or with every test skipped, is not checkable.
+a command that reports tests (unittest or pytest summary) but runs none, or skips every one, is not checkable (0.43: per command).
 Mac only: a cloud session has no neighbour repositories and no Mac, it sends a merge request to Sightline, who runs this. A pull
 request from a fork is refused, its code would run on the Mac.
 
 Clean means: fresh tree, no .venv from a checkout, no GIT_*/PYTHONPATH/VIRTUAL_ENV from the caller, and a caller's venv off the PATH. A repository with
 requirements-lock.txt or requirements.txt gets a .venv: a link to a virtual environment in the cache, one per requirements file and
-Python, built on first use. CE_VERIFY=1 tells check.quick it stands in a copy: a check of this machine's installation against the
+Python, built on first use; the key covers the files it pulls in with -r and -c (0.43). A file that installs the repository itself
+(`-e .`, a local path) gets an environment of its own inside the copy: in a shared one it would leave a link to a deleted copy. CE_VERIFY=1 tells check.quick it stands in a copy: a check of this machine's installation against the
 checkout (Nexogen's links) has to skip itself there, or it is red in every copy. HOME stays: neighbour repositories are read from their checkout on this Mac, each repository pins the commit
 itself (Formgen v2: config.toml > [ballon]); a missing one shows as red tests. The receipt names tests and skips, the numbers to compare.
 No lock of its own, quick tiers are light (heavy_lock.py); a check.quick that needs Blender or Unity runs as
@@ -53,6 +54,11 @@ KEEP_RUN_DAYS, KEEP_DAYS = 1, 30
 TAIL_LINES = 25
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
 SKIPPED = re.compile(r"^(?:OK|FAILED) \(.*?skipped=(\d+)", re.M)
+PYTEST = re.compile(r"^=*\s*(no tests ran|\d+ [a-z]+(?:, \d+ [a-z]+)*) in \d+(?:\.\d+)?s\b", re.M)  # "3 passed, 1 skipped in 0.12s"
+PYTEST_RAN = {"passed", "failed", "skipped", "xfailed", "xpassed", "error", "errors"}
+PYTEST_OTHER = {"deselected", "warning", "warnings", "rerun"}
+INCLUDE = re.compile(r"^(?:--requirement|--constraint|-r|-c)(?:\s*=\s*|\s*)(\S+)")
+LOCAL = re.compile(r"^(?:-e\b|--editable\b|\.|/|~|file:)|@\s*file:")
 
 
 def on_mac():
@@ -94,12 +100,56 @@ def fetch(repo, head, target):
         raise mc.NotCheckable(f"Kopie steht auf {found[:7]}, nicht auf {head[:7]}")
 
 
+def requirement_lines(path):
+    """The lines pip reads of one requirements file, without comments and blanks."""
+    lines = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = re.sub(r"(?:^|\s+)#.*$", "", line).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def requirement_files(found):
+    """The requirements file and every local file it pulls in with -r or -c, relative to the file that names it as pip reads them.
+    A missing or remote one stays out: pip then fails or fetches it, either way not from this copy."""
+    files, todo = [], [found]
+    while todo:
+        path = todo.pop(0)
+        if path in files or not path.is_file():
+            continue
+        files.append(path)
+        for line in requirement_lines(path):
+            match = INCLUDE.match(line)
+            if match and "://" not in match[1]:
+                todo.append((path.parent / match[1]).resolve())
+    return files
+
+
+def installs_itself(files):
+    """True when a requirements line installs from a local path, `-e .` above all."""
+    return any(LOCAL.search(line) for path in files for line in requirement_lines(path))
+
+
+def build_venv(target, found, root):
+    step([sys.executable, "-m", "venv", target], SETUP_SECONDS, "venv")
+    step([target / "bin" / "python", "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", found], SETUP_SECONDS, f"pip install -r {found.name}", cwd=root)
+
+
 def link_venv(root):
     """The name of the requirements file a .venv came from, None when the repository has neither."""
     found = next((root / name for name in REQUIREMENTS if (root / name).is_file()), None)
     if found is None or (root / ".venv").exists():
         return None
-    key = hashlib.sha256(found.read_bytes() + sys.version.encode() + platform.machine().encode()).hexdigest()[:16]
+    found = found.resolve()
+    files = requirement_files(found)
+    if installs_itself(files):  # the link would point into this copy, which goes at the end of the run
+        build_venv(root / ".venv", found, root)
+        return f"{found.name} (eigene Umgebung: lokales Paket)"
+    digest = hashlib.sha256(sys.version.encode() + platform.machine().encode())
+    for path in files:
+        digest.update(f"\0{path.relative_to(root.resolve()) if path.is_relative_to(root.resolve()) else path}\0".encode() + path.read_bytes())
+    key = digest.hexdigest()[:16]
     ready = cache() / "venvs" / key
     ready.parent.mkdir(parents=True, exist_ok=True)
     gate = os.open(f"{ready}.lock", os.O_CREAT | os.O_RDWR)
@@ -108,8 +158,7 @@ def link_venv(root):
         if not (ready / VENV_DONE).is_file():
             shutil.rmtree(ready, ignore_errors=True)
             try:
-                step([sys.executable, "-m", "venv", ready], SETUP_SECONDS, "venv")
-                step([ready / "bin" / "python", "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", found], SETUP_SECONDS, f"pip install -r {found.name}", cwd=root)
+                build_venv(ready, found, root)
             except mc.NotCheckable:
                 shutil.rmtree(ready, ignore_errors=True)
                 raise
@@ -142,10 +191,23 @@ def run_command(argv, root, log, env, deadline):
             heavy_lock.close_group(group)
 
 
+def pytest_counts(text):
+    """[(tests, skipped)] of the pytest summary lines in a text; a line with a word pytest does not use is no summary."""
+    found = []
+    for line in PYTEST.findall(text):
+        items = [] if line == "no tests ran" else [(int(number), word) for number, word in re.findall(r"(\d+) ([a-z]+)", line)]
+        if all(word in PYTEST_RAN | PYTEST_OTHER for _, word in items):
+            found.append((sum(n for n, word in items if word in PYTEST_RAN), sum(n for n, word in items if word == "skipped")))
+    return found
+
+
 def counts(text):
-    """(tests, skipped) over all unittest summaries in a log; tests is None when there is none."""
+    """(tests, skipped) over all unittest and pytest summaries in the output of one command; tests is None when there is none."""
     ran = [int(found) for found in RAN.findall(text)]
-    return (sum(ran) if ran else None), sum(int(found) for found in SKIPPED.findall(text))
+    pytest = pytest_counts(text)
+    if not ran and not pytest:
+        return None, 0
+    return sum(ran) + sum(n for n, _ in pytest), sum(int(found) for found in SKIPPED.findall(text)) + sum(n for _, n in pytest)
 
 
 def write_receipt(result, quick):
@@ -184,7 +246,8 @@ def verify(repo, number, minutes=MINUTES, say=None):
         quick = mc.quick_of(mc.read_config(repo, base))
         argvs = ce_check.commands_of(quick)
     except ce_common.RepoError as error:
-        raise mc.NotCheckable(f"check.quick der Basis {base} unbrauchbar: {error}") from error
+        raise mc.NotCheckable(f"check.quick der Basis {base} unbrauchbar ({mc.quick_text(quick)}; {mc.QUICK_FORM}); "
+                              f"im Repo berichtigen, verify und merge-check prüfen bis dahin nichts: {error}") from error
     sweep()
     (cache() / "runs").mkdir(parents=True, exist_ok=True)
     (cache() / "logs").mkdir(parents=True, exist_ok=True)
@@ -203,14 +266,20 @@ def verify(repo, number, minutes=MINUTES, say=None):
         deadline = ready + minutes * 60
         env, commands = {**clean_env(), "CE_VERIFY": "1"}, []
         for argv in argvs:
-            begin = time.monotonic()
+            begin, offset = time.monotonic(), log.stat().st_size if log.exists() else 0
             code = run_command(argv, root, log, env, deadline)
-            commands.append({"argv": argv, "code": code, "seconds": round(time.monotonic() - begin, 1)})
+            with log.open("rb") as out:
+                out.seek(offset)
+                ran, skips = counts(out.read().decode("utf-8", errors="replace"))
+            commands.append({"argv": argv, "code": code, "seconds": round(time.monotonic() - begin, 1), "tests": ran, "skipped": skips})
             if code is None:
                 raise mc.NotCheckable(f"Zeitlimit {minutes} min überschritten bei {' '.join(argv)}; Protokoll {log}")
-        tests, skipped = counts(log.read_text(encoding="utf-8", errors="replace"))
-        if tests is not None and tests <= skipped:  # a neighbour that is missing can end as nothing but skips
-            raise mc.NotCheckable(f"check.quick lief keinen einzigen Test ({tests} Tests, {skipped} übersprungen); Protokoll {log}")
+        for item in commands:  # a neighbour that is missing can end as nothing but skips, in one command beside others that run (0.43)
+            if item["tests"] is not None and item["tests"] <= item["skipped"]:
+                raise mc.NotCheckable(f"{' '.join(item['argv'])} lief keinen einzigen Test ({item['tests']} Tests, {item['skipped']} übersprungen); Protokoll {log}")
+        counted = [item for item in commands if item["tests"] is not None]
+        tests = sum(item["tests"] for item in counted) if counted else None
+        skipped = sum(item["skipped"] for item in counted)
         green = all(item["code"] == 0 for item in commands)
         result = {"repo": repo, "pr": number, "head": head, "base": base, "green": green, "tests": tests, "skipped": skipped, "venv": venv,
                   "commands": commands, "setup_seconds": round(ready - start, 1), "seconds": round(time.monotonic() - ready, 1), "log": str(log)}
