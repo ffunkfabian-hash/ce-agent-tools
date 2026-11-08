@@ -29,6 +29,7 @@ try:  # (0.45) the guard's own answer which model an Agent call runs on: fork an
     import agent_models  # type: ignore  # noqa: E402
 except Exception:  # noqa: BLE001 - without it the count reads the call's model only, as before 0.45
     agent_models = None
+AGENT_TOOLS = getattr(agent_models, "AGENT_TOOLS", ("Agent", "Task"))
 
 BIG_DOC = 60_000
 MAX_CONTEXT_TOKENS = 150_000
@@ -244,7 +245,7 @@ def analyse(path: Path, since=None) -> dict:
             tools[name] += 1
             last_tool = name
             full_command = str(data.get("command") or "") if name == "Bash" else ""
-            if name == "Agent":
+            if name in AGENT_TOOLS:  # (0.45) Task: the former name, as in the guard's matcher
                 agents[agent_model(data, record.get("cwd"))] += 1
             if name == "Bash":
                 command = str(data.get("command") or "")

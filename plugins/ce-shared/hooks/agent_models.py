@@ -25,7 +25,7 @@ FORK = "fork"
 INHERIT = "inherit"
 UNKNOWN = "unknown"
 FRONTMATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
-FIELD = re.compile(r"^(name|model)[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)  # judge 2: also "model": x
 
 
 def plugin_name(plugin_dir=PLUGIN_DIR):
@@ -45,7 +45,7 @@ def frontmatter(path):
     if not match:
         return {}
     fields = {}
-    for key, value in FIELD.findall(match.group(1)):
+    for _, key, value in FIELD.findall(match.group(1)):
         value = re.sub(r"\s+#.*$", "", value).strip().strip("'\"").strip()
         fields.setdefault(key, value)
     return fields

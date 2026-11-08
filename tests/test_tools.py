@@ -1169,15 +1169,18 @@ class ReportAndSessionHookTests(unittest.TestCase):
             records = [use({"prompt": "x", "subagent_type": "fork"}), use({"prompt": "x", "subagent_type": "ce-shared:ce-judge"}),
                        use({"prompt": "x", "subagent_type": "general-purpose"}), use({"prompt": "x", "model": "haiku"}),
                        use({"prompt": "x", "subagent_type": "keeper"}, cwd=str(root / "repo"))]
+            records.append({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Task",
+                                                                          "input": {"prompt": "x", "model": "haiku"}}]}})
             path = root / "t.jsonl"
             path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
             with mock.patch.object(Path, "home", return_value=root / "home"):
                 info = ce_report.analyse(path)
                 with mock.patch.object(ce_report, "agent_models", None):
                     before = ce_report.analyse(path)["agents"]
-        self.assertEqual(info["agents"], {"fork": 1, "opus": 1, "inherit": 1, "haiku": 1, "sonnet": 1})
+        self.assertEqual(info["agents"], {"fork": 1, "opus": 1, "inherit": 1, "haiku": 2, "sonnet": 1},
+                         "judge 2: Task (the former name) counts like Agent")
         self.assertIn("1 Unteragent(en) ohne model", "\n".join(ce_report.hints(info)), "only the unnamed start")
-        self.assertEqual(before, {"inherit": 4, "haiku": 1}, "without agent_models: the call's model only, as before")
+        self.assertEqual(before, {"inherit": 4, "haiku": 2}, "without agent_models: the call's model only, as before")
 
     def test_pulse_sightline_above_300000_names_its_limit(self):
         import subprocess, tempfile

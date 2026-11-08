@@ -617,6 +617,7 @@ class AgentModelTests(unittest.TestCase):
         (agents / "doc-keeper.md").write_text("---\nname: doc-keeper\ndescription: x\nmodel: sonnet\n---\nbody\n")
         (agents / "lazy.md").write_text("---\nname: lazy\nmodel: inherit\n---\nbody\n")
         (agents / "bare.md").write_text("---\nname: bare\ndescription: no model\n---\nmodel: opus\n")
+        (agents / "quoted.md").write_text("---\n\"name\": quoted\n'model': sonnet\n---\n")  # judge 2: quoted keys
         (agents / "file-name.md").write_text("---\ndescription: named by its file\nmodel: \"haiku\"  # cheap\n---\n")
         (self.repo / "sub").mkdir()
         user = self.home / ".claude" / "agents"
@@ -674,7 +675,7 @@ class AgentModelTests(unittest.TestCase):
 
     def test_project_and_user_definitions_are_read_like_claude_code(self):
         sub = str(self.repo / "sub")
-        passes = {"doc-keeper": True, "file-name": True, "mine": True, "lazy": False, "bare": False, "nobody": False}
+        passes = {"doc-keeper": True, "quoted": True, "file-name": True, "mine": True, "lazy": False, "bare": False, "nobody": False}
         for name, expect in passes.items():
             result = self.verdict(dict(agent(subagent_type=name), cwd=sub))
             self.assertEqual(result == {}, expect, name)
