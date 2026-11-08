@@ -746,6 +746,31 @@ class AgentModelTests(unittest.TestCase):
         self.assertEqual(agent_models.call_model({"subagent_type": "mine"}, str(other), self.home), "unknown",
                          "the unreadable name sits before the user definition")
 
+    def test_names_the_reader_cannot_be_sure_of_fail_open(self):
+        """0.46 judge round 1: a second `name` key in one line, a str tag on the key, YAML escapes, a plain scalar that
+        goes on in the next line, a hidden key - each was "inherit" for `worker` under another file name."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "two.md").write_text("---\n{meta: {name: nested}, name: second, model: sonnet}\n---\n")
+        (agents / "str-key.md").write_text("---\n!!map\n!!str name: str-keyed\nmodel: sonnet\n---\n")
+        (agents / "next-model.md").write_text("---\nname: next-model\nmodel:\n  sonnet\n---\n")  # parsed, model below
+        for name in ("second", "nested", "str-keyed", "next-model"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
+        for name, model in (("general-purpose", "inherit"), ("doc-keeper", "sonnet"), ("mine", "opus")):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model, name)
+        hidden = {"escape": '!!map\nname: "wor\\u006ber"\nmodel: sonnet', "single": "!!map\nname: 'wor''ker'",
+                  "folded": "!!map\nname: wor\n  ker", "explicit": "!!map\n? name\n: worker",
+                  "escaped-key": '!!map\n"n\\u0061me": worker\nmeta: {name: x}', "tagged-key": "!!map\n!t name: worker",
+                  "tagged-value": "!!map\nname: !t worker", "no-name": "!!map\nmodel: sonnet",
+                  "parsed-escape": 'name: "wor\\u006ber"\nmodel: sonnet'}
+        for case, text in hidden.items():
+            folder = Path(self.scratch.name) / case
+            (folder / ".claude" / "agents").mkdir(parents=True)
+            (folder / ".claude" / "agents" / "profile.md").write_text(f"---\n{text}\n---\n")
+            for name in ("worker", "general-purpose"):
+                self.assertEqual(agent_models.call_model({"subagent_type": name}, str(folder), self.home), "unknown",
+                                 f"{case}: the name may be {name}")
+
     def test_an_unreadable_definition_fails_open(self):
         """judge 1: a definition that cannot be read may be the one asked for - unknown, so the call passes."""
         sub = str(self.repo / "sub")

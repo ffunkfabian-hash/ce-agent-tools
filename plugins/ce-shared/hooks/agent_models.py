@@ -33,34 +33,61 @@ FRONTMATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z
 PLAIN_KEY = re.compile(r"^(['\"]?)[\w.-]+\1[ \t]*:(?:[ \t]|$)")  # a top-level `key:` line of a block mapping
 FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)  # judge 2: also "model": x
 # 0.46: a `name` key anywhere in a frontmatter not read here - at a line start (indented, after `- ` or `? `) or in a
-# flow mapping after `{` or `,`; group 2 is the rest of the line
-NAME_KEY = re.compile(r"(?:^[ \t]*(?:[-?][ \t]+)*|[{,][ \t]*)(['\"]?)name\1[ \t]*:(.*)$", re.MULTILINE)
-PROPERTIES = re.compile(r"\A[ \t]*(?:[!&]\S*(?:[ \t]+|\Z))*")  # tags and anchors before a value: `!!str`, `&n`
+# flow mapping after `{` or `,`, also behind an anchor or a str tag; the value is read from the end of the match on
+KEY_START = r"(?:^[ \t]*(?:[-?][ \t]+)*|[{,][ \t]*)"
+STR_PROPERTIES = r"(?:(?:&\S+|!!str|!<tag:yaml\.org,2002:str>|!)(?:[ \t]+|$))*"  # anchors and tags that keep a string
+NAME_KEY = re.compile(KEY_START + STR_PROPERTIES + r"(?P<key>(['\"]?)name\2)[ \t]*:", re.MULTILINE)
+# a key this reader cannot read that may be `name` (judge round 1): escapes in a quoted key, an alias as key, an
+# explicit key `? …`, a tag other than str on a key
+HIDDEN_KEY = re.compile(r"\"[^\"\n]*\\[^\"\n]*\"[ \t]*:|'[^'\n]*''[^'\n]*'[ \t]*:|(?:^|[\s{,])\*\S+[ \t]+:"
+                        r"|^[ \t]*(?:-[ \t]+)*\?(?:[ \t]|$)|(?:^|[\s{,])!(?!!str[ \t])(?!\s)\S*[ \t]+[\w\"'.-][^:\n]*:",
+                        re.MULTILINE)
 
 
 class Unparsed:
     """frontmatter() of a readable file whose frontmatter is not read here (judge 4: never "inherit"). 0.46 Nameplate:
     it stands for its file stem and for every name a `name` key in it shows (judge 5 of 0.45: `!!map` or `&definition`
-    on top of `name: worker` in profile.md blocked "worker"); `any` when a `name` key has a value not read here (an
-    alias, a block scalar, a value on the next line): then it may be every definition, like an unreadable file."""
+    on top of `name: worker` in profile.md blocked "worker"). `any` - it may be every definition, like an unreadable
+    file - when a `name` value is not read here (an alias, a block scalar, an escape, a value on the next line), when no
+    `name` key shows or when a key may be a hidden `name`."""
 
     def __init__(self, text):
-        names = [name_value(match.group(2)) for match in NAME_KEY.finditer(text)]
+        names = [name_value(text, match) for match in NAME_KEY.finditer(text)]
         self.names = {name for name in names if name}
-        self.any = None in names
+        self.any = None in names or not names or bool(HIDDEN_KEY.search(text))
 
     def __repr__(self):
         return f"Unparsed(names={sorted(self.names)}, any={self.any})"
 
 
-def name_value(rest):
-    """The plain or quoted scalar after a `name:` key (tags and anchors skipped), None when it is not one."""
-    rest = PROPERTIES.sub("", rest).strip()
-    if rest[:1] in ("'", '"'):
-        end = rest.find(rest[0], 1)
-        return (rest[1:end].strip() or None) if end > 0 else None
+def name_value(text, match):
+    """The plain or quoted scalar after a NAME_KEY match (anchors and str tags skipped), None when this reader cannot
+    be sure of it: another tag, an alias, a block or flow node, an escape, a plain scalar that goes on in the next
+    line, a value on the next line."""
+    end = text.find("\n", match.end())
+    end = len(text) if end < 0 else end
+    rest = re.sub(r"\A[ \t]*" + STR_PROPERTIES, "", text[match.end():end]).strip()
+    if rest[:1] == '"':
+        close = rest.find('"', 1)
+        return rest[1:close].strip() or None if close > 0 and "\\" not in rest[1:close] else None
+    if rest[:1] == "'":
+        close = rest.find("'", 1)
+        return rest[1:close].strip() or None if close > 0 and rest[close + 1:close + 2] != "'" else None
     value = re.split(r"[,}\]]|[ \t]#", rest, maxsplit=1)[0].strip()
-    return value if value and value[0] not in "*|>[{#!&@`%" else None
+    if not value or value[0] in "*|>[{#!&@`%":
+        return None
+    line_start = text.rfind("\n", 0, match.start("key")) + 1
+    if "{" not in text[line_start:match.start("key")] and deeper_next_line(text, end, match.start("key") - line_start):
+        return None  # a plain scalar in block context goes on in a more indented line
+    return value
+
+
+def deeper_next_line(text, end, column):
+    """Whether the next line after `end` with content (comments end a plain scalar) is indented beyond `column`."""
+    for line in text[end + 1:].splitlines():
+        if line.strip():
+            return not line.lstrip().startswith("#") and len(line) - len(line.lstrip(" \t")) > column
+    return False
 
 
 def plugin_name(plugin_dir=PLUGIN_DIR):
@@ -86,10 +113,13 @@ def frontmatter(path):
     if any(line[:1] not in (" ", "\t") and not PLAIN_KEY.match(line) for line in body.splitlines()):
         return Unparsed(match.group(1))
     fields = {}
-    for _, key, value in FIELD.findall(body):
+    for match in FIELD.finditer(body):
+        key, value = match.group(2), match.group(3)
         value = "" if value.startswith("#") else re.sub(r"\s+#.*$", "", value).strip()  # judge 3: `model: # x` is null
-        if value[:1] in ("[", "{", "|", ">", "&", "*", "!") or (value[:1] in "'\"" and value[-1:] != value[:1]):
-            value = None  # flow, block, anchor, tag, broken quote: not read here -> unknown (judge 3)
+        if (value[:1] in ("[", "{", "|", ">", "&", "*", "!") or (value[:1] in "'\"" and value[-1:] != value[:1])
+                or (value[:1] == '"' and "\\" in value) or (value[:1] == "'" and "''" in value[1:-1])
+                or deeper_next_line(body, match.end(), 0)):
+            value = None  # flow, block, anchor, tag, broken quote, escape, a value in the next line (0.46): unknown
         else:
             value = value.strip("'\"").strip()
         fields.setdefault(key, value)
