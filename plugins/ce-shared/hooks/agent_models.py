@@ -37,67 +37,52 @@ FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTI
 KEY_START = r"(?:^[ \t]*(?:[-?][ \t]+)*|[{\[,][ \t]*)"
 STR_PROPERTIES = r"(?:(?:&\S+|!!str|!<tag:yaml\.org,2002:str>|!)(?:[ \t]+|$))*"  # anchors and tags that keep a string
 NAME_KEY = re.compile(KEY_START + r"(?P<entry>" + STR_PROPERTIES + r"(['\"]?)name\2)[ \t]*:", re.MULTILINE)
-# quoted scalars (opening after a space or an indicator, so `it's` is no quote) and comments: no flow brackets there
-QUOTED_OR_COMMENT = re.compile(r"(?:^|(?<=[\s{\[,:]))(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*')|(?:^|(?<=[ \t]))#.*$",
-                               re.MULTILINE)
-# a key this reader cannot read that may be `name` (judge rounds 1 and 2): escapes in a quoted key, an alias as key,
-# an explicit key `? …` anywhere (also `{? name: x}` in a flow mapping), a tag other than str on a key
-HIDDEN_KEY = re.compile(r"\"[^\"\n]*\\[^\"\n]*\"[ \t]*:|'[^'\n]*''[^'\n]*'[ \t]*:|(?:^|[\s{\[,])\*[^\s,\]}]+[ \t]*:"
-                        r"|(?:^|[\s{\[,])\?(?:[ \t]|$)"
-                        r"|(?:^|[\s{\[,])!(?!(?:!str|<tag:yaml\.org,2002:str>)[ \t])(?!\s)\S*[ \t]+[\w\"'.-][^:\n]*:", re.MULTILINE)
+
+# 0.46 judge round 5: the narrow YAML plain_yaml() accepts. Every `name` key in it is one NAME_KEY finds, with its whole
+# value in its line; any other form (escapes, explicit keys, aliases, block scalars, other tags, multi-line scalars, a
+# value on the next line, YAML errors) may hide every name.
+ANCHOR = r"&[^\s,\[\]{}]+"
+NODE_PROPS = r"(?:(?:" + ANCHOR + r"|!!str|!<tag:yaml\.org,2002:str>)[ \t]+)*"  # anchor and str tags before a node
+QUOTED = r"\"[^\"\\\n]*\"|'[^'\n]*'(?!')"  # closed in its line, without an escape (`\` or `''`)
+FIRST = r"(?:[^\s\-?:,\[\]{}#&*!|>'\"%@`]|[-?:](?=[^\s,\[\]{}]))"  # a plain scalar starts with no indicator
+END = r"[ \t]*(?:(?<=[ \t])#[^\n]*)?(?:\n|\Z)"  # the rest of a line: spaces and a comment after a space
+LINE_END = re.compile(END)
+TOP_PROPS = re.compile(r"(?:(?:" + ANCHOR + r"|!!map|!<tag:yaml\.org,2002:map>)(?:[ \t]+|(?=\n|\Z)))+" + END)
+ITEM = re.compile(r"-[ \t]+(?=[^\s#])")
+BLOCK_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t]|\n|\Z)")
+FLOW_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t,\]}]|\n|\Z)")
+BLOCK_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#\n]|:(?=\S)|(?<=\S)#)*)")
+FLOW_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#,\[\]{}\n]|(?<=\S)#)*)")
+FLOW_PROPS = re.compile(NODE_PROPS + r"(?=[{\[])")
+SPACES = re.compile(r"[ \t]*(?:(?<=[ \t])#[^\n]*)?")  # spaces and a comment, within the line
+GAP = re.compile(r"(?:[ \t\n]|(?<=\s)#[^\n]*)*")  # spaces, line breaks and comments
+LINE_BREAKS = re.compile("[\r\x85\u2028\u2029\ufeff\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # YAML 1.1 breaks, controls
 
 
 class Unparsed:
     """frontmatter() of a readable file whose frontmatter is not read here (judge 4: never "inherit"). 0.46 Nameplate:
     it stands for its file stem and for every name a `name` key in it shows (judge 5 of 0.45: `!!map` or `&definition`
     on top of `name: worker` in profile.md blocked "worker"). `any` - it may be every definition, like an unreadable
-    file - when a `name` value is not read here (an alias, a block scalar, an escape, a value on the next line), when no
-    `name` key shows or when a key may be a hidden `name`."""
+    file - unless it is plain_yaml() and shows a `name` key (judge round 5: a positive list)."""
 
     def __init__(self, text):
-        values = [name_values(text, match) for match in NAME_KEY.finditer(text)]
-        self.names = set().union(*(found for found in values if found))
-        self.any = None in values or not values or bool(HIDDEN_KEY.search(text))
+        self.names = set().union(*(name_values(text, match) for match in NAME_KEY.finditer(text))) - {""}
+        self.any = not self.names or not plain_yaml(text)
 
     def __repr__(self):
         return f"Unparsed(names={sorted(self.names)}, any={self.any})"
 
 
 def name_values(text, match):
-    """The names the scalar after a NAME_KEY match may be (anchors and str tags skipped; a plain one both as cut at a
-    flow indicator and as a whole), None when this reader cannot be sure:
-    another tag, an alias, a block or flow node, an escape, a plain scalar that goes on in the next line, a value on
-    the next line."""
+    """The names the scalar after a NAME_KEY match may show (anchors and str tags skipped, quotes taken off; a plain
+    one both as cut at a flow indicator and as a whole). Exact for plain_yaml(), a best guess otherwise."""
     end = text.find("\n", match.end())
-    end = len(text) if end < 0 else end
-    rest = re.sub(r"\A[ \t]*" + STR_PROPERTIES, "", text[match.end():end]).strip()
-    if rest[:1] == '"':
-        close = rest.find('"', 1)
-        return {rest[1:close].strip()} - {""} or None if close > 0 and "\\" not in rest[1:close] else None
-    if rest[:1] == "'":
-        close = rest.find("'", 1)
-        return {rest[1:close].strip()} - {""} or None if close > 0 and rest[close + 1:close + 2] != "'" else None
+    rest = re.sub(r"\A[ \t]*" + STR_PROPERTIES, "", text[match.end():len(text) if end < 0 else end]).strip()
+    if rest[:1] in ("'", '"'):
+        close = rest.find(rest[0], 1)
+        return {rest[1:close if close > 0 else None].strip()}
     whole = re.split(r"[ \t]#", rest, maxsplit=1)[0].strip()  # block context: `,` `}` `]` belong to the scalar
-    head = re.split(r"[,}\]]", whole, maxsplit=1)[0].strip()  # flow context: they end it
-    if not head or head[0] in "*|>[{#!&@`%":
-        return None
-    follow = next((line.strip() for line in text[end + 1:].splitlines() if line.strip()), "")
-    if follow[:1] in ("", "}", "]", ",", "#"):
-        return {head, whole}  # nothing, a flow end or a comment follows: the scalar ends in its line
-    before = text[:match.start("entry")]
-    if flow_depth(QUOTED_OR_COMMENT.sub("", before)):  # judge rounds 3/4: in a flow collection
-        return {head, whole} if head != whole else None  # not ended in its line: it may go on at any indentation
-    if deeper_next_line(text, end, match.start("entry") - (before.rfind("\n") + 1)):
-        return None  # block context: it goes on in a line indented beyond its entry (tag and anchor included)
-    return {head, whole}
-
-
-def flow_depth(text):
-    """Open `{`/`[` in text without quotes and comments; a closer without opener (plain text) never goes below 0."""
-    depth = 0
-    for char in re.findall(r"[{}\[\]]", text):
-        depth = depth + 1 if char in "{[" else max(0, depth - 1)
-    return depth
+    return {whole, re.split(r"[,}\]]", whole, maxsplit=1)[0].strip()}  # flow context: they end it
 
 
 def deeper_next_line(text, end, column):
@@ -106,6 +91,132 @@ def deeper_next_line(text, end, column):
         if line.strip():
             return not line.lstrip().startswith("#") and len(line) - len(line.lstrip(" \t")) > column
     return False
+
+
+class NotPlain(Exception):
+    """Raised inside plain_yaml() for a form outside its grammar."""
+
+
+def need(found):
+    if not found:
+        raise NotPlain
+    return found
+
+
+def is_name(key):
+    return (key[1:-1] if key[:1] in ("'", '"') else key) == "name"
+
+
+def scalar_value(found, name):
+    """A scalar of BLOCK_SCALAR or FLOW_SCALAR; a `name` needs a value that is not empty."""
+    need(found)
+    if name and not found.group(1).strip("'\" \t"):
+        raise NotPlain
+    return found.end()
+
+
+def flow(text, at):
+    """The end of the flow collection opening at text[at]: mappings of FLOW_KEY pairs, sequences of nodes, nested; a
+    line break only after an opening bracket or a comma and before a comma or a closing bracket (judge rounds 3/4)."""
+    close = "}" if text[at] == "{" else "]"
+    at = GAP.match(text, at + 1).end()
+    while text[at:at + 1] != close:
+        name = False
+        if close == "}":
+            key = need(FLOW_KEY.match(text, at))
+            name, at = is_name(key.group(2)), SPACES.match(text, key.end()).end()
+        if text[at:at + 1] in (",", "}", "\n", ""):
+            if name or close == "]":
+                raise NotPlain  # a null `name` or an empty entry
+        elif props := FLOW_PROPS.match(text, at):
+            if name:
+                raise NotPlain  # a `name` that is no string
+            at = flow(text, props.end())
+        else:
+            at = scalar_value(FLOW_SCALAR.match(text, at), name)
+        at = SPACES.match(text, at).end()
+        if text[at:at + 1] == "\n":
+            at = GAP.match(text, at).end()
+        if text[at:at + 1] == ",":
+            at = GAP.match(text, at + 1).end()
+        elif text[at:at + 1] != close:
+            raise NotPlain
+    return at + 1
+
+
+def block_value(text, at, name):
+    """(end of the line, whether the value is empty: a nested block may follow) for the value of a block entry."""
+    if empty := LINE_END.match(text, at):
+        if name:
+            raise NotPlain  # a null `name` or a node in the next lines
+        return empty.end(), True
+    at = re.compile(r"[ \t]*").match(text, at).end()
+    if props := FLOW_PROPS.match(text, at):
+        if name:
+            raise NotPlain
+        at = flow(text, props.end())
+    else:
+        at = scalar_value(BLOCK_SCALAR.match(text, at), name)
+    return need(LINE_END.match(text, at)).end(), False
+
+
+def plain_yaml(text):
+    """0.46 Nameplate (judge round 5): whether a frontmatter is of the narrow YAML whose `name` keys NAME_KEY all finds:
+    blank and comment lines, one line of `!!map` and anchors on top, block mappings and sequences (`- key: value`,
+    `- value`) of `key: value` entries with a plain or quoted key (no escape, anchor and str tag allowed) and a value
+    that is a plain scalar ending in its line, a quoted one closed in its line without escape, a flow collection or
+    nothing (a nested block follows); flow collections of such pairs and nodes, also over lines, also as the whole
+    frontmatter. Indentation as YAML has it: a deeper line only below an entry without value."""
+    text = text.replace("\r\n", "\n")
+    if LINE_BREAKS.search(text):
+        return False
+    stack, opener, top, at = [], None, True, 0  # open block collections (column, "map"/"seq"), column of a `key:`
+    try:
+        while at < len(text):
+            start, line_end = at, text.find("\n", at) % (len(text) + 1)  # no line break: the end of the text
+            stripped = text[at:line_end].strip(" \t")
+            if not stripped or stripped[0] == "#":
+                at = line_end + 1
+                continue
+            column = len(text[at:line_end]) - len(text[at:line_end].lstrip(" "))
+            at += column
+            if text[at] == "\t" or top is None:
+                raise NotPlain  # a tab in the indentation, content after a flow frontmatter
+            if not stack and top and (props := TOP_PROPS.match(text, at)):
+                at, top = props.end(), False  # `!!map` / `&definition` on top, only once
+                continue
+            if not stack and text[at] in "{[":
+                at, top = need(LINE_END.match(text, flow(text, at))).end(), None  # the whole frontmatter
+                continue
+            top = False
+            item = ITEM.match(text, at)
+            key = BLOCK_KEY.match(text, item.end() if item else at)
+            kind = "seq" if item else "map"
+            if not stack:
+                stack.append((column, kind))
+            elif opener is not None and (column > opener or column == opener and kind == "seq"
+                                         and stack[-1] == (column, "map")):
+                stack.append((column, kind))  # a nested block below `key:`, a sequence also at its column
+            else:
+                while stack[-1][0] > column:
+                    stack.pop()
+                if kind == "map" and stack[-2:] == [(column, "map"), (column, "seq")]:
+                    stack.pop()  # the next key after a sequence at the column of its key
+                if stack[-1] != (column, kind):
+                    raise NotPlain  # a scalar that goes on, another indentation, a key among items
+            opener = None
+            if key:
+                if item:
+                    stack.append((key.start() - start, "map"))  # `- key: value`: a mapping at the key's column
+                at, empty = block_value(text, key.end(), is_name(key.group(2)))
+                opener = key.start() - start if empty else None
+            elif item:
+                at = block_value(text, item.end(), False)[0]  # `- value`
+            else:
+                raise NotPlain
+    except (NotPlain, IndexError):
+        return False
+    return True
 
 
 def plugin_name(plugin_dir=PLUGIN_DIR):
