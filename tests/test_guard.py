@@ -689,6 +689,29 @@ class AgentModelTests(unittest.TestCase):
         self.assertEqual(agent_models.call_model({"subagent_type": "lazy", "model": "opus"}, sub, self.home), "opus")
         self.assertEqual(agent_models.call_model(None), "inherit")
 
+    def test_yaml_forms_config_dir_and_an_unreadable_project_definition(self):
+        """judge 3: `model: # x` is null, a wholly indented mapping is read, other YAML is unknown, CLAUDE_CONFIG_DIR
+        holds the user agents, and an unreadable project file shadows a user definition of the same name."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "nulled.md").write_text("---\nname: nulled\nmodel: # default\n---\n")
+        (agents / "indented.md").write_text("---\n  name: indented\n  model: sonnet\n---\n")
+        (agents / "nested.md").write_text("---\nname: nested\nmeta:\n  model: opus\n---\n")
+        (agents / "flow.md").write_text("---\nname: flow\nmodel: [opus]\n---\n")
+        expect = {"nulled": "inherit", "indented": "sonnet", "nested": "inherit", "flow": "unknown"}
+        for name, model in expect.items():
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model, name)
+        config = Path(self.scratch.name) / "config"
+        (config / "agents").mkdir(parents=True)
+        (config / "agents" / "cfg.md").write_text("---\nname: cfg\nmodel: haiku\n---\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(config)}):
+            self.assertEqual(agent_models.call_model({"subagent_type": "cfg"}, sub), "haiku")
+        other = Path(self.scratch.name) / "other"
+        (other / ".claude" / "agents" / "aaa.md").mkdir(parents=True)  # unreadable, sorted before the user file
+        (self.home / ".claude" / "agents" / "shadow.md").write_text("---\nname: shadow\nmodel: inherit\n---\n")
+        self.assertEqual(agent_models.call_model({"subagent_type": "shadow"}, str(other), self.home), "unknown")
+        self.assertEqual(self.verdict(dict(agent(subagent_type="shadow"), cwd=str(other))), {}, "fail open")
+
     def test_an_unreadable_definition_fails_open(self):
         """judge 1: a definition that cannot be read may be the one asked for - unknown, so the call passes."""
         sub = str(self.repo / "sub")
@@ -711,7 +734,8 @@ class AgentModelTests(unittest.TestCase):
             self.assertEqual(self.verdict(agent()), {})
 
     def test_the_hook_process_blocks_an_agent_start_without_model(self):
-        env = {"CLAUDE_PLUGIN_ROOT": str(PLUGIN), "PATH": "/usr/bin:/bin", "HOME": str(self.home)}
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN), HOME=str(self.home), USERPROFILE=str(self.home))
+        env.pop("CLAUDE_CONFIG_DIR", None)  # judge 3: keep the system variables Windows needs, name the home on both
         script = str(PLUGIN / "hooks" / "guard.py")
         out = subprocess.run([sys.executable, script], input=json.dumps(agent(subagent_type="general-purpose")),
                              text=True, capture_output=True, env=env, check=True).stdout

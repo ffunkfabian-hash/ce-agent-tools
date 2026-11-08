@@ -11,12 +11,16 @@ model without anybody naming one (global rule: model and effort at every agent s
 the main model: no definition - the built-ins general-purpose, Explore … - or one without a model or `model: inherit`)
 or "unknown" (judge round 1: the guard fails open, so what it cannot read passes). Definitions are read where Claude
 Code reads them: `<plugin>:<name>` from this plugin's `agents/` (another plugin's folder is not known here: "unknown"),
-a bare name from `.claude/agents/` of the folder and its parents, then `~/.claude/agents/`; the first definition whose
-`name` (else file stem) matches decides. An unreadable definition file without a match, or any error: "unknown".
+a bare name from `.claude/agents/` of the folder and its parents, then `agents/` of `CLAUDE_CONFIG_DIR` (else
+`~/.claude`); the first definition whose
+`name` (else file stem) matches decides. "unknown" also for an unreadable definition file before the match (it may
+be the one asked for), a `model` value this reader does not parse (YAML beyond a plain scalar) and any error.
 Nothing here raises.
 """
 import json
+import os
 import re
+import textwrap
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
@@ -45,8 +49,12 @@ def frontmatter(path):
     if not match:
         return {}
     fields = {}
-    for _, key, value in FIELD.findall(match.group(1)):
-        value = re.sub(r"\s+#.*$", "", value).strip().strip("'\"").strip()
+    for _, key, value in FIELD.findall(textwrap.dedent(match.group(1))):  # judge 3: a wholly indented mapping
+        value = "" if value.startswith("#") else re.sub(r"\s+#.*$", "", value).strip()  # judge 3: `model: # x` is null
+        if value[:1] in ("[", "{", "|", ">", "&", "*", "!") or (value[:1] in "'\"" and value[-1:] != value[:1]):
+            value = None  # flow, block, anchor, tag, broken quote: not read here -> unknown (judge 3)
+        else:
+            value = value.strip("'\"").strip()
         fields.setdefault(key, value)
     return fields
 
@@ -60,7 +68,8 @@ def agent_dirs(subagent_type, cwd=None, home=None, plugin_dir=PLUGIN_DIR):
     if cwd:
         start = Path(cwd)
         folders = [folder / ".claude" / "agents" for folder in (start, *start.parents)]
-    folders.append(Path(home or Path.home()) / ".claude" / "agents")
+    config = Path(home) / ".claude" if home else Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    folders.append(config / "agents")  # judge 3: CLAUDE_CONFIG_DIR as in session.py
     return name, folders
 
 
@@ -73,22 +82,27 @@ def profile_model(subagent_type, cwd=None, home=None, plugin_dir=PLUGIN_DIR):
         name, folders = agent_dirs(subagent_type, cwd, home, plugin_dir)
         if folders is None:
             return None
-        unreadable = False
+        unreadable = False  # an unreadable file in a folder of higher priority: any of them may be the definition
         for folder in folders:
             if not folder.is_dir():
                 continue
+            before = unreadable
+            here = False  # in the same folder only a file of that very name counts (judge 3)
             for path in sorted(folder.glob("*.md")):
                 fields = frontmatter(path)
                 if fields is None:
+                    here = here or path.stem == name
                     unreadable = True
                     continue
                 if (fields.get("name") or path.stem) != name:
                     continue
+                if before or here or fields.get("model", "") is None:
+                    return None  # judge 3: a definition before this one could not be read, or the value not parsed
                 model = fields.get("model", "").lower()
                 return "" if model in ("", INHERIT) else model
     except Exception:  # noqa: BLE001 - fail open
         return None
-    return None if unreadable else ""
+    return None if unreadable else ""  # no definition at all is a built-in (inherit), unless one could not be read
 
 
 def call_model(data, cwd=None, home=None, plugin_dir=PLUGIN_DIR):
