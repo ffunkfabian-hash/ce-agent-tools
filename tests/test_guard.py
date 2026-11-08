@@ -754,7 +754,10 @@ class AgentModelTests(unittest.TestCase):
         (agents / "two.md").write_text("---\n{meta: {name: nested}, name: second, model: sonnet}\n---\n")
         (agents / "str-key.md").write_text("---\n!!map\n!!str name: str-keyed\nmodel: sonnet\n---\n")
         (agents / "next-model.md").write_text("---\nname: next-model\nmodel:\n  sonnet\n---\n")  # parsed, model below
-        for name in ("second", "nested", "str-keyed", "next-model"):
+        (agents / "comma.md").write_text("---\n!!map\nname: comma,ed\nmodel: sonnet\n---\n")  # block: one scalar
+        (agents / "twice.md").write_text("---\nname: first\nname: twice\nmodel: sonnet\n---\n")  # parsed, key twice
+        (agents / "two-models.md").write_text("---\nname: two-models\nmodel: opus\nmodel: inherit\n---\n")
+        for name in ("second", "nested", "str-keyed", "next-model", "comma,ed", "first", "twice", "two-models"):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
         for name, model in (("general-purpose", "inherit"), ("doc-keeper", "sonnet"), ("mine", "opus")):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model, name)
@@ -762,7 +765,10 @@ class AgentModelTests(unittest.TestCase):
                   "folded": "!!map\nname: wor\n  ker", "explicit": "!!map\n? name\n: worker",
                   "escaped-key": '!!map\n"n\\u0061me": worker\nmeta: {name: x}', "tagged-key": "!!map\n!t name: worker",
                   "tagged-value": "!!map\nname: !t worker", "no-name": "!!map\nmodel: sonnet",
-                  "parsed-escape": 'name: "wor\\u006ber"\nmodel: sonnet'}
+                  "parsed-escape": 'name: "wor\\u006ber"\nmodel: sonnet',
+                  "flow-explicit": "!!map\n{? name: worker, meta: {name: other}, model: sonnet}",  # judge round 2
+                  "sequence-explicit": "[? name : worker]", "flow-alias-key": "{*k: worker, name: x}",
+                  "flow-folded": "{name: wor\n  ker, model: sonnet}"}
         for case, text in hidden.items():
             folder = Path(self.scratch.name) / case
             (folder / ".claude" / "agents").mkdir(parents=True)

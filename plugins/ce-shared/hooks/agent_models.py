@@ -34,14 +34,14 @@ PLAIN_KEY = re.compile(r"^(['\"]?)[\w.-]+\1[ \t]*:(?:[ \t]|$)")  # a top-level `
 FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)  # judge 2: also "model": x
 # 0.46: a `name` key anywhere in a frontmatter not read here - at a line start (indented, after `- ` or `? `) or in a
 # flow mapping after `{` or `,`, also behind an anchor or a str tag; the value is read from the end of the match on
-KEY_START = r"(?:^[ \t]*(?:[-?][ \t]+)*|[{,][ \t]*)"
+KEY_START = r"(?:^[ \t]*(?:[-?][ \t]+)*|[{\[,][ \t]*)"
 STR_PROPERTIES = r"(?:(?:&\S+|!!str|!<tag:yaml\.org,2002:str>|!)(?:[ \t]+|$))*"  # anchors and tags that keep a string
 NAME_KEY = re.compile(KEY_START + STR_PROPERTIES + r"(?P<key>(['\"]?)name\2)[ \t]*:", re.MULTILINE)
-# a key this reader cannot read that may be `name` (judge round 1): escapes in a quoted key, an alias as key, an
-# explicit key `? …`, a tag other than str on a key
-HIDDEN_KEY = re.compile(r"\"[^\"\n]*\\[^\"\n]*\"[ \t]*:|'[^'\n]*''[^'\n]*'[ \t]*:|(?:^|[\s{,])\*\S+[ \t]+:"
-                        r"|^[ \t]*(?:-[ \t]+)*\?(?:[ \t]|$)|(?:^|[\s{,])!(?!!str[ \t])(?!\s)\S*[ \t]+[\w\"'.-][^:\n]*:",
-                        re.MULTILINE)
+# a key this reader cannot read that may be `name` (judge rounds 1 and 2): escapes in a quoted key, an alias as key,
+# an explicit key `? …` anywhere (also `{? name: x}` in a flow mapping), a tag other than str on a key
+HIDDEN_KEY = re.compile(r"\"[^\"\n]*\\[^\"\n]*\"[ \t]*:|'[^'\n]*''[^'\n]*'[ \t]*:|(?:^|[\s{\[,])\*[^\s,\]}]+[ \t]*:"
+                        r"|(?:^|[\s{\[,])\?(?:[ \t]|$)"
+                        r"|(?:^|[\s{\[,])!(?!!str[ \t])(?!\s)\S*[ \t]+[\w\"'.-][^:\n]*:", re.MULTILINE)
 
 
 class Unparsed:
@@ -52,34 +52,37 @@ class Unparsed:
     `name` key shows or when a key may be a hidden `name`."""
 
     def __init__(self, text):
-        names = [name_value(text, match) for match in NAME_KEY.finditer(text)]
-        self.names = {name for name in names if name}
-        self.any = None in names or not names or bool(HIDDEN_KEY.search(text))
+        values = [name_values(text, match) for match in NAME_KEY.finditer(text)]
+        self.names = set().union(*(found for found in values if found))
+        self.any = None in values or not values or bool(HIDDEN_KEY.search(text))
 
     def __repr__(self):
         return f"Unparsed(names={sorted(self.names)}, any={self.any})"
 
 
-def name_value(text, match):
-    """The plain or quoted scalar after a NAME_KEY match (anchors and str tags skipped), None when this reader cannot
-    be sure of it: another tag, an alias, a block or flow node, an escape, a plain scalar that goes on in the next
-    line, a value on the next line."""
+def name_values(text, match):
+    """The names the scalar after a NAME_KEY match may be (anchors and str tags skipped; a plain one both as cut at a
+    flow indicator and as a whole, as this reader does not track flow context), None when this reader cannot be sure:
+    another tag, an alias, a block or flow node, an escape, a plain scalar that goes on in the next line, a value on
+    the next line."""
     end = text.find("\n", match.end())
     end = len(text) if end < 0 else end
     rest = re.sub(r"\A[ \t]*" + STR_PROPERTIES, "", text[match.end():end]).strip()
     if rest[:1] == '"':
         close = rest.find('"', 1)
-        return rest[1:close].strip() or None if close > 0 and "\\" not in rest[1:close] else None
+        return {rest[1:close].strip()} - {""} or None if close > 0 and "\\" not in rest[1:close] else None
     if rest[:1] == "'":
         close = rest.find("'", 1)
-        return rest[1:close].strip() or None if close > 0 and rest[close + 1:close + 2] != "'" else None
-    value = re.split(r"[,}\]]|[ \t]#", rest, maxsplit=1)[0].strip()
-    if not value or value[0] in "*|>[{#!&@`%":
+        return {rest[1:close].strip()} - {""} or None if close > 0 and rest[close + 1:close + 2] != "'" else None
+    whole = re.split(r"[ \t]#", rest, maxsplit=1)[0].strip()  # block context: `,` `}` `]` belong to the scalar
+    head = re.split(r"[,}\]]", whole, maxsplit=1)[0].strip()  # flow context: they end it
+    if not head or head[0] in "*|>[{#!&@`%":
         return None
     line_start = text.rfind("\n", 0, match.start("key")) + 1
-    if "{" not in text[line_start:match.start("key")] and deeper_next_line(text, end, match.start("key") - line_start):
-        return None  # a plain scalar in block context goes on in a more indented line
-    return value
+    ended = head != whole and re.search(r"[{\[,]", text[line_start:match.start("key")])  # cut in a flow collection
+    if not ended and deeper_next_line(text, end, match.start("key") - line_start):
+        return None  # a plain scalar goes on in a line indented beyond its key
+    return {head, whole}
 
 
 def deeper_next_line(text, end, column):
@@ -122,7 +125,7 @@ def frontmatter(path):
             value = None  # flow, block, anchor, tag, broken quote, escape, a value in the next line (0.46): unknown
         else:
             value = value.strip("'\"").strip()
-        fields.setdefault(key, value)
+        fields[key] = value if fields.get(key, value) == value else None  # 0.46: a key twice with two values
     return Unparsed(body) if fields.get("name", "") is None else fields
 
 
