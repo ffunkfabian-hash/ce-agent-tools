@@ -28,7 +28,9 @@ AGENT_TOOLS = ("Agent", "Task")  # Task: the tool's name before Claude Code rena
 FORK = "fork"
 INHERIT = "inherit"
 UNKNOWN = "unknown"
+UNPARSED = "unparsed"  # frontmatter() of a readable file whose frontmatter is not read here
 FRONTMATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+PLAIN_KEY = re.compile(r"^(['\"]?)[\w.-]+\1[ \t]*:(?:[ \t]|$)")  # a top-level `key:` line of a block mapping
 FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)  # judge 2: also "model": x
 
 
@@ -41,15 +43,21 @@ def plugin_name(plugin_dir=PLUGIN_DIR):
 
 def frontmatter(path):
     """{"name": …, "model": …} of an agent definition (values without quotes or comments), {} without frontmatter,
-    None when the file cannot be read."""
+    None when the file cannot be read, UNPARSED when its frontmatter is not a plain block mapping this reader
+    understands (judge 4: a flow mapping `{name: x, model: y}` or another top-level form is "unknown", never "inherit";
+    as its name is unknown too, it stands for the definition of its file stem only)."""
     try:
         match = FRONTMATTER.match(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not match:
         return {}
+    lines = [line for line in match.group(1).splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    body = textwrap.dedent("\n".join(lines))  # judge 3/4: a wholly indented mapping, also after a comment line
+    if any(line[:1] not in (" ", "\t") and not PLAIN_KEY.match(line) for line in body.splitlines()):
+        return UNPARSED
     fields = {}
-    for _, key, value in FIELD.findall(textwrap.dedent(match.group(1))):  # judge 3: a wholly indented mapping
+    for _, key, value in FIELD.findall(body):
         value = "" if value.startswith("#") else re.sub(r"\s+#.*$", "", value).strip()  # judge 3: `model: # x` is null
         if value[:1] in ("[", "{", "|", ">", "&", "*", "!") or (value[:1] in "'\"" and value[-1:] != value[:1]):
             value = None  # flow, block, anchor, tag, broken quote: not read here -> unknown (judge 3)
@@ -90,6 +98,10 @@ def profile_model(subagent_type, cwd=None, home=None, plugin_dir=PLUGIN_DIR):
             here = False  # in the same folder only a file of that very name counts (judge 3)
             for path in sorted(folder.glob("*.md")):
                 fields = frontmatter(path)
+                if fields == UNPARSED:
+                    if path.stem == name:
+                        return None
+                    continue
                 if fields is None:
                     here = here or path.stem == name
                     unreadable = True

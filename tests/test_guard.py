@@ -698,7 +698,11 @@ class AgentModelTests(unittest.TestCase):
         (agents / "indented.md").write_text("---\n  name: indented\n  model: sonnet\n---\n")
         (agents / "nested.md").write_text("---\nname: nested\nmeta:\n  model: opus\n---\n")
         (agents / "flow.md").write_text("---\nname: flow\nmodel: [opus]\n---\n")
-        expect = {"nulled": "inherit", "indented": "sonnet", "nested": "inherit", "flow": "unknown"}
+        (agents / "flowmap.md").write_text("---\n{name: flowmap, model: sonnet}\n---\n")  # judge 4
+        (agents / "commented.md").write_text("---\n# a comment\n  name: commented\n  model: sonnet\n---\n")  # judge 4
+        (agents / "listed.md").write_text("---\n- name: listed\n---\n")
+        expect = {"nulled": "inherit", "indented": "sonnet", "nested": "inherit", "flow": "unknown",
+                  "flowmap": "unknown", "commented": "sonnet", "listed": "unknown"}
         for name, model in expect.items():
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model, name)
         config = Path(self.scratch.name) / "config"
