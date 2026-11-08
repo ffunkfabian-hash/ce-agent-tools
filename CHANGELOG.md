@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.46.0 „Nameplate“ – unveröffentlicht (08.11.2026)
+
+Befund der Richterrunde 5 zu 0.45 (gpt-6.1-sol high, reproduziert).
+
+- **Fehlblock bei unverstandenem Frontmatter behoben (Kernpfad):** Stand ganz oben ein YAML-Tag oder Anker (`!!map`, `&definition`) und wich der Dateiname vom `name` ab, übersprang `agent_models.profile_model()` die Datei. `profile.md` mit `name: worker`, `model: sonnet` ergab für `worker` „inherit“, `guard.py` blockierte. Ebenso bei einem Anker oder Tag am Namen selbst (`name: &n worker`). Eine unverstandene Datei steht jetzt für ihren Dateinamen und für jeden Namen, den ein `name`-Schlüssel in ihr zeigt (auch in Anführungszeichen, eingerückt, als Listenpunkt oder in einem Flow-Mapping): dafür gilt „unknown“, der Start läuft durch. Für alle Namen gilt sie nur, wenn ein `name`-Wert nicht lesbar ist (Alias, Block-Skalar, Wert in der nächsten Zeile), wie eine unlesbare Datei. Eingebaute Typen und andere Profile behalten ihr Urteil.
+- Tests: `test_an_unparsed_frontmatter_under_another_file_name_fails_open` in `AgentModelTests`, gegen ff2107b rot. [Version](docs/versions/0.46.md).
+
 ## 0.45.0 „Rollcall“ – unveröffentlicht (08.11.2026)
 
 Maßnahme 1 der Nexogen-Prüfung 2026-11 (`docs/pruefung-2026-11.md` › 4): 18 von 200 Agent-Starts ohne Modell, 55 % der Sitzungen über 300 Nachrichten.

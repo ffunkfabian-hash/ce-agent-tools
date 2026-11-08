@@ -14,8 +14,9 @@ Code reads them: `<plugin>:<name>` from this plugin's `agents/` (another plugin'
 a bare name from `.claude/agents/` of the folder and its parents, then `agents/` of `CLAUDE_CONFIG_DIR` (else
 `~/.claude`); the first definition whose
 `name` (else file stem) matches decides. "unknown" also for an unreadable definition file before the match (it may
-be the one asked for), a `model` value this reader does not parse (YAML beyond a plain scalar) and any error.
-Nothing here raises.
+be the one asked for), a `model` value this reader does not parse (YAML beyond a plain scalar), a frontmatter it does
+not parse whose file stem or `name` key shows the name asked for (0.46 Nameplate: `!!map` on top of `name: worker`)
+and any error. Nothing here raises.
 """
 import json
 import os
@@ -28,10 +29,38 @@ AGENT_TOOLS = ("Agent", "Task")  # Task: the tool's name before Claude Code rena
 FORK = "fork"
 INHERIT = "inherit"
 UNKNOWN = "unknown"
-UNPARSED = "unparsed"  # frontmatter() of a readable file whose frontmatter is not read here
 FRONTMATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 PLAIN_KEY = re.compile(r"^(['\"]?)[\w.-]+\1[ \t]*:(?:[ \t]|$)")  # a top-level `key:` line of a block mapping
 FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTILINE)  # judge 2: also "model": x
+# 0.46: a `name` key anywhere in a frontmatter not read here - at a line start (indented, after `- ` or `? `) or in a
+# flow mapping after `{` or `,`; group 2 is the rest of the line
+NAME_KEY = re.compile(r"(?:^[ \t]*(?:[-?][ \t]+)*|[{,][ \t]*)(['\"]?)name\1[ \t]*:(.*)$", re.MULTILINE)
+PROPERTIES = re.compile(r"\A[ \t]*(?:[!&]\S*(?:[ \t]+|\Z))*")  # tags and anchors before a value: `!!str`, `&n`
+
+
+class Unparsed:
+    """frontmatter() of a readable file whose frontmatter is not read here (judge 4: never "inherit"). 0.46 Nameplate:
+    it stands for its file stem and for every name a `name` key in it shows (judge 5 of 0.45: `!!map` or `&definition`
+    on top of `name: worker` in profile.md blocked "worker"); `any` when a `name` key has a value not read here (an
+    alias, a block scalar, a value on the next line): then it may be every definition, like an unreadable file."""
+
+    def __init__(self, text):
+        names = [name_value(match.group(2)) for match in NAME_KEY.finditer(text)]
+        self.names = {name for name in names if name}
+        self.any = None in names
+
+    def __repr__(self):
+        return f"Unparsed(names={sorted(self.names)}, any={self.any})"
+
+
+def name_value(rest):
+    """The plain or quoted scalar after a `name:` key (tags and anchors skipped), None when it is not one."""
+    rest = PROPERTIES.sub("", rest).strip()
+    if rest[:1] in ("'", '"'):
+        end = rest.find(rest[0], 1)
+        return (rest[1:end].strip() or None) if end > 0 else None
+    value = re.split(r"[,}\]]|[ \t]#", rest, maxsplit=1)[0].strip()
+    return value if value and value[0] not in "*|>[{#!&@`%" else None
 
 
 def plugin_name(plugin_dir=PLUGIN_DIR):
@@ -43,9 +72,9 @@ def plugin_name(plugin_dir=PLUGIN_DIR):
 
 def frontmatter(path):
     """{"name": …, "model": …} of an agent definition (values without quotes or comments), {} without frontmatter,
-    None when the file cannot be read, UNPARSED when its frontmatter is not a plain block mapping this reader
-    understands (judge 4: a flow mapping `{name: x, model: y}` or another top-level form is "unknown", never "inherit";
-    as its name is unknown too, it stands for the definition of its file stem only)."""
+    None when the file cannot be read, an Unparsed when its frontmatter is not a plain block mapping this reader
+    understands (judge 4: a flow mapping `{name: x, model: y}`, a tag `!!map` or anchor `&a` on top, another top-level
+    form) or its `name` value is not a plain scalar (0.46: `name: &n worker`): "unknown" for the names it may carry."""
     try:
         match = FRONTMATTER.match(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -55,7 +84,7 @@ def frontmatter(path):
     lines = [line for line in match.group(1).splitlines() if line.strip() and not line.lstrip().startswith("#")]
     body = textwrap.dedent("\n".join(lines))  # judge 3/4: a wholly indented mapping, also after a comment line
     if any(line[:1] not in (" ", "\t") and not PLAIN_KEY.match(line) for line in body.splitlines()):
-        return UNPARSED
+        return Unparsed(match.group(1))
     fields = {}
     for _, key, value in FIELD.findall(body):
         value = "" if value.startswith("#") else re.sub(r"\s+#.*$", "", value).strip()  # judge 3: `model: # x` is null
@@ -64,7 +93,7 @@ def frontmatter(path):
         else:
             value = value.strip("'\"").strip()
         fields.setdefault(key, value)
-    return fields
+    return Unparsed(body) if fields.get("name", "") is None else fields
 
 
 def agent_dirs(subagent_type, cwd=None, home=None, plugin_dir=PLUGIN_DIR):
@@ -98,9 +127,10 @@ def profile_model(subagent_type, cwd=None, home=None, plugin_dir=PLUGIN_DIR):
             here = False  # in the same folder only a file of that very name counts (judge 3)
             for path in sorted(folder.glob("*.md")):
                 fields = frontmatter(path)
-                if fields == UNPARSED:
-                    if path.stem == name:
-                        return None
+                if isinstance(fields, Unparsed):
+                    if path.stem == name or name in fields.names:
+                        return None  # 0.46: it may be the definition asked for -> unknown, never a block
+                    unreadable = unreadable or fields.any  # a name not read here: like an unreadable file
                     continue
                 if fields is None:
                     here = here or path.stem == name

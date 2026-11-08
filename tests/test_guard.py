@@ -716,6 +716,36 @@ class AgentModelTests(unittest.TestCase):
         self.assertEqual(agent_models.call_model({"subagent_type": "shadow"}, str(other), self.home), "unknown")
         self.assertEqual(self.verdict(dict(agent(subagent_type="shadow"), cwd=str(other))), {}, "fail open")
 
+    def test_an_unparsed_frontmatter_under_another_file_name_fails_open(self):
+        """0.46 Nameplate (judge 5 of 0.45): a tag `!!map` or anchor `&definition` on top made the frontmatter unparsed,
+        and as the file stem was not the name, `worker` inherited and was blocked although its definition names sonnet.
+        An unparsed file is "unknown" for its stem and every name a `name` key in it shows, and for every name only when
+        a `name` value cannot be read; built-ins and other definitions keep their verdict."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "profile.md").write_text("---\n!!map\nname: worker\nmodel: sonnet\n---\nbody\n")
+        (agents / "anchor.md").write_text("---\n&definition\nname: anchored\nmodel: sonnet\n---\n")
+        (agents / "quoted-tag.md").write_text("---\n!!map\n  'name': \"tagged-quoted\"  # x\n  model: haiku\n---\n")
+        (agents / "flow-file.md").write_text("---\n{\"name\": \"flow-worker\", model: opus}\n---\n")
+        (agents / "value.md").write_text("---\nname: &n valued\nmodel: sonnet\n---\n")  # a parsed mapping, anchored name
+        for name in ("worker", "anchored", "tagged-quoted", "flow-worker", "valued"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
+            self.assertEqual(self.verdict(dict(agent(subagent_type=name), cwd=sub)), {}, f"{name}: no block")
+        for name, model in (("general-purpose", "inherit"), ("Explore", "inherit"), ("nobody", "inherit"),
+                            ("doc-keeper", "sonnet"), ("lazy", "inherit"), ("mine", "opus")):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
+                             f"{name}: a readable name elsewhere is no reason for unknown")
+        self.assertTrue(denied(self.verdict(dict(agent(subagent_type="general-purpose"), cwd=sub))))
+        self.assertTrue(denied(self.verdict(dict(agent(subagent_type="worke"), cwd=sub))), "only the whole name")
+        other = Path(self.scratch.name) / "aliased"
+        (other / ".claude" / "agents").mkdir(parents=True)
+        (other / ".claude" / "agents" / "alias.md").write_text("---\n!!map\nname: *who\nmodel: sonnet\n---\n")
+        for name in ("someone", "general-purpose"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, str(other), self.home), "unknown",
+                             f"{name}: a name not read here may be any name, like an unreadable file")
+        self.assertEqual(agent_models.call_model({"subagent_type": "mine"}, str(other), self.home), "unknown",
+                         "the unreadable name sits before the user definition")
+
     def test_an_unreadable_definition_fails_open(self):
         """judge 1: a definition that cannot be read may be the one asked for - unknown, so the call passes."""
         sub = str(self.repo / "sub")
