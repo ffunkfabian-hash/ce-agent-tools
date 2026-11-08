@@ -654,7 +654,11 @@ class AgentModelTests(unittest.TestCase):
     def test_fork_passes_without_model_because_it_always_inherits(self):
         self.assertEqual(self.verdict(agent(subagent_type="fork")), {})
         self.assertEqual(self.verdict(agent(subagent_type="fork", model="haiku")), {})
+        self.assertEqual(self.verdict(agent(subagent_type="fork", model="inherit")), {}, "judge 1: fork first")
         self.assertTrue(denied(self.verdict(agent(subagent_type="forked"))), "only the exact type")
+        import agent_models
+        self.assertEqual(agent_models.call_model({"subagent_type": "fork", "model": "haiku"}), "fork",
+                         "a fork ignores model, so it counts as fork")
 
     def test_plugin_profiles_with_a_frontmatter_model_pass(self):
         import agent_models
@@ -662,8 +666,9 @@ class AgentModelTests(unittest.TestCase):
             self.assertEqual(agent_models.profile_model(f"ce-shared:{name}"), model, "the profile carries its model")
             self.assertEqual(self.verdict(agent(subagent_type=f"ce-shared:{name}")), {}, name)
         self.assertTrue(denied(self.verdict(agent(subagent_type="ce-shared:ce-missing"))), "no such profile")
-        self.assertTrue(denied(self.verdict(agent(subagent_type="hookify:conversation-analyzer"))),
-                        "another plugin's profile is unknown here")
+        self.assertEqual(self.verdict(agent(subagent_type="hookify:conversation-analyzer")), {},
+                         "judge 1: another plugin's profile cannot be read here - fail open")
+        self.assertEqual(agent_models.call_model({"subagent_type": "hookify:conversation-analyzer"}), "unknown")
         self.assertTrue(denied(self.verdict(agent(subagent_type="ce-judge"))),
                         "the bare name is no plugin profile unless a project or user definition has it")
 
@@ -682,6 +687,18 @@ class AgentModelTests(unittest.TestCase):
         self.assertEqual(agent_models.call_model({"subagent_type": "fork"}, sub, self.home), "fork")
         self.assertEqual(agent_models.call_model({"subagent_type": "lazy", "model": "opus"}, sub, self.home), "opus")
         self.assertEqual(agent_models.call_model(None), "inherit")
+
+    def test_an_unreadable_definition_fails_open(self):
+        """judge 1: a definition that cannot be read may be the one asked for - unknown, so the call passes."""
+        sub = str(self.repo / "sub")
+        (self.repo / ".claude" / "agents" / "broken.md").mkdir()  # a folder: read_text raises, on every system
+        self.assertEqual(self.verdict(dict(agent(subagent_type="broken"), cwd=sub)), {})
+        import agent_models
+        self.assertEqual(agent_models.call_model({"subagent_type": "broken"}, sub, self.home), "unknown")
+        self.assertEqual(agent_models.call_model({"subagent_type": "doc-keeper"}, sub, self.home), "sonnet",
+                         "a readable match still decides")
+        self.assertEqual(agent_models.call_model({"subagent_type": "lazy"}, sub, self.home), "inherit",
+                         "a readable match without model still blocks")
 
     def test_other_tools_and_a_broken_lookup_are_not_blocked(self):
         self.assertEqual(self.verdict({"tool_name": "TaskCreate", "tool_input": {"subject": "x"}, "cwd": OUTSIDE_GIT}), {})

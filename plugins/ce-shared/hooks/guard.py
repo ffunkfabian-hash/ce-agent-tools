@@ -13,7 +13,8 @@ Two jobs, one hook:
 3. Agent starts (0.45 Rollcall): a Claude Code `Agent` call that would run on the main model without anybody naming one
    is blocked (global rule: model and effort at every agent start). It passes with `model`, as `subagent_type` "fork"
    (inherits by design) and for an agent definition whose frontmatter names a model (ce-judge opus, ce-searcher haiku,
-   ce-recorder sonnet: the call's `model` would override that choice). agent_models.py decides, ce_report counts alike.
+   ce-recorder sonnet: the call's `model` would override that choice); what cannot be read here (another plugin's
+   profile, an unreadable file) passes (fail open). agent_models.py decides, ce_report counts alike.
    Only Claude Code sends `Agent`; the Codex, Antigravity and Vibe adapters never pass it on.
 
 Output: blocks as permissionDecision "deny" (plus systemMessage for the user). Warnings depend on the client (0.33 Earshot):
@@ -1002,8 +1003,8 @@ AGENT_MODEL_MESSAGE = (
     "`Agent`{kind} ohne `model` läuft auf dem Hauptmodell (globale Regel: Modell und Denkaufwand bei jedem Agentenstart "
     "nennen). Neu starten mit `model` und `effort` nach der Aufgabe: Opus `high` für Spielgefühl, Kernsysteme, Entwurf; "
     "Sonnet `medium` für Muster mit automatischer Prüfung; Haiku `low` für Lesen und Doku (Suchen: `ce-shared:ce-searcher`). "
-    "Ohne `model` gehen nur `subagent_type` \"fork\" (erbt immer) und Profile mit `model` im Frontmatter durch "
-    "(`ce-judge`, `ce-searcher`, `ce-recorder`).")
+    "Ohne `model` gehen nur `subagent_type` \"fork\" (erbt immer), Profile mit `model` im Frontmatter "
+    "(`ce-judge`, `ce-searcher`, `ce-recorder`) und hier nicht lesbare Profile durch.")
 
 
 def agent_model_problem(tool, data, cwd):
