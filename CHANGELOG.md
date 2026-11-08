@@ -3,6 +3,7 @@
 ## 0.43.2 „Errata“ – Patch richter-kernpfade (08.11.2026)
 
 - **`./ce judge` zählt `core_paths` der Basis:** Die Modellwahl liest `.ce-repo.json` › `core_paths` vom Basis-Ref (wie `merge-check`, nicht vom PR) und gibt einem Diff an einem dieser Pfade, Quellen von Umbenennungen eingeschlossen, `gpt-6.1-sol` mit dem Grund „Kernpfad laut … core_paths der Basis“. Nicht auswertbare `core_paths` stufen vorsichtshalber hoch; die Unity-Erkennung bleibt. Auslöser: In 0.44 bekam ein Diff an `ce_merge_check.py` Luna. Tests in `test_judge_routing.py` (`BaseCorePathsRoutingTests`).
+- **Dateien mit Umlaut fehlten im Richter-Diff:** `git diff --name-only` setzt solche Namen in Anführungszeichen (`"src/\303\244.py"`), als Pfadangabe trafen sie nichts, und die Datei fiel still aus dem geprüften Diff. Jetzt `-z` und `--literal-pathspecs`; Quellen von Umbenennungen werden entschlüsselt.
 
 ## 0.43.1 „Errata“ – Patch postfach-monat (08.11.2026)
 

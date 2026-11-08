@@ -170,6 +170,30 @@ class BaseCorePathsRoutingTests(unittest.TestCase):
                 "rename from src/core/a.py\nrename to src/a.py\n")
         self.assertEqual(self.route("src/a.py", diff)[0], "sol")
 
+    def test_git_quoted_paths_are_decoded(self):
+        self.make_repo({"core_paths": self.CORE})
+        diff = ('diff --git "a/src/core/\\303\\244.py" b/src/a.py\nsimilarity index 100%\n'
+                'rename from "src/core/\\303\\244.py"\nrename to src/a.py\n')
+        self.assertEqual(self.route("src/a.py", diff)[0], "sol")
+        self.assertEqual(self.route('"src/core/\\303\\244.py"')[0], "sol")   # --name-only quotes the same way
+        self.assertEqual(self.route('"src/\\303\\244.py"')[0], "luna")
+        # real git: a new non-ASCII file under a core path, end to end through diff_of
+        self.git("checkout", "-q", "-b", "feature")
+        (self.root / "src" / "core").mkdir(parents=True)
+        (self.root / "src" / "core" / "\u00e4.py").write_text("x = 1\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "umlaut")
+        (self.root / "src" / "core" / "[x].py").write_text("y = 2\n", encoding="utf-8")  # glob characters stay literal
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "brackets")
+        diff, names = ce_judge.diff_of("main", None, self.root)
+        self.assertEqual(sorted(names), ["src/core/[x].py", "src/core/\u00e4.py"])  # unquoted, so the pathspec finds them
+        self.assertIn("+x = 1", diff)
+        self.assertIn("+y = 2", diff)
+        model, reason = ce_judge._route(diff, names, self.root, "main")
+        self.assertEqual(model, "sol")
+        self.assertIn("core_paths", reason)
+
     def test_no_config_or_no_core_paths_keeps_old_routing(self):
         for config in (None, {"name": "x"}, {"core_paths": []}):
             with self.subTest(config=config):
@@ -180,7 +204,8 @@ class BaseCorePathsRoutingTests(unittest.TestCase):
         self.assertEqual(ce_judge._route("+small", ["src/core/a.py"], self.root)[0], "luna")  # no base given
 
     def test_unreadable_core_paths_route_up(self):
-        for config in ("{not json", json.dumps({"core_paths": "src/core/**"}), json.dumps(["src/core/**"])):
+        for config in ("{not json", json.dumps({"core_paths": "src/core/**"}), json.dumps({"core_paths": None}),
+                       json.dumps(["src/core/**"])):
             with self.subTest(config=config):
                 self.make_repo(config)
                 model, reason = self.route("README.md")
