@@ -11,7 +11,9 @@ no global CLAUDE.md - unless the memory files the hook can name already carry ev
 PostToolUse (0.33 Earshot, `pulse`): every PULSE_EVERY tool calls a cheap look at the transcript - record count and the
 input of the last request - and, crossing a limit, one hint as additionalContext for the model: over 300 records
 (Trimline: "über 300 Nachrichten" came 1,177 times as a Stop warning that only the user saw), over 150,000 input tokens (300,000 for the session named "Sightline", ce_report.input_limit).
-Each hint once per session and threshold step (hint_state).
+Each hint once per session and threshold step (hint_state). 0.45 Rollcall: once per session from 250 records (MESSAGE_EARLY)
+an early hint to prepare the hand-over (template auftrag.md › Folgesitzung, a fresh session, never a fork) while there
+is still room for it; past 300 only the limit hint comes, which names the template too.
 Stop: runs ce_report.py on the transcript and appends its line and hints to ce-session-stats.log in the git dir - the
 measurement. 0.35: no longer to report.md, whose text becomes the PR description (statistics stood in PR #37); no
 systemMessage either (0.33: those warnings reached only the user). check-before-stop - code or
@@ -42,6 +44,8 @@ CLAUDE_FILES = ("CLAUDE.md", "CLAUDE.local.md", os.path.join(".claude", "CLAUDE.
 IMPORT = re.compile(r"^\s*@(\S+)", re.MULTILINE)
 PULSE_EVERY = 20              # PostToolUse: look at the transcript every 20th tool call
 MESSAGE_LIMIT = int(os.environ.get("CE_MESSAGE_LIMIT") or 300)  # records (user + assistant) per session (› Sitzungen kurz halten); the variable is a probe aid
+MESSAGE_EARLY = max(1, MESSAGE_LIMIT * 5 // 6)  # (0.45) 250 at 300: one early hint to prepare the hand-over, for every session (Sightline's message limit is the same)
+HANDOVER = "Vorlage `~/.claude/templates/auftrag.md` › „Folgesitzung“"
 INPUT_LIMIT = 150_000         # input tokens of one request (ce_report.MAX_CONTEXT_TOKENS); 300,000 for Sightline (input_limit)
 TAIL_BYTES = 512 * 1024       # the last requests of the transcript are enough for the current input
 RECORD_MARK = re.compile(rb'"type":\s*"(user|assistant)"')  # a record line, with or without blanks after the colon
@@ -266,7 +270,12 @@ def pulse(payload: dict) -> dict:
     hints = []
     if records > MESSAGE_LIMIT and due(payload, f"messages>{records // MESSAGE_LIMIT * MESSAGE_LIMIT}"):
         hints.append(f"Sitzung über {MESSAGE_LIMIT} Nachrichten ({records}): Etappe abschließen und an eine frische "
-                     "Sitzung übergeben (› Sitzungen kurz halten, Übergabe nur ohne Verlauf).")
+                     f"Sitzung übergeben, nie Fork ({HANDOVER}; › Sitzungen kurz halten, Übergabe nur ohne Verlauf).")
+    elif MESSAGE_EARLY <= records <= MESSAGE_LIMIT and due(payload, "messages-early"):
+        hints.append(f"Sitzung bei {records} Nachrichten, Grenze {MESSAGE_LIMIT}: jetzt die Übergabe vorbereiten. "
+                     f"Folgesitzung nach {HANDOVER} (Branch, letzter Commit, Worktree, offene Schritte und "
+                     "Nutzerentscheidungen im Auftrag selbst); immer eine frische Sitzung, nie Fork; danach abkoppeln "
+                     "(› Sitzungen kurz halten).")
     limit = input_limit(payload) if last_input > INPUT_LIMIT else INPUT_LIMIT  # no git call below the default
     if last_input > limit and due(payload, f"input>{limit}"):
         hints.append(f"Letzte Anfrage {last_input:,} Input-Tokens (> {limit:,}): Kontext ist groß – Etappe "

@@ -1,9 +1,9 @@
 {
-  "description": "ce-shared: gemeinsame Regeln (rules/*.md; 0.33 Earshot: Warnungen als additionalContext einmal je Sitzung und Regel, Blocks ohne Heredoc-/Datentext), Subagent-Profile, Vor-Commit-Doku-Prüfung (0.33: additionalContext), SessionStart (0.36: harter Kern, wenn nicht wortgleich geladen; Lehren nur ohne eigenen CLAUDE.md-Import, Sitzungsname, Werkzeugzeile), PostToolUse (0.21: neue Post als Hinweis; 0.33: Sitzungsgrenze als Hinweis alle 20 Aufrufe) und Stop (ce_report nach report.md; check-before-stop einmal als additionalContext; 0.15: Postfach-Wächter startet von selbst)",
+  "description": "ce-shared: gemeinsame Regeln (rules/*.md; 0.33 Earshot: Warnungen als additionalContext einmal je Sitzung und Regel, Blocks ohne Heredoc-/Datentext), Subagent-Profile, Agent-Start ohne model blockiert (0.45; fork und Profile mit model im Frontmatter frei), Vor-Commit-Doku-Prüfung (0.33: additionalContext), SessionStart (0.36: harter Kern, wenn nicht wortgleich geladen; Lehren nur ohne eigenen CLAUDE.md-Import, Sitzungsname, Werkzeugzeile), PostToolUse (0.21: neue Post als Hinweis; 0.33: Sitzungsgrenze als Hinweis alle 20 Aufrufe; 0.45: einmal ab 250 Nachrichten Übergabe vorbereiten) und Stop (ce_report nach report.md; check-before-stop einmal als additionalContext; 0.15: Postfach-Wächter startet von selbst)",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Agent|Task|mcp__github__merge_pull_request|mcp__github__enable_pr_auto_merge",
         "hooks": [
           {
             "type": "command",

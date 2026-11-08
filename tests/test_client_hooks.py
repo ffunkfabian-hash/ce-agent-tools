@@ -178,6 +178,13 @@ class CodexAdapterTests(unittest.TestCase):
             self.assertIsNone(self.codex("Bash", {"command": "gh pr merge 5"}))
             self.assertIsNone(self.codex("mcp__github__merge_pull_request", {"pullNumber": 5}))
 
+    def test_the_claude_agent_model_block_does_not_reach_codex(self):
+        """0.45: guard.decide blocks Claude's `Agent` without model; Codex never sends that name through its matcher, and
+        should it come, the adapter passes it on as nothing - Codex keeps working and its shell blocks stay."""
+        for tool, data in (("Agent", {"prompt": "x"}), ("spawn_agent", {"message": "x"}), ("Task", {"prompt": "x"})):
+            self.assertIsNone(self.codex(tool, data), tool)
+        self.assert_denied(self.codex("Bash", {"command": BLOCK_CASES["git-kein-force-push"]}), "git-kein-force-push")
+
     def test_claude_subagent_profiles_do_not_apply_to_codex_agents(self):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / ".claude").mkdir()

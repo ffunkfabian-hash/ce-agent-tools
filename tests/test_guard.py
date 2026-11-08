@@ -599,6 +599,157 @@ class AgentProfileTests(unittest.TestCase):
         self.assertIn("git-stash-geteilt", result["systemMessage"])
 
 
+def agent(tool="Agent", **data):
+    return {"hook_event_name": "PreToolUse", "tool_name": tool, "cwd": OUTSIDE_GIT,
+            "tool_input": dict({"description": "d", "prompt": "p"}, **data)}
+
+
+class AgentModelTests(unittest.TestCase):
+    """0.45 Rollcall: an Agent start without a named model is blocked (Nexogen audit 2026-11: 18 of 200 starts inherited
+    the main model); fork and agent definitions with a model in their frontmatter pass."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        base = Path(self.scratch.name).resolve()
+        self.repo, self.home = base / "repo", base / "home"
+        agents = self.repo / ".claude" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "doc-keeper.md").write_text("---\nname: doc-keeper\ndescription: x\nmodel: sonnet\n---\nbody\n")
+        (agents / "lazy.md").write_text("---\nname: lazy\nmodel: inherit\n---\nbody\n")
+        (agents / "bare.md").write_text("---\nname: bare\ndescription: no model\n---\nmodel: opus\n")
+        (agents / "quoted.md").write_text("---\n\"name\": quoted\n'model': sonnet\n---\n")  # judge 2: quoted keys
+        (agents / "file-name.md").write_text("---\ndescription: named by its file\nmodel: \"haiku\"  # cheap\n---\n")
+        (self.repo / "sub").mkdir()
+        user = self.home / ".claude" / "agents"
+        user.mkdir(parents=True)
+        (user / "mine.md").write_text("---\nname: mine\nmodel: opus\n---\n")
+        (user / "doc-keeper.md").write_text("---\nname: doc-keeper\n---\n")  # the project definition wins
+
+    def tearDown(self):
+        self.scratch.cleanup()
+
+    def verdict(self, payload, client="claude"):
+        with mock.patch.object(Path, "home", return_value=self.home):
+            return guard.decide(payload, RULES, client=client)
+
+    def test_without_model_the_start_is_blocked_with_the_model_rule(self):
+        for payload in (agent(), agent(subagent_type="general-purpose"), agent(model=""), agent(model="  "),
+                        agent(subagent_type="Explore"), agent("Task", subagent_type="general-purpose")):
+            for client in ("claude", "adapter"):
+                result = self.verdict(payload, client)
+                self.assertTrue(denied(result), (payload, client))
+                reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertIn("[agent-model]", reason)
+                for part in ("Modell und Denkaufwand bei jedem Agentenstart", "Opus `high`", "Sonnet `medium`",
+                             "Haiku `low`", "`model`", "`effort`", '"fork"'):
+                    self.assertIn(part, reason)
+        reason = self.verdict(agent(subagent_type="general-purpose"))["systemMessage"]
+        self.assertIn("`Agent` `general-purpose` ohne `model`", reason, "the block names the agent")
+
+    def test_a_named_model_passes(self):
+        for model in ("opus", "sonnet", "haiku", "fable"):
+            self.assertEqual(self.verdict(agent(model=model)), {}, model)
+            self.assertEqual(self.verdict(agent(model=model, subagent_type="general-purpose", effort="low")), {})
+            self.assertEqual(self.verdict(agent("Task", model=model)), {}, model)
+
+    def test_fork_passes_without_model_because_it_always_inherits(self):
+        self.assertEqual(self.verdict(agent(subagent_type="fork")), {})
+        self.assertEqual(self.verdict(agent(subagent_type="fork", model="haiku")), {})
+        self.assertEqual(self.verdict(agent(subagent_type="fork", model="inherit")), {}, "judge 1: fork first")
+        self.assertTrue(denied(self.verdict(agent(subagent_type="forked"))), "only the exact type")
+        import agent_models
+        self.assertEqual(agent_models.call_model({"subagent_type": "fork", "model": "haiku"}), "fork",
+                         "a fork ignores model, so it counts as fork")
+
+    def test_plugin_profiles_with_a_frontmatter_model_pass(self):
+        import agent_models
+        for name, model in (("ce-judge", "opus"), ("ce-searcher", "haiku"), ("ce-recorder", "sonnet")):
+            self.assertEqual(agent_models.profile_model(f"ce-shared:{name}"), model, "the profile carries its model")
+            self.assertEqual(self.verdict(agent(subagent_type=f"ce-shared:{name}")), {}, name)
+        self.assertTrue(denied(self.verdict(agent(subagent_type="ce-shared:ce-missing"))), "no such profile")
+        self.assertEqual(self.verdict(agent(subagent_type="hookify:conversation-analyzer")), {},
+                         "judge 1: another plugin's profile cannot be read here - fail open")
+        self.assertEqual(agent_models.call_model({"subagent_type": "hookify:conversation-analyzer"}), "unknown")
+        self.assertTrue(denied(self.verdict(agent(subagent_type="ce-judge"))),
+                        "the bare name is no plugin profile unless a project or user definition has it")
+
+    def test_project_and_user_definitions_are_read_like_claude_code(self):
+        sub = str(self.repo / "sub")
+        passes = {"doc-keeper": True, "quoted": True, "file-name": True, "mine": True, "lazy": False, "bare": False, "nobody": False}
+        for name, expect in passes.items():
+            result = self.verdict(dict(agent(subagent_type=name), cwd=sub))
+            self.assertEqual(result == {}, expect, name)
+        import agent_models
+        self.assertEqual(agent_models.call_model({"subagent_type": "doc-keeper"}, sub, self.home), "sonnet")
+        self.assertEqual(agent_models.call_model({"subagent_type": "file-name"}, sub, self.home), "haiku")
+        self.assertEqual(agent_models.call_model({"subagent_type": "mine"}, sub, self.home), "opus")
+        self.assertEqual(agent_models.call_model({"subagent_type": "doc-keeper"}, None, self.home), "inherit",
+                         "outside the project only the user definition (without model) counts")
+        self.assertEqual(agent_models.call_model({"subagent_type": "fork"}, sub, self.home), "fork")
+        self.assertEqual(agent_models.call_model({"subagent_type": "lazy", "model": "opus"}, sub, self.home), "opus")
+        self.assertEqual(agent_models.call_model(None), "inherit")
+
+    def test_yaml_forms_config_dir_and_an_unreadable_project_definition(self):
+        """judge 3: `model: # x` is null, a wholly indented mapping is read, other YAML is unknown, CLAUDE_CONFIG_DIR
+        holds the user agents, and an unreadable project file shadows a user definition of the same name."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "nulled.md").write_text("---\nname: nulled\nmodel: # default\n---\n")
+        (agents / "indented.md").write_text("---\n  name: indented\n  model: sonnet\n---\n")
+        (agents / "nested.md").write_text("---\nname: nested\nmeta:\n  model: opus\n---\n")
+        (agents / "flow.md").write_text("---\nname: flow\nmodel: [opus]\n---\n")
+        (agents / "flowmap.md").write_text("---\n{name: flowmap, model: sonnet}\n---\n")  # judge 4
+        (agents / "commented.md").write_text("---\n# a comment\n  name: commented\n  model: sonnet\n---\n")  # judge 4
+        (agents / "listed.md").write_text("---\n- name: listed\n---\n")
+        expect = {"nulled": "inherit", "indented": "sonnet", "nested": "inherit", "flow": "unknown",
+                  "flowmap": "unknown", "commented": "sonnet", "listed": "unknown"}
+        for name, model in expect.items():
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model, name)
+        config = Path(self.scratch.name) / "config"
+        (config / "agents").mkdir(parents=True)
+        (config / "agents" / "cfg.md").write_text("---\nname: cfg\nmodel: haiku\n---\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(config)}):
+            self.assertEqual(agent_models.call_model({"subagent_type": "cfg"}, sub), "haiku")
+        other = Path(self.scratch.name) / "other"
+        (other / ".claude" / "agents" / "aaa.md").mkdir(parents=True)  # unreadable, sorted before the user file
+        (self.home / ".claude" / "agents" / "shadow.md").write_text("---\nname: shadow\nmodel: inherit\n---\n")
+        self.assertEqual(agent_models.call_model({"subagent_type": "shadow"}, str(other), self.home), "unknown")
+        self.assertEqual(self.verdict(dict(agent(subagent_type="shadow"), cwd=str(other))), {}, "fail open")
+
+    def test_an_unreadable_definition_fails_open(self):
+        """judge 1: a definition that cannot be read may be the one asked for - unknown, so the call passes."""
+        sub = str(self.repo / "sub")
+        (self.repo / ".claude" / "agents" / "broken.md").mkdir()  # a folder: read_text raises, on every system
+        self.assertEqual(self.verdict(dict(agent(subagent_type="broken"), cwd=sub)), {})
+        import agent_models
+        self.assertEqual(agent_models.call_model({"subagent_type": "broken"}, sub, self.home), "unknown")
+        self.assertEqual(agent_models.call_model({"subagent_type": "doc-keeper"}, sub, self.home), "sonnet",
+                         "a readable match still decides")
+        self.assertEqual(agent_models.call_model({"subagent_type": "lazy"}, sub, self.home), "inherit",
+                         "a readable match without model still blocks")
+
+    def test_other_tools_and_a_broken_lookup_are_not_blocked(self):
+        self.assertEqual(self.verdict({"tool_name": "TaskCreate", "tool_input": {"subject": "x"}, "cwd": OUTSIDE_GIT}), {})
+        self.assertEqual(self.verdict({"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": OUTSIDE_GIT}), {})
+        import agent_models
+        with mock.patch.object(agent_models, "call_model", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.verdict(agent()), {}, "fail open: a broken guard never wedges a session")
+        with mock.patch.object(guard, "agent_models", None):
+            self.assertEqual(self.verdict(agent()), {})
+
+    def test_the_hook_process_blocks_an_agent_start_without_model(self):
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(PLUGIN), HOME=str(self.home), USERPROFILE=str(self.home))
+        env.pop("CLAUDE_CONFIG_DIR", None)  # judge 3: keep the system variables Windows needs, name the home on both
+        script = str(PLUGIN / "hooks" / "guard.py")
+        out = subprocess.run([sys.executable, script], input=json.dumps(agent(subagent_type="general-purpose")),
+                             text=True, capture_output=True, env=env, check=True).stdout
+        self.assertTrue(denied(json.loads(out)))
+        for payload in (agent(model="haiku"), agent(subagent_type="fork"), agent(subagent_type="ce-shared:ce-judge")):
+            out = subprocess.run([sys.executable, script], input=json.dumps(payload), text=True, capture_output=True,
+                                 env=env, check=True).stdout
+            self.assertEqual(json.loads(out), {}, payload)
+
+
 class MergeDoorTests(unittest.TestCase):
     """0.22: only Sightline merges. Hits are blocked for every other session; catching up with main stays free."""
     HITS = ["gh pr merge 5", "gh pr merge 5 --squash --delete-branch", "gh pr merge --auto 5", "gh pr merge",
@@ -771,9 +922,10 @@ class MergeDoorTests(unittest.TestCase):
     def test_the_claude_hook_matcher_reaches_the_github_merge_tools(self):
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())
         matcher = hooks["hooks"]["PreToolUse"][0]["matcher"]
-        for tool in self.MCP + ["Bash", "Edit"]:
+        for tool in self.MCP + ["Bash", "Edit", "Agent", "Task"]:  # 0.45: Agent (Task: its former name)
             self.assertRegex(tool, f"^({matcher})$")
-        self.assertNotRegex("mcp__github__get_pull_request", f"^({matcher})$")
+        for tool in ("mcp__github__get_pull_request", "TaskCreate", "TaskUpdate", "AgentX"):
+            self.assertNotRegex(tool, f"^({matcher})$")
 
 
 class HookProcessTests(unittest.TestCase):

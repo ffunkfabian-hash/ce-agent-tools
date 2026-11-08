@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.45.0 „Rollcall“ – unveröffentlicht (08.11.2026)
+
+Maßnahme 1 der Nexogen-Prüfung 2026-11 (`docs/pruefung-2026-11.md` › 4): 18 von 200 Agent-Starts ohne Modell, 55 % der Sitzungen über 300 Nachrichten.
+
+- **`Agent` ohne `model` wird blockiert (Kernpfad):** Der PreToolUse-Matcher von `guard.py` nimmt `Agent` und `Task` (früherer Name) auf. Ein Start, der unbenannt auf dem Hauptmodell liefe, bekommt `deny` mit der Regel „Modell und Denkaufwand bei jedem Agentenstart nennen“ (Opus `high` / Sonnet `medium` / Haiku `low`). Frei bleiben `subagent_type` "fork" (erbt immer) und Agent-Definitionen mit `model` im Frontmatter (`ce-judge` opus, `ce-searcher` haiku, `ce-recorder` sonnet, ebenso Projekt- und Nutzerprofile), denn ein Aufruf-`model` würde deren Wahl überschreiben. Was der Wächter nicht lesen kann (Profil eines fremden Plugins, unlesbare Datei), lässt er durch; fork zählt vor `model`. Neues Modul `hooks/agent_models.py` (in `core_paths`). Codex, Antigravity und Vibe reichen kein `Agent` weiter, ihr Verhalten bleibt gleich.
+- **`ce_report` zählt wie der Wächter:** fork und Profilmodelle zählen nicht mehr als `inherit`, der Stop-Hinweis „Unteragent(en) ohne model“ nennt nur noch unbenannte Starts.
+- **Früher Hinweis zur Sitzungsgrenze:** Einmal je Sitzung ab 250 Nachrichten (`MESSAGE_EARLY`, 5/6 von `MESSAGE_LIMIT`) kommt als `additionalContext` „Übergabe vorbereiten“ mit der Vorlage `~/.claude/templates/auftrag.md` › „Folgesitzung“, frische Sitzung, nie Fork. Das gilt auch für Sightline, deren Nachrichtengrenze ebenfalls 300 ist. Der Hinweis über 300 nennt jetzt dieselbe Vorlage und „nie Fork“.
+- Tests: `AgentModelTests` in `test_guard.py`, Matcher-Test, Codex-Fall in `test_client_hooks.py`, Pulse 249/250/300/301 und Sightline sowie die Zählung in `test_tools.py`. 10 der 12 neuen Fälle sind gegen 0.44.1 rot. [Version](docs/versions/0.45.md).
+
 ## 0.44.2 „Signpost“ – Patch postfach-testisolation (08.11.2026)
 
 - **`MonthlyPostfach` fragte am Mac das echte Postfach:** `mailboxes(now=time.time)` band die Uhr beim Definieren, das Patchen in `use_cache()` griff nicht, der Cache galt als alt und `gh` lieferte #83 statt 30 (CI ohne Anmeldung blieb grün). `now` und `runner` werden jetzt je Aufruf aufgelöst; der Test sperrt echte `gh`-Aufrufe, neuer Fall `test_patched_clock_and_runner_are_seen_per_call`, gegen 0.44.1 rot.
