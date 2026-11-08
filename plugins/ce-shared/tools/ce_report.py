@@ -24,6 +24,12 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
+try:  # (0.45) the guard's own answer which model an Agent call runs on: fork and profile models are no "inherit"
+    sys.path.append(str(Path(__file__).resolve().parent.parent / "hooks"))  # last: never shadows a tool
+    import agent_models  # type: ignore  # noqa: E402
+except Exception:  # noqa: BLE001 - without it the count reads the call's model only, as before 0.45
+    agent_models = None
+
 BIG_DOC = 60_000
 MAX_CONTEXT_TOKENS = 150_000
 SIGHTLINE_CONTEXT_TOKENS = 300_000  # (0.36.1) only the coordination session "Sightline" (Entscheidung 295): its base alone is ~85k
@@ -191,6 +197,17 @@ def tool_result_ids(record: dict):
                 c.get("text", "") for c in inner or [] if isinstance(c, dict))
 
 
+def agent_model(data: dict, cwd=None) -> str:
+    """The model an Agent call ran on, as the guard reads it (agent_models.call_model): its `model`, "fork", the model of
+    its agent definition or "inherit". Only "inherit" raises the Stop hint; any error falls back to the call's model."""
+    if agent_models is not None:
+        try:
+            return str(agent_models.call_model(data, cwd))
+        except Exception:  # noqa: BLE001
+            pass
+    return str(data.get("model") or "inherit")
+
+
 def analyse(path: Path, since=None) -> dict:
     messages = 0
     tools: Counter = Counter()
@@ -228,7 +245,7 @@ def analyse(path: Path, since=None) -> dict:
             last_tool = name
             full_command = str(data.get("command") or "") if name == "Bash" else ""
             if name == "Agent":
-                agents[str(data.get("model") or "inherit")] += 1
+                agents[agent_model(data, record.get("cwd"))] += 1
             if name == "Bash":
                 command = str(data.get("command") or "")
                 last_command = command[:80]

@@ -10,6 +10,12 @@ Two jobs, one hook:
    .claude/agent-guard.json, Bash commands must match its allow list and Edit/Write paths its edit list - tools of a
    subagent stay as narrow as its job (test runner: run and read, never commit; doc keeper: only docs).
 
+3. Agent starts (0.45 Rollcall): a Claude Code `Agent` call that would run on the main model without anybody naming one
+   is blocked (global rule: model and effort at every agent start). It passes with `model`, as `subagent_type` "fork"
+   (inherits by design) and for an agent definition whose frontmatter names a model (ce-judge opus, ce-searcher haiku,
+   ce-recorder sonnet: the call's `model` would override that choice). agent_models.py decides, ce_report counts alike.
+   Only Claude Code sends `Agent`; the Codex, Antigravity and Vibe adapters never pass it on.
+
 Output: blocks as permissionDecision "deny" (plus systemMessage for the user). Warnings depend on the client (0.33 Earshot):
 `decide(payload, rules)` - the adapters' path - renders them as systemMessage, which Codex, Antigravity and Vibe hand to
 their model. `decide(payload, rules, client="claude")` - Claude Code's own hook - renders them as
@@ -44,6 +50,10 @@ try:
     import hint_state  # noqa: E402
 except Exception:  # noqa: BLE001 - without the throttle every hint is due
     hint_state = None
+try:
+    import agent_models  # noqa: E402
+except Exception:  # noqa: BLE001 - without it no Agent call is blocked (fail open)
+    agent_models = None
 
 
 # --------------------------------------------------------------------------------------------------------- rules
@@ -987,6 +997,28 @@ def agent_problem(payload):
     return None
 
 
+AGENT_MODEL_RULE = "agent-model"
+AGENT_MODEL_MESSAGE = (
+    "`Agent`{kind} ohne `model` läuft auf dem Hauptmodell (globale Regel: Modell und Denkaufwand bei jedem Agentenstart "
+    "nennen). Neu starten mit `model` und `effort` nach der Aufgabe: Opus `high` für Spielgefühl, Kernsysteme, Entwurf; "
+    "Sonnet `medium` für Muster mit automatischer Prüfung; Haiku `low` für Lesen und Doku (Suchen: `ce-shared:ce-searcher`). "
+    "Ohne `model` gehen nur `subagent_type` \"fork\" (erbt immer) und Profile mit `model` im Frontmatter durch "
+    "(`ce-judge`, `ce-searcher`, `ce-recorder`).")
+
+
+def agent_model_problem(tool, data, cwd):
+    """The block text for an Agent call that would inherit the main model unnamed, else None (any error: None)."""
+    if agent_models is None or tool not in agent_models.AGENT_TOOLS:
+        return None
+    try:
+        if agent_models.call_model(data, cwd) != agent_models.INHERIT:
+            return None
+        kind = str((data or {}).get("subagent_type") or "").strip()
+    except Exception:  # noqa: BLE001 - a broken lookup must not wedge the session
+        return None
+    return f"**[{AGENT_MODEL_RULE}]**\n" + AGENT_MODEL_MESSAGE.format(kind=f" `{kind}`" if kind else "")
+
+
 # ------------------------------------------------------------------------------------------------------- output
 
 def claude_hints(payload, warnings):
@@ -1014,6 +1046,9 @@ def decide(payload, rules=None, client="adapter"):
     warnings = [(r["name"], f"**[{r['name']}]**\n{r['message']}") for r in hits if r.get("action") != "block"]
     notes = [f"**[{commit_rules[0]}]**\n{note}" for note in (facts.notes if facts else [])]
     problem = agent_problem(payload)
+    if problem:
+        blocks.append(problem)
+    problem = agent_model_problem(tool, data, cwd or os.getcwd())
     if problem:
         blocks.append(problem)
     if blocks:

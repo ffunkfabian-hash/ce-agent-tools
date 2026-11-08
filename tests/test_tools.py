@@ -1102,6 +1102,83 @@ class ReportAndSessionHookTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
                     self.assertEqual(bool(session.pulse(payload)), expect, name)
 
+    def test_pulse_early_hint_from_250_messages_once_and_the_limit_after_300(self):
+        """0.45 Rollcall: one early hint at 250 records (while there is room to hand over), the 300 hint after it; both
+        name the template auftrag.md › Folgesitzung and "nie Fork"."""
+        import tempfile
+        sys.path.insert(0, str(PLUGIN / "hooks"))
+        import session
+        self.assertEqual((session.MESSAGE_EARLY, session.MESSAGE_LIMIT), (250, 300))
+        lines = ['{"type":"user","message":{"content":"x"}}', '{"type":"assistant","message":{"content":"y"}}'] * 200
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            transcript = root / "t.jsonl"
+            def at(count, session_id):
+                transcript.write_text("\n".join(lines[:count]) + "\n", encoding="utf-8")
+                result = session.pulse({"hook_event_name": "PostToolUse", "transcript_path": str(transcript),
+                                        "session_id": session_id, "cwd": tmp})
+                return (result.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
+                self.assertEqual(at(249, "e-249"), "", "below 250: nothing")
+                for count in (250, 300):
+                    text = at(count, f"e-{count}")
+                    self.assertIn(f"Sitzung bei {count} Nachrichten, Grenze 300", text)
+                    for part in ("`~/.claude/templates/auftrag.md` › „Folgesitzung“", "frische Sitzung, nie Fork"):
+                        self.assertIn(part, text)
+                    self.assertNotIn("über 300", text)
+                text = at(301, "e-301")
+                self.assertIn("über 300 Nachrichten (301)", text)
+                self.assertIn("nie Fork", text)
+                self.assertIn("„Folgesitzung“", text)
+                self.assertNotIn("Sitzung bei", text, "past the limit only the limit hint")
+                # one session: early once, then quiet until the limit
+                self.assertIn("Sitzung bei 250", at(250, "e-once"))
+                for _ in range(session.PULSE_EVERY - 1):
+                    self.assertEqual(at(260, "e-once"), "", "between two looks nothing is read")
+                self.assertEqual(at(290, "e-once"), "", "the early hint comes once per session")
+                for _ in range(session.PULSE_EVERY - 1):
+                    at(300, "e-once")
+                self.assertIn("über 300 Nachrichten (320)", at(320, "e-once"))
+
+    def test_pulse_early_hint_holds_for_sightline_too(self):
+        import subprocess, tempfile
+        sys.path.insert(0, str(PLUGIN / "hooks"))
+        import session
+        lines = ['{"type":"user","message":{"content":"x"}}', '{"type":"assistant","message":{"content":"y"}}'] * 125
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root / "repo")], check=True)
+            (root / "repo" / ".git" / "ce-session.json").write_text('{"name": "Sightline"}', encoding="utf-8")
+            transcript = root / "t.jsonl"
+            transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            payload = {"hook_event_name": "PostToolUse", "transcript_path": str(transcript), "session_id": "s-early",
+                       "cwd": str(root / "repo")}
+            with mock.patch.dict(os.environ, {"CE_HOOK_STATE": str(root / "state")}):
+                text = session.pulse(payload)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("Sitzung bei 250 Nachrichten, Grenze 300", text, "the message limit is the same for Sightline")
+
+    def test_report_counts_fork_and_profile_models_like_the_guard(self):
+        import tempfile, ce_report
+        def use(data, cwd=None):
+            record = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Agent", "input": data}]}}
+            return dict(record, cwd=cwd) if cwd else record
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "repo" / ".claude" / "agents").mkdir(parents=True)
+            (root / "repo" / ".claude" / "agents" / "keeper.md").write_text("---\nname: keeper\nmodel: sonnet\n---\n")
+            records = [use({"prompt": "x", "subagent_type": "fork"}), use({"prompt": "x", "subagent_type": "ce-shared:ce-judge"}),
+                       use({"prompt": "x", "subagent_type": "general-purpose"}), use({"prompt": "x", "model": "haiku"}),
+                       use({"prompt": "x", "subagent_type": "keeper"}, cwd=str(root / "repo"))]
+            path = root / "t.jsonl"
+            path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+            with mock.patch.object(Path, "home", return_value=root / "home"):
+                info = ce_report.analyse(path)
+                with mock.patch.object(ce_report, "agent_models", None):
+                    before = ce_report.analyse(path)["agents"]
+        self.assertEqual(info["agents"], {"fork": 1, "opus": 1, "inherit": 1, "haiku": 1, "sonnet": 1})
+        self.assertIn("1 Unteragent(en) ohne model", "\n".join(ce_report.hints(info)), "only the unnamed start")
+        self.assertEqual(before, {"inherit": 4, "haiku": 1}, "without agent_models: the call's model only, as before")
+
     def test_pulse_sightline_above_300000_names_its_limit(self):
         import subprocess, tempfile
         sys.path.insert(0, str(PLUGIN / "hooks"))
