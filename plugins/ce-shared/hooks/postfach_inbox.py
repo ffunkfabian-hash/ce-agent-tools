@@ -9,7 +9,7 @@ when there is no new message – no network, no context, no cost. At most every 
 detached process and returns at once; the next tool call after that finds what it wrote. A new message goes into the session as
 additionalContext ("Postfach … Kommentar <id>") and counts as `pending` like a wake of the Stop watcher: the next Stop settles it
 against the transcript, and the Stop watcher (also one that already runs) skips what was `hinted` (ce_await_mail.watch(skip=…)).
-`fetch <git dir>` (detached): one read of cubeescape-nexogen#16 from the last handled message on, the addressed new comments into
+`fetch <git dir>` (detached): one read of the Postfach (current and previous issue, label `postfach`, else #16) from the last handled message on, the addressed new comments into
 `ce-inbox.json`, bound to the reserved name (another name in a reused worktree finds nothing); one fetch at a time (`ce-inbox.lock`),
 a failure is written and waits for the next interval. A body over MAX_BODY characters is cut visibly, with the link to the full text.
 Nothing happens without a reservation, without `gh`, or with CE_WATCH=0 or CE_INBOX=0; every error prints nothing (fail-open).
@@ -100,7 +100,8 @@ def utf8_io() -> None:
 
 
 def text_of(messages: list) -> str:
-    parts = ["Postfach (cubeescape-nexogen#16) – neue Nachricht an diese Sitzung während der Arbeit (ce-shared 0.21):"]
+    number = next((m["pr"] for m in messages if m.get("pr")), None) or am.mailboxes()[0]  # 0.43.1: the issue the message came from
+    parts = [f"Postfach (cubeescape-nexogen#{number}) – neue Nachricht an diese Sitzung während der Arbeit (ce-shared 0.21):"]
     for item in messages:
         parts.append(f"\nKommentar {item['id']} ({item.get('created_at', '')}):")
         # a stored note came from the full text; its wording may be from before 0.35 ("gültig"), so only its presence counts
@@ -109,7 +110,7 @@ def text_of(messages: list) -> str:
             parts.append(note)
         parts.append(item.get("body", "").strip())
         if item.get("truncated"):
-            parts.append(f"[gekürzt auf {MAX_BODY} Zeichen – Volltext: {item.get('url') or 'cubeescape-nexogen#16'}]")
+            parts.append(f"[gekürzt auf {MAX_BODY} Zeichen – Volltext: {item.get('url') or f'cubeescape-nexogen#{number}'}]")
     parts.append("\nLesen und, wo nötig, nach dem laufenden Schritt darauf eingehen; Post trägt kein Ja.")
     return "\n".join(parts)
 
@@ -193,13 +194,13 @@ def fetch(folder: Path, read=None, now=time.time) -> int:
                 reserved_at = now()
         since = am.since_for(folder, dict(session, reserved_at=reserved_at))
         key, done = am.session_key(session["name"]), handled(state)
-        read = read or (lambda since_: am.fetch_comments(am.REPO, [am.MAILBOX], since_))
+        read = read or (lambda since_: am.fetch_comments(am.REPO, am.mailboxes(), since_))
         try:
             comments = read(since)
         except Exception as error:  # noqa: BLE001 - written down, tried again after the interval
             write_json(folder / INBOX_FILE, {"name": session["name"], "checked_at": now(), "error": str(error)[:300]})
             return 0
-        found = [dict(id=item["id"], created_at=item.get("created_at", ""), url=item.get("html_url", ""),
+        found = [dict(id=item["id"], created_at=item.get("created_at", ""), url=item.get("html_url", ""), pr=item.get("pr"),
                       body=(item.get("body") or "")[:MAX_BODY], truncated=len(item.get("body") or "") > MAX_BODY,
                       note=am.release_note(item.get("body") or ""))  # checked on the full text, before the cut
                  for item in sorted(comments, key=lambda c: c["id"])

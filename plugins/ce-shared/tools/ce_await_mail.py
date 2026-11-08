@@ -2,7 +2,7 @@
 """Waits for a Briefkasten comment addressed to this session and prints it (regeln-details.md › Briefkasten, Wächter).
 
 Start it in the background when the session stops for the user (before a merge, with a question):
-    python3 ~/.claude/templates/await_mail.py --name "TG 0.19 „Kinetic“ · Mac"              # reads the Postfach (issue 16)
+    python3 ~/.claude/templates/await_mail.py --name "TG 0.19 „Kinetic“ · Mac"              # reads the Postfach (label `postfach`, else issue 16)
     python3 ~/.claude/templates/await_mail.py --name "…" --issue 16 3                        # plus an old Briefkasten PR
 Claude Code: Bash with run_in_background; the session wakes when the script exits. Exit 0 = message printed (read it, act on it),
 exit 2 = timeout without message (start again silently with the same arguments), exit 3 = GitHub unreachable several times in a row (report once).
@@ -31,7 +31,9 @@ WINDOWS = os.name == "nt"
 # (0.31) git and gh speak UTF-8; Windows would decode their output as cp1252 (a „“ in a comment is a decode error there)
 UTF8 = {"encoding": "utf-8", "errors": "replace"} if WINDOWS else {}
 REPO = "ffunkfabian-hash/cubeescape-nexogen"
-MAILBOX = 16  # 1.15: the one Postfach issue (before: Briefkasten PR 1 = Sightline, one PR per recipient)
+MAILBOX = 16  # 1.15: the Postfach issue (before: Briefkasten PR 1 = Sightline); since 0.43.1 only the fallback, see mailboxes()
+MAILBOX_LABEL = "postfach"
+MAILBOX_TTL = 3600  # seconds the resolved numbers are kept before gh is asked again
 QUOTED = re.compile(r"(\d+\.\d+(?:\.\d+)?)\s*[„“\"']([^“”\"']+)[“”\"']")
 RECIPIENT = re.compile(r"[\s*]*(?:[A-Za-zÄÖÜäöü-]+\s+)?" + QUOTED.pattern)
 
@@ -457,11 +459,57 @@ def settle(folder: Path, transcript: str = "") -> int:
     return after
 
 
+def mailbox_cache() -> Path:
+    return Path(os.environ.get("CE_POSTFACH_CACHE") or Path.home() / ".cache" / "ce-agent-tools" / "postfach.json")
+
+
+def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None, now=time.time) -> list:
+    """0.43.1: the Postfach issues, `[0]` is the current one (newest open issue with label `postfach`, the only one written to),
+    `[1]` the one before it (read too, so nothing is lost at the turn of the month; without an older labelled issue: #16).
+    Kept for an hour in ~/.cache/ce-agent-tools/postfach.json; no such issue or gh unreachable: the last cached value, else [16]."""
+    if repo != REPO:
+        return [MAILBOX]
+    path = cache or mailbox_cache()
+    stored = read_json(path)
+    saved = [n for n in stored.get("numbers", []) if isinstance(n, int) and not isinstance(n, bool)] if isinstance(stored.get("numbers"), list) else []
+    at = stored.get("at") if isinstance(stored.get("at"), (int, float)) else 0
+    if saved and 0 <= now() - at < MAILBOX_TTL:
+        return saved
+    found, failed = [], False
+    try:
+        result = runner(["gh", "api", f"repos/{repo}/issues?labels={MAILBOX_LABEL}&state=all&per_page=30"],
+                        capture_output=True, text=True, timeout=20, **UTF8)
+        if result.returncode:
+            raise RuntimeError(result.stderr)
+        items = json.loads(result.stdout or "[]")
+        issues = sorted((i for i in items if isinstance(i, dict) and "pull_request" not in i and isinstance(i.get("number"), int)),
+                        key=lambda i: i["number"], reverse=True)
+        current = next((i["number"] for i in issues if i.get("state") == "open"), None)
+        if current is not None:
+            older = next((i["number"] for i in issues if i["number"] < current), MAILBOX if MAILBOX < current else None)
+            found = [current] + ([older] if older else [])
+    except (OSError, RuntimeError, ValueError, TypeError, subprocess.TimeoutExpired):
+        failed = True
+    numbers = found or saved or [MAILBOX]
+    # a failed ask is repeated after 5 minutes, an answer without label after the full hour (no gh call per hook)
+    stamp = now() - MAILBOX_TTL + 300 if failed and not found else now()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        temp.write_text(json.dumps({"at": stamp, "numbers": numbers}), encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:
+        pass  # without a cache every call asks gh again, nothing else is lost
+    return numbers
+
+
 def fetch_comments(repo: str, numbers: list, since: str) -> list:
-    comments = []
-    for number in numbers:
+    comments, seen = [], set()
+    for number in dict.fromkeys(numbers):
         for item in fetch_page(repo, number, since):
-            comments.append(dict(item, pr=number))
+            if item.get("id") not in seen:
+                seen.add(item.get("id"))
+                comments.append(dict(item, pr=number))
     return comments
 
 
@@ -558,8 +606,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--name", default="", help="own session name, e.g. 'TG 0.19 „Kinetic“ · Mac'; default: the reservation of this worktree")
     parser.add_argument("--repo", default=REPO)
-    parser.add_argument("--issue", "--pr", dest="pr", type=int, nargs="+", default=[MAILBOX],
-                        help="issue or PR numbers to read (default 16 = the Postfach; PRs and issues share the comments endpoint)")
+    parser.add_argument("--issue", "--pr", dest="pr", type=int, nargs="+", default=None,
+                        help="issue or PR numbers to read (default: the current and the previous Postfach issue, label `postfach`, else 16)")
     parser.add_argument("--after", type=int, default=0, help="only comments with a larger id (the last message already handled)")
     parser.add_argument("--lookback", type=float, default=30, help="minutes before the start that still count (default 30)")
     parser.add_argument("--interval", type=float, default=60, help="seconds between reads")
@@ -599,7 +647,8 @@ def main() -> int:
             print(f"await_mail: für {key!r} läuft schon ein Wächter (pid {watcher_pid(folder)}, Stop-Hook oder eigener Start) - nichts zu tun (exit 4)",
                   file=sys.stderr)
             return 4
-    fetch = lambda since: fetch_comments(args.repo, args.pr, since)  # noqa: E731
+    numbers = args.pr or mailboxes(args.repo)
+    fetch = lambda since: fetch_comments(args.repo, numbers, since)  # noqa: E731
     if args.follow:
         def remember(last: int, last_since: str) -> None:
             if state_file is not None:

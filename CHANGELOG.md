@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.43.1 „Errata“ – Patch postfach-monat (08.11.2026)
+
+- **Das Postfach ist nicht mehr fest #16:** Aktuell ist das neueste offene Issue in cubeescape-nexogen mit Label `postfach` (Antwort 1 h in `~/.cache/ce-agent-tools/postfach.json`; ohne Treffer oder ohne GitHub der letzte Wert, sonst 16). Geschrieben (`say`, Anmeldung) wird nur dorthin; gelesen (`who`, `mail`, beide Hooks, `ce_console --mail`) werden das aktuelle und das vorige Issue (ohne älteres: #16), `--issue` setzt die Nummern weiter fest. Ausgaben nennen die ermittelte Nummer. Tests in `test_postfach.py` (`MonthlyPostfach`).
+
 ## 0.43.0 „Errata“ – unveröffentlicht (07.11.2026)
 
 Die vier offenen niedrigen Befunde aus 0.37 und Trimline 10, Widerspruch 4.
