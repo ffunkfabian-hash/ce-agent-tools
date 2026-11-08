@@ -28,7 +28,7 @@ exactly where a diff has a real defect: at least six cut runs on 06.11., 3 of 3 
 named both bugs in 3 of 3 runs (docs: README › Erfahrungen). A run without a usable verdict says so in a line "kein verwertbares Urteil".
 
 0.43.2: the model choice also reads `.ce-repo.json` › core_paths of the base ref (not the PR's, as ce_merge_check does) and gives
-sol to a diff that touches one of them, rename sources included; unreadable core_paths there route up too. The Unity rules stay. diff_of reads names with -z: git C-quotes non-ASCII names, and
+sol to a diff that touches one of them, rename sources included (diff_of lists them, --no-renames); unreadable core_paths there route up too. The Unity rules stay. diff_of reads names with -z: git C-quotes non-ASCII names, and
 a quoted name as pathspec matched nothing, so the file was silently missing from the reviewed diff.
 
 Exit 0 Freigabe, 1 Nachbessern (also: incomplete API verdict), 2 codex/API not usable before any paid call / nothing to review.
@@ -36,7 +36,6 @@ Exit 0 Freigabe, 1 Nachbessern (also: incomplete API verdict), 2 codex/API not u
 from __future__ import annotations
 
 import argparse
-import codecs
 from decimal import Decimal
 import fnmatch
 import json
@@ -98,8 +97,9 @@ def template() -> str:
 
 
 def diff_of(base: str, files, cwd) -> tuple[str, list[str]]:
-    # (0.43.2) -z: names as they are, not C-quoted ("src/\303\244.py"), which as a pathspec matched nothing and dropped the file
-    names = [n for n in git("diff", "--name-only", "-z", base, cwd=cwd).split("\0") if n and not GENERATED.search(n)]
+    # (0.43.2) -z: names as they are, not C-quoted ("src/\303\244.py"), which as a pathspec matched nothing and dropped the file.
+    # --no-renames: a rename's source is listed too (a core path it leaves); with both in the pathspec the diff still shows the rename.
+    names = [n for n in git("diff", "--name-only", "--no-renames", "-z", base, cwd=cwd).split("\0") if n and not GENERATED.search(n)]
     if files:
         names = [n for n in names if any(n.startswith(f) for f in files)]
     if not names:
@@ -142,8 +142,8 @@ def _base_core_paths(repo_root: Path | None, base: str | None) -> tuple[list, bo
     if repo_root is None or not base:
         return [], False
     text = git("show", f"{base}:{CONFIG_NAME}", cwd=repo_root)
-    if not text.strip():  # no config at the base (or the base is unknown): nothing listed
-        return [], False
+    if not text.strip():  # no config at the base (or the base is unknown): nothing listed; an empty one is malformed
+        return [], git("cat-file", "-t", f"{base}:{CONFIG_NAME}", cwd=repo_root).strip() == "blob"
     try:
         config = json.loads(text)
     except ValueError:
@@ -156,21 +156,12 @@ def _base_core_paths(repo_root: Path | None, base: str | None) -> tuple[list, bo
     return (patterns, False) if isinstance(patterns, list) else ([], True)  # null or a string is not a list either
 
 
-def _git_path(text: str) -> str:
-    """A path as git prints it: with core.quotePath (default) non-ASCII and special characters come C-quoted ("src/\\303\\244.py")."""
-    text = text.strip()
-    if len(text) < 2 or not (text.startswith('"') and text.endswith('"')):
-        return text
-    return codecs.escape_decode(text[1:-1].encode("utf-8"))[0].decode("utf-8", "replace")
-
-
-def _listed_core_hits(diff: str, names: list[str], patterns: list) -> list[str] | None:
-    """Names (and rename sources) of the diff that match core_paths, matched exactly as ce_merge_check.core_hits does;
-    None if ce_merge_check does not load (the caller routes up rather than guessing the glob rules)."""
+def _listed_core_hits(names: list[str], patterns: list) -> list[str] | None:
+    """Names of the diff (diff_of lists rename sources too) that match core_paths, matched exactly as ce_merge_check.core_hits
+    does; None if ce_merge_check does not load (the caller routes up rather than guessing the glob rules)."""
     if not patterns:
         return []
-    sources = re.findall(r"(?m)^rename from (.+)$", diff)
-    files = [{"filename": _git_path(name)} for name in [*names, *sources]]
+    files = [{"filename": name} for name in names]
     try:
         import ce_merge_check  # lazy: only needed when the base lists core_paths
     except Exception:  # fail toward the stronger judge, never stop the review
@@ -189,7 +180,7 @@ def _route(diff: str, names: list[str], repo_root: Path | None = None, base: str
     if any(INFRASTRUCTURE.search(name) for name in names):
         return "sol", "Prüf-, Paket-, Schema- oder Sperrinfrastruktur"
     listed, listed_malformed = _base_core_paths(repo_root, base)
-    hits = _listed_core_hits(diff, names, listed)
+    hits = _listed_core_hits(names, listed)
     if hits:
         more = f" (+{len(hits) - 1})" if len(hits) > 1 else ""
         return "sol", f"Kernpfad laut {CONFIG_NAME} › core_paths der Basis {base}: {hits[0]}{more}"

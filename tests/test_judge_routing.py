@@ -164,35 +164,43 @@ class BaseCorePathsRoutingTests(unittest.TestCase):
         self.assertEqual(self.route("plugins/ce-shared/tools/ce_merge_check.py")[0], "sol")
         self.assertEqual(self.route("other/x.py")[0], "luna")  # added only by the PR: not a core path of the base
 
-    def test_rename_out_of_core_path_counts(self):
-        self.make_repo({"core_paths": self.CORE})
-        diff = ("diff --git a/src/core/a.py b/src/a.py\nsimilarity index 100%\n"
-                "rename from src/core/a.py\nrename to src/a.py\n")
-        self.assertEqual(self.route("src/a.py", diff)[0], "sol")
+    def commit(self, message, files=(), moves=()):
+        for name, text in dict(files).items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text(text, encoding="utf-8")
+        for old, new in moves:
+            (self.root / new).parent.mkdir(parents=True, exist_ok=True)
+            self.git("mv", old, new)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
 
-    def test_git_quoted_paths_are_decoded(self):
+    def test_rename_out_of_core_path_counts(self):
+        # real git: --name-only lists only the target, and a pathspec without the source loses the rename
         self.make_repo({"core_paths": self.CORE})
-        diff = ('diff --git "a/src/core/\\303\\244.py" b/src/a.py\nsimilarity index 100%\n'
-                'rename from "src/core/\\303\\244.py"\nrename to src/a.py\n')
-        self.assertEqual(self.route("src/a.py", diff)[0], "sol")
-        self.assertEqual(self.route('"src/core/\\303\\244.py"')[0], "sol")   # --name-only quotes the same way
-        self.assertEqual(self.route('"src/\\303\\244.py"')[0], "luna")
-        # real git: a new non-ASCII file under a core path, end to end through diff_of
+        source = "src/core/\u00e4.py"
+        self.commit("core files", {"src/core/a.py": "a = 1\n" * 5, source: "b = 2\n" * 5})
         self.git("checkout", "-q", "-b", "feature")
-        (self.root / "src" / "core").mkdir(parents=True)
-        (self.root / "src" / "core" / "\u00e4.py").write_text("x = 1\n", encoding="utf-8")
-        self.git("add", "-A")
-        self.git("commit", "-q", "-m", "umlaut")
-        (self.root / "src" / "core" / "[x].py").write_text("y = 2\n", encoding="utf-8")  # glob characters stay literal
-        self.git("add", "-A")
-        self.git("commit", "-q", "-m", "brackets")
+        self.commit("move out", moves=(("src/core/a.py", "src/a.py"), (source, "src/\u00e4.py")))
         diff, names = ce_judge.diff_of("main", None, self.root)
-        self.assertEqual(sorted(names), ["src/core/[x].py", "src/core/\u00e4.py"])  # unquoted, so the pathspec finds them
-        self.assertIn("+x = 1", diff)
-        self.assertIn("+y = 2", diff)
+        self.assertEqual(sorted(names), sorted(["src/a.py", "src/core/a.py", "src/\u00e4.py", source]))
+        self.assertIn("rename from src/core/a.py", diff)  # both in the pathspec: the judge still sees a rename
+        model, reason = ce_judge._route(diff, names, self.root, "main")
+        self.assertEqual(model, "sol")
+        self.assertIn("core_paths der Basis main: src/core/a.py (+1)", reason)
+
+    def test_non_ascii_and_glob_names_reach_the_diff(self):
+        # git C-quotes non-ASCII names ("src/core/\\303\\244.py"); as a pathspec that matched nothing and the file was dropped
+        self.make_repo({"core_paths": self.CORE})
+        self.git("checkout", "-q", "-b", "feature")
+        self.commit("new files", {"src/core/\u00e4.py": "x = 1\n", "src/core/[x].py": "y = 2\n", "docs/\u00fc.md": "z\n"})
+        diff, names = ce_judge.diff_of("main", None, self.root)
+        self.assertEqual(sorted(names), ["docs/\u00fc.md", "src/core/[x].py", "src/core/\u00e4.py"])
+        for line in ("+x = 1", "+y = 2", "+z"):
+            self.assertIn(line, diff)
         model, reason = ce_judge._route(diff, names, self.root, "main")
         self.assertEqual(model, "sol")
         self.assertIn("core_paths", reason)
+        self.assertEqual(ce_judge._route(diff, ["docs/\u00fc.md"], self.root, "main")[0], "luna")
 
     def test_no_config_or_no_core_paths_keeps_old_routing(self):
         for config in (None, {"name": "x"}, {"core_paths": []}):
@@ -205,7 +213,7 @@ class BaseCorePathsRoutingTests(unittest.TestCase):
 
     def test_unreadable_core_paths_route_up(self):
         for config in ("{not json", json.dumps({"core_paths": "src/core/**"}), json.dumps({"core_paths": None}),
-                       json.dumps(["src/core/**"])):
+                       json.dumps(["src/core/**"]), "", "  \n"):
             with self.subTest(config=config):
                 self.make_repo(config)
                 model, reason = self.route("README.md")
