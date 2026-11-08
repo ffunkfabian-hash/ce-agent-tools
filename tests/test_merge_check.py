@@ -313,7 +313,7 @@ class EvaluateTests(unittest.TestCase):
 
     def test_without_core_paths_in_the_base_there_is_no_stage_one(self):
         missing, empty, unusable = "core_paths fehlt in der Basis", "core_paths leer in der Basis: schützt nichts", "core_paths unbrauchbar in der Basis"
-        for config, why in (({}, missing), (None, missing), ({**CONFIG, "core_paths": None}, missing), ({**CONFIG, "core_paths": []}, empty),
+        for config, why in (({}, missing), (None, missing), ({**CONFIG, "core_paths": None}, unusable), ({**CONFIG, "core_paths": []}, empty),
                             ({**CONFIG, "core_paths": [""]}, empty), ({**CONFIG, "core_paths": [" ", "\t"]}, empty),
                             ({**CONFIG, "core_paths": "contracts/**"}, unusable), ({**CONFIG, "core_paths": [1, None]}, unusable),
                             ({**CONFIG, "core_paths": ["", 1]}, unusable), ({**CONFIG, "core_paths": {"a": "b"}}, unusable)):
@@ -333,7 +333,9 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1", result["warnings"])
         result = mc.evaluate(ci_facts(base_config={**CONFIG, "core_paths": "contracts/**"}))
         self.assertIn('erwartet eine Liste von Mustern wie ["src/core/*"]', " ".join(result["warnings"]))
-        self.assertEqual([mc.core_paths_gap(value) for value in (["a"], [" a "], ["", "a"], [1, "a"])], ["", "", "", ""], "one pattern is enough")
+        self.assertEqual([mc.core_paths_gap({"core_paths": value}) for value in (["a"], [" a "], ["", "a"], [1, "a"])], ["", "", "", ""], "one pattern is enough")
+        self.assertEqual([mc.core_paths_gap(value) for value in (None, {}, {"core_paths": None}, [])], ["fehlt", "fehlt", "unbrauchbar", "fehlt"],
+                         "only a missing key is missing; a key set to null is of no use")
 
     def test_a_list_only_in_the_pull_request_does_not_open_stage_one(self):
         result = mc.evaluate(ci_facts(base_config={}, head_config=CONFIG))

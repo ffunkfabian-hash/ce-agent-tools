@@ -529,13 +529,14 @@ CORE_PATHS_GAP = {  # what is wrong with core_paths of the base: (ja_noetig_weil
 }
 
 
-def core_paths_gap(patterns):
-    """"" when core_paths lists a pattern; else a key of CORE_PATHS_GAP. An empty list, or one of blank strings, guards nothing either, but it
-    was written on purpose (Motiongen keeps `[]`): it is `leer`, not `fehlt`."""
+def core_paths_gap(config):
+    """"" when core_paths of a config lists a pattern; else a key of CORE_PATHS_GAP. `fehlt` only without the key; an empty list, or one of
+    blank strings, guards nothing either, but it was written on purpose (Motiongen keeps `[]`): `leer`. Anything else, `null` too: `unbrauchbar`."""
+    if not isinstance(config, dict) or "core_paths" not in config:
+        return "fehlt"
+    patterns = config["core_paths"]
     if isinstance(patterns, list) and any(isinstance(p, str) and p.strip() for p in patterns):
         return ""
-    if patterns is None:
-        return "fehlt"
     return "leer" if isinstance(patterns, list) and all(isinstance(p, str) for p in patterns) else "unbrauchbar"
 
 
@@ -633,7 +634,7 @@ def evaluate(facts, expected_sha=""):
     if problem:
         reasons.append(f"{problem}: Repo ohne GitHub-CI, ./ce verify {facts['repo']} {pr['number']} am Mac (Cloud: Merge-Bitte an Sightline)")
     patterns = config.get("core_paths")
-    gap = core_paths_gap(patterns)
+    gap = core_paths_gap(config)
     listed = not gap
     if gap:
         patterns = []
