@@ -110,7 +110,10 @@ class PlanTests(unittest.TestCase):
     def test_forecast(self):
         result = {"changes": {".ce-repo.json": "", "ce": "", "CHANGELOG.md": ""}}
         self.assertEqual(cp.forecast(config(), result, 10), "Stufe 1 möglich")
-        self.assertEqual(cp.forecast(config(core_paths=[]), result, 10), "Stufe 2: core_paths leer")
+        self.assertEqual(cp.forecast(config(core_paths=[]), result, 10), "Stufe 2: core_paths leer in der Basis: schützt nichts")
+        without = {key: value for key, value in config().items() if key != "core_paths"}
+        self.assertEqual(cp.forecast(without, result, 10), "Stufe 2: core_paths fehlt in der Basis", "the same words as merge-check (0.44)")
+        self.assertEqual(cp.forecast(config(core_paths="src/core.py"), result, 10), "Stufe 2: core_paths unbrauchbar in der Basis")
         self.assertEqual(cp.forecast(config(core_paths=["ce", ".ce-repo.json"]), result, 10), "Stufe 2: Kernpfad ce")
         self.assertEqual(cp.forecast(config(), result, 101), "Stufe 2: 101 Zeilen")
 

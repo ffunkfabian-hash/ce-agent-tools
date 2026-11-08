@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.44.0 „Signpost“ – unveröffentlicht (08.11.2026)
+
+Zwei Meldungen von `./ce merge-check` aus der Pin-Runde auf 0.43.1 (Motiongen PR #74, Formgenv2 PR #23).
+
+- **`core_paths` getrennt benannt (Kernpfad):** Die Basis meldet jetzt „fehlt“ (kein Schlüssel), „leer“ (`[]` oder nur Leerzeichen: „schützt nichts“) oder „unbrauchbar“ (keine Liste von Mustern) in `warnings` und `ja_noetig_weil`. Bisher hieß auch Motiongens bewusstes `core_paths: []` „fehlt“. Stufe 1 bleibt in allen drei Fällen gesperrt. `./ce pin` sagt die Stufe mit denselben Worten voraus (`core_paths_gap`).
+- **Reiner Pin ohne neue Patch-Nummer bleibt rot:** Die gewünschte Ausnahme ist geprüft und abgelehnt. Auch ein bestätigter Pin ist ein Patch: Patch-Nummer +1 und CHANGELOG-Eintrag, wie `./ce pin` es selbst schreibt. Die Meldung „Version nicht erhöht“ nennt beim bestätigten Pin jetzt den Weg und sagt, dass `--ja` sie nicht aufhebt. Begründung in der PR-Beschreibung.
+- Tests: neue Fälle in `test_merge_check` und `test_pin`; die zu `core_paths` sind gegen 0.43.1 rot. [Version](docs/versions/0.44.md).
+
 ## 0.43.1 „Errata“ – Patch postfach-monat (08.11.2026)
 
 - **Das Postfach ist nicht mehr fest #16:** Aktuell ist das neueste offene Issue in cubeescape-nexogen mit Label `postfach` (Antwort 1 h in `~/.cache/ce-agent-tools/postfach.json`; ohne Treffer oder ohne GitHub der letzte Wert, sonst 16). Geschrieben (`say`, Anmeldung) wird nur dorthin; gelesen (`who`, `mail`, beide Hooks, `ce_console --mail`) werden das aktuelle und das vorige Issue (ohne älteres: #16), `--issue` setzt die Nummern weiter fest. Ausgaben nennen die ermittelte Nummer. Tests in `test_postfach.py` (`MonthlyPostfach`). Bekannter Kompromiss: Beim Monatswechsel schreiben Sitzungen mit altem Cache bis zu 1 h noch ins vorige Issue; gelesen wird es weiter, die Post kommt verspätet an.

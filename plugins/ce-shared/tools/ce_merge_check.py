@@ -22,7 +22,8 @@ does not say: the session's own pull request (same repository, head = this folde
 after a push none has reported yet; a pull request of .md files waits for nothing, a repository without workflows for the receipt below).
 `ja_noetig_weil` names what stands against it. A pull request that only moves .ce-repo.json > tools_version (0.37 Waybill) keeps
 stage 1 and, when .ce-repo.json is a core path, the classification Patch - if ce-agent-tools answers that the new commit is on its main,
-carries the named version and does not go back (pin_problem); anything else, a failed query too, is stage 2 as before. Everything
+carries the named version and does not go back (pin_problem); anything else, a failed query too, is stage 2 as before. Its version still has
+to rise like that of any patch (0.44 Signpost, version_reasons); core_paths that are missing, empty or of no use are named apart (core_paths_gap). Everything
 else is stage 2 (after the user's Ja) or stage 3 (merge request to Sightline). From JUDGE_LINES lines of code (diff without .md) a
 warning asks for the judge; whether one ran is not visible here, that stays a rule.
 
@@ -473,8 +474,10 @@ def version_key(text):
     return tuple(int(part) for part in re.findall(r"\d+", text or ""))
 
 
-def version_reasons(facts, classification, touched_core):
-    """(reasons, warnings) of the version file and the changelog, as .ce-repo.json describes them."""
+def version_reasons(facts, classification, touched_core, pin_fine=False):
+    """(reasons, warnings) of the version file and the changelog, as .ce-repo.json describes them. A confirmed pin is no exception (0.44):
+    it is a patch like any other, so its number rises (regeln-details > Patch-Aufträge, `./ce pin` does it itself) and the changelog entry
+    names a new version; without that rise the check `CHANGELOG nennt Version` would pass on any old entry. The reason only says so."""
     versions, name = facts.get("versions"), facts.get("changelog_name")
     reasons, warnings = [], []
     if facts.get("head_config") is None:
@@ -490,7 +493,8 @@ def version_reasons(facts, classification, touched_core):
     else:
         old, new = version_key(versions["base"]), version_key(versions["head"])
         if new <= old:
-            reasons.append(f"Version nicht erhöht ({versions['base']} → {versions['head']})")
+            hint = ": auch ein bestätigter Pin ist ein Patch, Patch-Nummer +1 wie bei `./ce pin`; --ja hebt das nicht auf" if pin_fine else ""
+            reasons.append(f"Version nicht erhöht ({versions['base']} → {versions['head']}){hint}")
         elif classification == "Version" and new[:2] == old[:2]:
             text = f"Einstufung Version, aber nur Patch-Nummer erhöht ({versions['base']} → {versions['head']})"
             (reasons if touched_core else warnings).append(text)
@@ -515,6 +519,25 @@ def only_pin_changed(base_config, head_config):
     base, head = config_without_version(base_config), config_without_version(head_config)
     base_rest, head_rest = ({key: value for key, value in side.items() if key != "tools_version"} for side in (base, head))
     return bool(base) and bool(head) and base != head and base_rest == head_rest
+
+
+CORE_PATHS_GAP = {  # what is wrong with core_paths of the base: (ja_noetig_weil, warning), each named on its own (0.44)
+    "fehlt": ("core_paths fehlt in der Basis", "core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1"),
+    "leer": ("core_paths leer in der Basis: schützt nichts", "core_paths leer in .ce-repo.json der Basis: schützt nichts, keine Stufe 1"),
+    "unbrauchbar": ("core_paths unbrauchbar in der Basis", 'core_paths unbrauchbar in .ce-repo.json der Basis (erwartet eine Liste von Mustern wie ["src/core/*"]): '
+                    "Kernpfade nicht geprüft, keine Stufe 1"),
+}
+
+
+def core_paths_gap(config):
+    """"" when core_paths of a config lists a pattern; else a key of CORE_PATHS_GAP. `fehlt` only without the key; an empty list, or one of
+    blank strings, guards nothing either, but it was written on purpose (Motiongen keeps `[]`): `leer`. Anything else, `null` too: `unbrauchbar`."""
+    if not isinstance(config, dict) or "core_paths" not in config:
+        return "fehlt"
+    patterns = config["core_paths"]
+    if isinstance(patterns, list) and any(isinstance(p, str) and p.strip() for p in patterns):
+        return ""
+    return "leer" if isinstance(patterns, list) and all(isinstance(p, str) for p in patterns) else "unbrauchbar"
 
 
 def quick_of(config):
@@ -611,10 +634,11 @@ def evaluate(facts, expected_sha=""):
     if problem:
         reasons.append(f"{problem}: Repo ohne GitHub-CI, ./ce verify {facts['repo']} {pr['number']} am Mac (Cloud: Merge-Bitte an Sightline)")
     patterns = config.get("core_paths")
-    listed = isinstance(patterns, list) and any(isinstance(p, str) and p.strip() for p in patterns)  # an empty list guards nothing either
-    if not listed:
+    gap = core_paths_gap(config)
+    listed = not gap
+    if gap:
         patterns = []
-        warnings.append("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1")
+        warnings.append(CORE_PATHS_GAP[gap][1])
     pin_only, pin_why = only_pin_changed(config, facts.get("head_config")), facts.get("pin_problem")
     pin_fine = pin_only and pin_why == ""  # None: nobody asked ce-agent-tools
     config_changed = listed and not pin_fine and config_without_version(facts.get("head_config")) != config_without_version(config)  # the next patch would profit
@@ -622,7 +646,7 @@ def evaluate(facts, expected_sha=""):
     lines = (pr.get("additions") or 0) + (pr.get("deletions") or 0)
     code_lines = sum(f.get("changes") or 0 for f in files if not f["filename"].lower().endswith(".md"))
     classification = "Version" if touched or lines > VERSION_LINES else "Patch"
-    version_problems, version_warnings = version_reasons(facts, classification, bool(touched))
+    version_problems, version_warnings = version_reasons(facts, classification, bool(touched), pin_fine)
     reasons += version_problems
     warnings += version_warnings
     if code_lines >= JUDGE_LINES:
@@ -630,7 +654,7 @@ def evaluate(facts, expected_sha=""):
     ci_due = facts.get("workflows", 1) > 0 and not no_ci and not docs
     unchecked = bool(unread) or any("nicht geprüft" in text for text in version_warnings) or (no_ci and not docs and not runnable)
     stage_one = ((bool(reasons), "merge-check nicht grün"), (ci_due and not ci_passed(checks), "keine erfolgreichen Checks zum Head gemeldet"),
-                 (not listed, "core_paths fehlt in der Basis"), (config_changed, ".ce-repo.json im PR geändert" + (f" (Pin nicht bestätigt: {pin_why})" if pin_only and pin_why else "")), (bool(touched), "Kernpfad berührt"),
+                 (bool(gap), CORE_PATHS_GAP.get(gap, ("",))[0]),(config_changed, ".ce-repo.json im PR geändert" + (f" (Pin nicht bestätigt: {pin_why})" if pin_only and pin_why else "")), (bool(touched), "Kernpfad berührt"),
                  (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),
                  (pr.get("baseRefName") != pr.get("defaultBranch"), "Basis ist nicht der Standardbranch"),
                  (not pr.get("sameRepo"), "PR aus einem anderen Repo"), (facts.get("local_head") != head, "Head ist nicht der Stand dieses Ordners"),

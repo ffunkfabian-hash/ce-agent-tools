@@ -260,8 +260,9 @@ def diff_of(plan):
 def forecast(config, plan, lines):
     """What merge-check will say about the stage, as far as the plan shows it."""
     patterns = config.get("core_paths")
-    if not (isinstance(patterns, list) and any(isinstance(item, str) and item.strip() for item in patterns)):
-        return "Stufe 2: core_paths leer"
+    gap = mc.core_paths_gap(config)
+    if gap:
+        return f"Stufe 2: {mc.CORE_PATHS_GAP[gap][0]}"
     touched = [name for name in mc.core_hits([{"filename": path} for path in plan["changes"]], patterns) if name != ce_common.CONFIG_NAME]
     if touched:
         return f"Stufe 2: Kernpfad {', '.join(touched)}"
