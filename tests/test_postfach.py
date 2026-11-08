@@ -423,6 +423,15 @@ class MonthlyPostfach(unittest.TestCase):
         self.assertEqual(am.mailboxes(runner=fake, cache=self.cache, now=lambda: self.now, offline=True), [30, 25])
         self.assertEqual(fake.calls, [])
 
+    def test_no_home_directory_means_no_cache_not_a_crash(self):
+        def no_home():
+            raise RuntimeError("Could not determine home directory")
+        original = am.mailbox_cache
+        am.mailbox_cache = no_home
+        self.addCleanup(setattr, am, "mailbox_cache", original)
+        self.assertEqual(am.mailboxes(runner=Fake(stdout="[]"), now=lambda: self.now), [16])
+        self.assertEqual(am.mailboxes(runner=Fake(stdout=json.dumps([self.issue(30)])), now=lambda: self.now), [30, 16])
+
     def test_other_repos_keep_16(self):
         self.assertEqual(am.mailboxes("o/other", runner=Fake(), cache=self.cache), [16])
 

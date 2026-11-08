@@ -469,8 +469,11 @@ def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None
     `offline` (hooks that must not wait for the network) never asks gh: the cache as it is, else [16]. Kept for an hour in ~/.cache/ce-agent-tools/postfach.json; no such issue or gh unreachable: the last cached value, else [16]."""
     if repo != REPO:
         return [MAILBOX]
-    path = cache or mailbox_cache()
-    stored = read_json(path)
+    try:
+        path = cache or mailbox_cache()
+        stored = read_json(path)
+    except (RuntimeError, OSError, KeyError):  # no home directory (HOME unset): go on without a cache
+        path, stored = None, {}
     saved = [n for n in stored.get("numbers", []) if isinstance(n, int) and not isinstance(n, bool)] if isinstance(stored.get("numbers"), list) else []
     at = stored.get("at") if isinstance(stored.get("at"), (int, float)) else 0
     if saved and 0 <= now() - at < MAILBOX_TTL:
@@ -496,6 +499,8 @@ def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None
     # a failed ask is repeated after 5 minutes, an answer without label after the full hour (no gh call per hook)
     stamp = now() - MAILBOX_TTL + 300 if failed and not found else now()
     try:
+        if path is None:
+            raise OSError
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_name(path.name + f".{os.getpid()}.tmp")
         temp.write_text(json.dumps({"at": stamp, "numbers": numbers}), encoding="utf-8")
