@@ -36,6 +36,8 @@ ENV.pop("CE_MAILBOX", None)
 os.environ["CE_POSTFACH_CACHE"] = str(Path(tempfile.mkdtemp()) / "postfach.json")
 Path(os.environ["CE_POSTFACH_CACHE"]).write_text(json.dumps({"at": _time.time(), "numbers": [16]}), encoding="utf-8")
 
+if "ENV" in globals():
+    ENV["CE_POSTFACH_CACHE"] = os.environ["CE_POSTFACH_CACHE"]  # subprocesses too
 NAME = "CE-AGENT-TOOLS 0.21 „Courier“ · Mac"
 
 

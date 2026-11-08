@@ -100,7 +100,7 @@ def utf8_io() -> None:
 
 
 def text_of(messages: list) -> str:
-    number = next((m["pr"] for m in messages if m.get("pr")), None) or am.mailboxes()[0]  # 0.43.1: the issue the message came from
+    number = next((m["pr"] for m in messages if m.get("pr")), None) or am.mailboxes(offline=True)[0]  # no network in this hook; 0.43.1: the issue the message came from
     parts = [f"Postfach (cubeescape-nexogen#{number}) – neue Nachricht an diese Sitzung während der Arbeit (ce-shared 0.21):"]
     for item in messages:
         parts.append(f"\nKommentar {item['id']} ({item.get('created_at', '')}):")

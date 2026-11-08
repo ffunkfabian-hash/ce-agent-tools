@@ -463,10 +463,10 @@ def mailbox_cache() -> Path:
     return Path(os.environ.get("CE_POSTFACH_CACHE") or Path.home() / ".cache" / "ce-agent-tools" / "postfach.json")
 
 
-def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None, now=time.time) -> list:
+def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None, now=time.time, offline: bool = False) -> list:
     """0.43.1: the Postfach issues, `[0]` is the current one (newest open issue with label `postfach`, the only one written to),
     `[1]` the one before it (read too, so nothing is lost at the turn of the month; without an older labelled issue: #16).
-    Kept for an hour in ~/.cache/ce-agent-tools/postfach.json; no such issue or gh unreachable: the last cached value, else [16]."""
+    `offline` (hooks that must not wait for the network) never asks gh: the cache as it is, else [16]. Kept for an hour in ~/.cache/ce-agent-tools/postfach.json; no such issue or gh unreachable: the last cached value, else [16]."""
     if repo != REPO:
         return [MAILBOX]
     path = cache or mailbox_cache()
@@ -475,6 +475,8 @@ def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None
     at = stored.get("at") if isinstance(stored.get("at"), (int, float)) else 0
     if saved and 0 <= now() - at < MAILBOX_TTL:
         return saved
+    if offline:
+        return saved or [MAILBOX]
     found, failed = [], False
     try:
         result = runner(["gh", "api", f"repos/{repo}/issues?labels={MAILBOX_LABEL}&state=all&per_page=30"],

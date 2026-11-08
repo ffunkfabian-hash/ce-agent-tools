@@ -27,6 +27,8 @@ am = hook.am
 os.environ["CE_POSTFACH_CACHE"] = str(Path(tempfile.mkdtemp()) / "postfach.json")
 Path(os.environ["CE_POSTFACH_CACHE"]).write_text(json.dumps({"at": _time.time(), "numbers": [16]}), encoding="utf-8")
 
+if "ENV" in globals():
+    ENV["CE_POSTFACH_CACHE"] = os.environ["CE_POSTFACH_CACHE"]  # subprocesses too
 NAME = "TG 0.24 „Salvo“ · Mac"
 
 

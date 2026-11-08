@@ -416,6 +416,13 @@ class MonthlyPostfach(unittest.TestCase):
         self.now += 250
         self.assertEqual(len(self.ask(returncode=1)[1].calls), 1)
 
+    def test_offline_never_asks_gh(self):
+        fake = Fake()
+        self.assertEqual(am.mailboxes(runner=fake, cache=self.cache, now=lambda: self.now, offline=True), [16])
+        self.cache.parent.mkdir(parents=True); self.cache.write_text(json.dumps({"at": 0, "numbers": [30, 25]}), encoding="utf-8")
+        self.assertEqual(am.mailboxes(runner=fake, cache=self.cache, now=lambda: self.now, offline=True), [30, 25])
+        self.assertEqual(fake.calls, [])
+
     def test_other_repos_keep_16(self):
         self.assertEqual(am.mailboxes("o/other", runner=Fake(), cache=self.cache), [16])
 

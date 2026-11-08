@@ -118,18 +118,19 @@ def send(body: str, repo_dir: Path, dry_run: bool = False, runner=subprocess.run
     if dry_run:
         print(body, end="", file=out)
         return 0
+    number = am.mailboxes()[0]  # once: the error texts name the issue the text belongs into
     if not on_github(repo_dir):
-        print(f"Postfach: kein GitHub-Origin oder CE_MAILBOX=0 - nicht gesendet. Text zum Einfügen in cubeescape-nexogen#{am.mailboxes()[0]}:\n", file=err)
+        print(f"Postfach: kein GitHub-Origin oder CE_MAILBOX=0 - nicht gesendet. Text zum Einfügen in cubeescape-nexogen#{number}:\n", file=err)
         print(body, end="", file=err)
         return 1
     try:
-        answer = post(body, runner=runner)
+        answer = post(body, issue=number, runner=runner)
     except subprocess.TimeoutExpired:
-        print(f"Postfach: keine Antwort von GitHub in 60 s - vor dem Einfügen in cubeescape-nexogen#{am.mailboxes()[0]} prüfen, ob der Kommentar schon steht:\n", file=err)
+        print(f"Postfach: keine Antwort von GitHub in 60 s - vor dem Einfügen in cubeescape-nexogen#{number} prüfen, ob der Kommentar schon steht:\n", file=err)
         print(body, end="", file=err)
         return 1
     except (OSError, RuntimeError, ValueError) as error:
-        print(f"Postfach: nicht gesendet ({error}). Text zum Einfügen in cubeescape-nexogen#{am.mailboxes()[0]}:\n", file=err)
+        print(f"Postfach: nicht gesendet ({error}). Text zum Einfügen in cubeescape-nexogen#{number}:\n", file=err)
         print(body, end="", file=err)
         return 1
     print(f"Postfach: gesendet, Kommentar {answer.get('id')} {answer.get('html_url', '')}".rstrip(), file=out)
