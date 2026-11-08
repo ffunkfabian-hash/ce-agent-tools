@@ -27,7 +27,7 @@ or dropped when splitting (test with a large diff).
 exactly where a diff has a real defect: at least six cut runs on 06.11., 3 of 3 cut with two seeded bugs; `low` stayed under 1300 of 2048 tokens and
 named both bugs in 3 of 3 runs (docs: README › Erfahrungen). A run without a usable verdict says so in a line "kein verwertbares Urteil".
 
-0.43.2: the model choice also reads `.ce-repo.json` › core_paths of the base ref (not the PR's, as ce_merge_check does) and gives
+0.44.1: the model choice also reads `.ce-repo.json` › core_paths of the base ref (not the PR's, as ce_merge_check does) and gives
 sol to a diff that touches one of them, rename sources included (diff_of lists them, --no-renames); unreadable core_paths there route up too. The Unity rules stay. diff_of reads names with -z: git C-quotes non-ASCII names, and
 a quoted name as pathspec matched nothing, so the file was silently missing from the reviewed diff.
 
@@ -61,7 +61,7 @@ INFRASTRUCTURE = re.compile(
     r"(^|/)(ce_(?:check|contract|interfaces|judge|report|sync|nightly|lint|docs|api(?:_budget)?)|"
     r"heavy_lock|testplan|quick_check|check_docs|check_skills|guard|precommit|verify)(\.py|\.sh)?$|schema|contract", re.I)
 CORE_CANDIDATE = re.compile(r"^(?:Assets/Scripts/|Assets/Tests/Runner/|Packages/|ProjectSettings/)|\.asmdef$", re.I)
-CONFIG_NAME = ".ce-repo.json"  # (0.43.2) its core_paths at the base count as core paths, as in ce_merge_check
+CONFIG_NAME = ".ce-repo.json"  # (0.44.1) its core_paths at the base count as core paths, as in ce_merge_check
 LARGE_DIFF_LINES = 1500
 LARGE_DIFF_BYTES = 100_000
 API_MODEL = "opus"
@@ -97,7 +97,7 @@ def template() -> str:
 
 
 def diff_of(base: str, files, cwd) -> tuple[str, list[str]]:
-    # (0.43.2) -z: names as they are, not C-quoted ("src/\303\244.py"), which as a pathspec matched nothing and dropped the file.
+    # (0.44.1) -z: names as they are, not C-quoted ("src/\303\244.py"), which as a pathspec matched nothing and dropped the file.
     # --no-renames: a rename's source is listed too (a core path it leaves); with both in the pathspec the diff still shows the rename.
     names = [n for n in git("diff", "--name-only", "--no-renames", "-z", base, cwd=cwd).split("\0") if n and not GENERATED.search(n)]
     if files:

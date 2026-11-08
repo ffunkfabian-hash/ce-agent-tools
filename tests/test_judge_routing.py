@@ -110,7 +110,7 @@ class JudgeRoutingTests(unittest.TestCase):
 
 
 class BaseCorePathsRoutingTests(unittest.TestCase):
-    """0.43.2: core_paths of .ce-repo.json at the base count as core paths (incident 0.44: ce_merge_check.py got luna)."""
+    """0.44.1: core_paths of .ce-repo.json at the base count as core paths (incident 0.44: ce_merge_check.py got luna)."""
 
     CORE = ["plugins/ce-shared/tools/ce_merge_check.py", "plugins/ce-shared/rules/*.md", "src/core/**", "docs/guarded/"]
 

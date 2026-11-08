@@ -312,13 +312,30 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(mc.evaluate(ci_facts(pr={"additions": 60, "deletions": 41}))["ohne_ja"])
 
     def test_without_core_paths_in_the_base_there_is_no_stage_one(self):
-        for config in ({}, None, {**CONFIG, "core_paths": None}, {**CONFIG, "core_paths": []}, {**CONFIG, "core_paths": [""]}, {**CONFIG, "core_paths": [" ", "\t"]},
-                       {**CONFIG, "core_paths": "contracts/**"}, {**CONFIG, "core_paths": [1, None]}):
+        missing, empty, unusable = "core_paths fehlt in der Basis", "core_paths leer in der Basis: schützt nichts", "core_paths unbrauchbar in der Basis"
+        for config, why in (({}, missing), (None, missing), ({**CONFIG, "core_paths": None}, unusable), ({**CONFIG, "core_paths": []}, empty),
+                            ({**CONFIG, "core_paths": [""]}, empty), ({**CONFIG, "core_paths": [" ", "\t"]}, empty),
+                            ({**CONFIG, "core_paths": "contracts/**"}, unusable), ({**CONFIG, "core_paths": [1, None]}, unusable),
+                            ({**CONFIG, "core_paths": ["", 1]}, unusable), ({**CONFIG, "core_paths": {"a": "b"}}, unusable)):
             result = mc.evaluate(ci_facts(base_config=config))
             self.assertTrue(result["green"], config)
             self.assertFalse(result["ohne_ja"], config)
-            self.assertEqual(result["ja_noetig_weil"], ["core_paths fehlt in der Basis"], config)
+            self.assertEqual(result["ja_noetig_weil"], [why], config)
             self.assertIn("keine Stufe 1", " ".join(result["warnings"]), config)
+
+    def test_an_empty_core_path_list_is_named_empty_not_missing(self):
+        """Motiongen PR #74: `core_paths: []` in the base was reported as missing. Still no stage 1, only the words change (0.44)."""
+        result = mc.evaluate(ci_facts(base_config={**CONFIG, "core_paths": []}))
+        warning = [text for text in result["warnings"] if text.startswith("core_paths")]
+        self.assertEqual(warning, ["core_paths leer in .ce-repo.json der Basis: schützt nichts, keine Stufe 1"])
+        self.assertNotIn("fehlt", " ".join(result["warnings"] + result["ja_noetig_weil"]))
+        result = mc.evaluate(ci_facts(base_config={key: value for key, value in CONFIG.items() if key != "core_paths"}))
+        self.assertIn("core_paths fehlt in .ce-repo.json der Basis: Kernpfade nicht geprüft, keine Stufe 1", result["warnings"])
+        result = mc.evaluate(ci_facts(base_config={**CONFIG, "core_paths": "contracts/**"}))
+        self.assertIn('erwartet eine Liste von Mustern wie ["src/core/*"]', " ".join(result["warnings"]))
+        self.assertEqual([mc.core_paths_gap({"core_paths": value}) for value in (["a"], [" a "], ["", "a"], [1, "a"])], ["", "", "", ""], "one pattern is enough")
+        self.assertEqual([mc.core_paths_gap(value) for value in (None, {}, {"core_paths": None}, [])], ["fehlt", "fehlt", "unbrauchbar", "fehlt"],
+                         "only a missing key is missing; a key set to null is of no use")
 
     def test_a_list_only_in_the_pull_request_does_not_open_stage_one(self):
         result = mc.evaluate(ci_facts(base_config={}, head_config=CONFIG))
@@ -744,6 +761,23 @@ class PinTests(unittest.TestCase):
                              ({"cloud": True}, "Cloud-Sitzung: Merge-Bitte an Sightline"), ({"pr": {"additions": 200}}, "205 Zeilen, ohne Ja höchstens 100")):
             self.assertIn(text, mc.evaluate(pin_facts(**change))["ja_noetig_weil"], change)
         self.assertFalse(mc.evaluate(pin_facts(versions={"base": "1.3.0", "head": "1.3.0"}))["green"], "the version of the repository still has to rise")
+
+    def test_a_pure_pin_without_a_new_number_stays_red_and_says_why(self):
+        """Formgenv2 PR #23 (0.44): only .ce-repo.json and ce, pin confirmed, __version__ kept. Red as before; the reason names the way out."""
+        config_file = {"filename": ".ce-repo.json", "status": "modified", "changes": 4, "patch": "@@\n+x\n-y"}
+        loader = {"filename": "ce", "status": "modified", "changes": 2, "patch": "@@\n+x\n-y"}
+        change = {"files": [CHANGELOG, config_file, loader], "versions": {"base": "0.14.2", "head": "0.14.2"}, "changelog": "## 0.14.2\n"}
+        result = mc.evaluate(pin_facts(**change))
+        self.assertFalse(result["green"])
+        self.assertTrue(result["pin_bestaetigt"])
+        self.assertEqual(result["reasons"], ["Version nicht erhöht (0.14.2 → 0.14.2): auch ein bestätigter Pin ist ein Patch, Patch-Nummer +1 "
+                                             "wie bei `./ce pin`; --ja hebt das nicht auf"])
+        unconfirmed = mc.evaluate(pin_facts(pin_problem="x", **change))
+        self.assertEqual(unconfirmed["reasons"], ["Version nicht erhöht (0.14.2 → 0.14.2)"], "the hint belongs to a confirmed pin only")
+        without_entry = mc.evaluate(pin_facts(**{**change, "files": [config_file, loader]}))
+        self.assertIn("CHANGELOG.md nicht geändert", without_entry["reasons"], "the changelog stays required for a pin")
+        raised = mc.evaluate(pin_facts(**{**change, "versions": {"base": "0.14.2", "head": "0.14.3"}, "changelog": "## 0.14.3\n"}))
+        self.assertEqual((raised["green"], raised["ohne_ja"]), (True, True), raised)
 
     def test_gather_asks_the_tools_only_for_a_pure_pin(self):
         def configs(head_config):
