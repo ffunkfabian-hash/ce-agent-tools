@@ -3,7 +3,7 @@
 
 `watch` (Stop, async + asyncRewake, timeout = MAX_HOURS): when the worktree is reserved (`<git-dir>/ce-session.json`, written by
 ce_session_name.py --reserve; the worktree counts, not the checked-out branch; at most RESERVATION_DAYS old) and no watcher runs, it waits in the background for a comment in
-cubeescape-nexogen#16 addressed to the session (ce_await_mail rules), reading from the last handled message or the reservation time.
+the Postfach (current and previous issue, label `postfach`, else #16) addressed to the session (ce_await_mail rules), reading from the last handled message or the reservation time.
 A message ends it with exit 2 and the comment on stderr – Claude Code wakes the session with it. The message is only `pending` until
 the next Stop finds "Kommentar <id>" in the transcript (proof of delivery); without proof it comes once more, then counts as handled.
 It ends quietly when nothing comes, when the process that started it is gone (then nothing is marked), on SIGTERM, or on any error.
@@ -148,7 +148,7 @@ def watch(payload: dict, fetch=None, sleep=time.sleep, clock=time.monotonic, par
                 raise SessionGone()
             sleep(seconds)
 
-        fetch = fetch or (lambda since_: am.fetch_comments(am.REPO, [am.MAILBOX], since_))
+        fetch = fetch or (lambda since_: am.fetch_comments(am.REPO, am.mailboxes(), since_))
         try:
             code, result = am.watch(fetch, am.session_key(session["name"]), after, since, INTERVAL_S, MAX_HOURS * 3600,
                                     sleep=guarded_sleep, clock=clock, skip=lambda number: hinted(folder, number))

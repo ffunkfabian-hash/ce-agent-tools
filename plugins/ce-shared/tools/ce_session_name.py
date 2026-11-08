@@ -11,7 +11,7 @@ from `.ce-repo.json` and the branch names of `origin` (`git ls-remote`, skipped 
 1.15: the branch on origin IS the reservation (the Versionsregister PR is retired): `--reserve` creates the branch at HEAD and pushes
 it (a push of the own branch never needs a Ja); a number that origin already has is skipped. `--topics` lists the open claude/codex
 branches of origin so a session can see whether the same subject is already being worked on (then ask the user).
-0.14: `--reserve` also announces the session in the Postfach (cubeescape-nexogen#16, `<Name> → Sightline: angemeldet`, see
+0.14: `--reserve` also announces the session in the Postfach (cubeescape-nexogen, label `postfach`, else #16; `<Name> → Sightline: angemeldet`, see
 ce_postfach.py) so other sessions know it exists and how to reach it; `--about`/`--model` fill the message, `--no-announce` skips it.
 A failed announcement never undoes the reservation. `--patch <kurzname>` reserves and announces a patch branch the same way.
 0.21: `--reserve` fetches origin's default branch first; a worktree that is only behind it (no own commits) gets the branch on the

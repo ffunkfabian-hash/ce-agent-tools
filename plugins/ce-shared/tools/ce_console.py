@@ -102,10 +102,11 @@ def snapshot(repos=None, mail=False):
         codex=quota(now), api=api_budget(now),
         queue_note='Nur Wartende mit Telemetrie dieses Werkzeugstands; kein Fairness- oder Vollständigkeitsversprechen.',
         session_note='Prozesse und jüngste Sitzungen sind Indizien; ein Branch allein bedeutet nicht aktiv.')
-    result['mailbox'] = {'known': False, 'reason': 'Onlineabfrage ausgeschaltet; --mail liest nur Postfach #16.'}
+    result['mailbox'] = {'known': False, 'reason': 'Onlineabfrage ausgeschaltet; --mail liest das aktuelle Postfach.'}
     if mail:
         try:
-            issue = run_json(['gh', 'api', 'repos/ffunkfabian-hash/cubeescape-nexogen/issues/16'])
+            import ce_await_mail
+            issue = run_json(['gh', 'api', f'repos/ffunkfabian-hash/cubeescape-nexogen/issues/{ce_await_mail.mailboxes()[0]}'])
             result['mailbox'] = dict(known=True, url=issue['html_url'], title=issue['title'],
                                      comments=issue['comments'], updated_at=issue['updated_at'])
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
@@ -194,7 +195,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('snapshot', 'serve'))
     parser.add_argument('--repos', nargs='+', type=Path)
-    parser.add_argument('--mail', action='store_true', help='Postfach #16 online lesend abfragen')
+    parser.add_argument('--mail', action='store_true', help='aktuelles Postfach-Issue online lesend abfragen')
     parser.add_argument('--out', type=Path, help='Portable HTML-Momentaufnahme')
     parser.add_argument('--port', type=int, default=8768)
     args = parser.parse_args(argv)

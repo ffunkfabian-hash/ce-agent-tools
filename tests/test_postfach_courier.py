@@ -32,6 +32,12 @@ inbox = load("postfach_inbox", PLUGIN / "hooks" / "postfach_inbox.py")
 SESSION = TOOLS / "ce_session_name.py"
 ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
 ENV.pop("CE_MAILBOX", None)
+# 0.43.1: the tests never ask GitHub which issue is the Postfach
+os.environ["CE_POSTFACH_CACHE"] = str(Path(tempfile.mkdtemp()) / "postfach.json")
+Path(os.environ["CE_POSTFACH_CACHE"]).write_text(json.dumps({"at": _time.time(), "numbers": [16]}), encoding="utf-8")
+
+if "ENV" in globals():
+    ENV["CE_POSTFACH_CACHE"] = os.environ["CE_POSTFACH_CACHE"]  # subprocesses too
 NAME = "CE-AGENT-TOOLS 0.21 „Courier“ · Mac"
 
 

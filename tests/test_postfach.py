@@ -23,6 +23,10 @@ pf = load("ce_postfach", "ce_postfach.py")
 am = load("await_mail", "ce_await_mail.py")
 SESSION = TOOLS / "ce_session_name.py"
 
+# 0.43.1: the tests never ask GitHub which issue is the Postfach
+os.environ["CE_POSTFACH_CACHE"] = str(Path(tempfile.mkdtemp()) / "postfach.json")
+Path(os.environ["CE_POSTFACH_CACHE"]).write_text(json.dumps({"at": __import__('time').time(), "numbers": [16]}), encoding="utf-8")
+
 
 class Fake:
     """Stands in for subprocess.run: records the gh call and answers like GitHub."""
@@ -350,3 +354,113 @@ class Entry(unittest.TestCase):
         for args in (["session", "reserve", "Crosstalk"], ["session", "reserve", "--name", "Crosstalk"], ["reserve", "--name", "Crosstalk"]):
             out = subprocess.run(["sh", str(fake_tools / "ce"), *args], capture_output=True, text=True, encoding="utf-8").stdout.strip()
             self.assertEqual(out, "['--name', 'Crosstalk', '--reserve']", args)
+
+
+class MonthlyPostfach(unittest.TestCase):
+    """0.43.1: the Postfach is the newest open issue with label `postfach`; reading covers it and the one before."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        self.cache = Path(tmp.name) / "sub" / "postfach.json"
+        self.now = 1_000_000.0
+
+    def ask(self, *issues, returncode=0, runner=None):
+        fake = runner or Fake(returncode=returncode, stdout=json.dumps(list(issues)), stderr="boom")
+        numbers = am.mailboxes(runner=fake, cache=self.cache, now=lambda: self.now)
+        return numbers, fake
+
+    @staticmethod
+    def issue(number, state="open", **extra):
+        return dict(number=number, state=state, **extra)
+
+    def test_label_found_gives_the_newest_open_issue_and_the_one_before(self):
+        numbers, fake = self.ask(self.issue(30), self.issue(25, "closed"), self.issue(20, "closed"))
+        self.assertEqual(numbers, [30, 25])
+        self.assertIn("labels=postfach", fake.calls[0][0][2])
+
+    def test_a_closed_newer_issue_and_a_pull_request_are_not_the_postfach(self):
+        numbers, _ = self.ask(self.issue(31, "closed"), self.issue(30, pull_request={}), self.issue(25), self.issue(20, "closed"))
+        self.assertEqual(numbers, [25, 20])
+
+    def test_the_first_labelled_issue_reads_the_archive_16_before_it(self):
+        self.assertEqual(self.ask(self.issue(30))[0], [30, 16])
+
+    def test_no_issue_with_the_label_is_16(self):
+        self.assertEqual(self.ask()[0], [16])
+
+    def test_gh_failure_uses_the_cache_else_16(self):
+        self.assertEqual(self.ask(returncode=1)[0], [16])
+        self.cache.write_text(json.dumps({"at": self.now - 7200, "numbers": [30, 25]}), encoding="utf-8")
+        self.assertEqual(self.ask(returncode=1)[0], [30, 25])
+        self.cache.write_text(json.dumps({"at": self.now - 7200, "numbers": [30, 25]}), encoding="utf-8")
+        self.assertEqual(am.mailboxes(runner=Fake(returncode=1), cache=self.cache, now=lambda: self.now), [30, 25])
+
+    def test_gh_missing_uses_the_cache(self):
+        def missing(*args, **kwargs):
+            raise FileNotFoundError("gh")
+        self.cache.parent.mkdir(parents=True); self.cache.write_text(json.dumps({"at": 0, "numbers": [30, 25]}), encoding="utf-8")
+        self.assertEqual(self.ask(runner=missing)[0], [30, 25])
+
+    def test_the_answer_is_kept_for_an_hour(self):
+        _, first = self.ask(self.issue(30))
+        self.now += 3000
+        numbers, second = self.ask(self.issue(99))
+        self.assertEqual((numbers, second.calls), ([30, 16], []))
+        self.now += 700
+        self.assertEqual(self.ask(self.issue(99))[0], [99, 16])
+
+    def test_a_failed_ask_is_repeated_after_five_minutes_not_per_call(self):
+        self.ask(returncode=1)
+        self.now += 100
+        self.assertEqual(self.ask(returncode=1)[1].calls, [])
+        self.now += 250
+        self.assertEqual(len(self.ask(returncode=1)[1].calls), 1)
+
+    def test_offline_never_asks_gh(self):
+        fake = Fake()
+        self.assertEqual(am.mailboxes(runner=fake, cache=self.cache, now=lambda: self.now, offline=True), [16])
+        self.cache.parent.mkdir(parents=True); self.cache.write_text(json.dumps({"at": 0, "numbers": [30, 25]}), encoding="utf-8")
+        self.assertEqual(am.mailboxes(runner=fake, cache=self.cache, now=lambda: self.now, offline=True), [30, 25])
+        self.assertEqual(fake.calls, [])
+
+    def test_no_home_directory_means_no_cache_not_a_crash(self):
+        def no_home():
+            raise RuntimeError("Could not determine home directory")
+        original = am.mailbox_cache
+        am.mailbox_cache = no_home
+        self.addCleanup(setattr, am, "mailbox_cache", original)
+        self.assertEqual(am.mailboxes(runner=Fake(stdout="[]"), now=lambda: self.now), [16])
+        self.assertEqual(am.mailboxes(runner=Fake(stdout=json.dumps([self.issue(30)])), now=lambda: self.now), [30, 16])
+
+    def test_other_repos_keep_16(self):
+        self.assertEqual(am.mailboxes("o/other", runner=Fake(), cache=self.cache), [16])
+
+    def use_cache(self, numbers):
+        """pf has its own copy of ce_await_mail: patch that one, and point it at a fresh cache"""
+        self.cache.parent.mkdir(parents=True, exist_ok=True)
+        self.cache.write_text(json.dumps({"at": self.now, "numbers": numbers}), encoding="utf-8")
+        before = os.environ["CE_POSTFACH_CACHE"]
+        os.environ["CE_POSTFACH_CACHE"] = str(self.cache)
+        self.addCleanup(os.environ.__setitem__, "CE_POSTFACH_CACHE", before)
+        original = pf.am.time.time
+        pf.am.time.time = lambda: self.now
+        self.addCleanup(setattr, pf.am.time, "time", original)
+
+    def test_say_writes_only_to_the_current_issue(self):
+        self.use_cache([30, 25])
+        fake = Fake()
+        pf.post("A → B: x\n", runner=fake)
+        self.assertEqual(fake.calls[0][0][4], "repos/ffunkfabian-hash/cubeescape-nexogen/issues/30/comments")
+
+    def test_reading_covers_both_issues_without_double_messages_and_issue_overrides(self):
+        pages = {30: [{"id": 5, "created_at": "b"}, {"id": 9, "created_at": "d"}], 25: [{"id": 3, "created_at": "a"}, {"id": 5, "created_at": "b"}]}
+        asked = []
+        original = pf.am.fetch_page
+        pf.am.fetch_page = lambda repo, number, since: asked.append(number) or pages[number]
+        self.addCleanup(setattr, pf.am, "fetch_page", original)
+        self.use_cache([30, 25])
+        self.assertEqual([c["id"] for c in pf.fetch("s")], [3, 5, 9])  # both issues, id order, id 5 once
+        self.assertEqual(asked, [30, 25])
+        asked.clear()
+        self.assertEqual([c["id"] for c in pf.fetch("s", issue=25)], [3, 5])  # an explicit issue overrides
+        self.assertEqual(asked, [25])

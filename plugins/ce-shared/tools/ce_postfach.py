@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes to the Postfach (cubeescape-nexogen#16) so sessions can talk to each other without remembering the format (0.14).
+"""Writes to the Postfach (cubeescape-nexogen, label `postfach`, else #16) so sessions can talk to each other without remembering the format (0.14).
 
     ./ce session say --to Sightline "Frage am Bild" "KG03: Griff links oder rechts?"   # sender from the branch
     ./ce session say --to "TG 0.23 „Livery“" --model "Opus 5.5, high" "Anker" "y −0,25 m"
@@ -103,8 +103,9 @@ def sn_git(repo: Path, *args: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def post(body: str, repo: str = REPO, issue: int = MAILBOX, runner=subprocess.run) -> dict:
+def post(body: str, repo: str = REPO, issue: int | None = None, runner=subprocess.run) -> dict:
     """Posts the comment with `gh api` (same transport as the watcher); returns GitHub's answer (id, html_url). Raises on failure."""
+    issue = issue or am.mailboxes(repo)[0]  # 0.43.1: writing goes to the current Postfach only
     result = runner(["gh", "api", "-X", "POST", f"repos/{repo}/issues/{issue}/comments", "--input", "-"],
                     input=json.dumps({"body": body}), capture_output=True, text=True, **am.UTF8, timeout=60)
     if result.returncode:
@@ -117,18 +118,19 @@ def send(body: str, repo_dir: Path, dry_run: bool = False, runner=subprocess.run
     if dry_run:
         print(body, end="", file=out)
         return 0
+    number = am.mailboxes()[0]  # once: the error texts name the issue the text belongs into
     if not on_github(repo_dir):
-        print("Postfach: kein GitHub-Origin oder CE_MAILBOX=0 - nicht gesendet. Text zum Einfügen in cubeescape-nexogen#16:\n", file=err)
+        print(f"Postfach: kein GitHub-Origin oder CE_MAILBOX=0 - nicht gesendet. Text zum Einfügen in cubeescape-nexogen#{number}:\n", file=err)
         print(body, end="", file=err)
         return 1
     try:
-        answer = post(body, runner=runner)
+        answer = post(body, issue=number, runner=runner)
     except subprocess.TimeoutExpired:
-        print("Postfach: keine Antwort von GitHub in 60 s - vor dem Einfügen in cubeescape-nexogen#16 prüfen, ob der Kommentar schon steht:\n", file=err)
+        print(f"Postfach: keine Antwort von GitHub in 60 s - vor dem Einfügen in cubeescape-nexogen#{number} prüfen, ob der Kommentar schon steht:\n", file=err)
         print(body, end="", file=err)
         return 1
     except (OSError, RuntimeError, ValueError) as error:
-        print(f"Postfach: nicht gesendet ({error}). Text zum Einfügen in cubeescape-nexogen#16:\n", file=err)
+        print(f"Postfach: nicht gesendet ({error}). Text zum Einfügen in cubeescape-nexogen#{number}:\n", file=err)
         print(body, end="", file=err)
         return 1
     print(f"Postfach: gesendet, Kommentar {answer.get('id')} {answer.get('html_url', '')}".rstrip(), file=out)
@@ -169,12 +171,9 @@ def sessions(comments: list) -> list:
     return sorted(seen.values(), key=lambda s: s["last_at"], reverse=True)
 
 
-def fetch(since: str, repo: str = REPO, issue: int = MAILBOX) -> list:
-    result = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/issues/{issue}/comments?per_page=100&since={since}"],
-                            capture_output=True, text=True, **am.UTF8, timeout=60)
-    if result.returncode:
-        raise RuntimeError(result.stderr.strip() or "gh api failed")
-    return json.loads(result.stdout.replace("][", ",") or "[]")
+def fetch(since: str, repo: str = REPO, issue: int | None = None) -> list:
+    """0.43.1: reads the current and the previous Postfach issue (`issue` fixes one), oldest comment first."""
+    return sorted(am.fetch_comments(repo, [issue] if issue else am.mailboxes(repo), since), key=lambda c: c["id"])
 
 
 def own_model(repo_dir: Path, sender: str = "", fetcher=None) -> str:
