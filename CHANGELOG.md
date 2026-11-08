@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.44.2 „Signpost“ – Patch postfach-testisolation (08.11.2026)
+
+- **`MonthlyPostfach` fragte am Mac das echte Postfach:** `mailboxes(now=time.time)` band die Uhr beim Definieren, das Patchen in `use_cache()` griff nicht, der Cache galt als alt und `gh` lieferte #83 statt 30 (CI ohne Anmeldung blieb grün). `now` und `runner` werden jetzt je Aufruf aufgelöst; der Test sperrt echte `gh`-Aufrufe, neuer Fall `test_patched_clock_and_runner_are_seen_per_call`, gegen 0.44.1 rot.
+
 ## 0.44.1 „Signpost“ – Patch richter-kernpfade (08.11.2026)
 
 - **`./ce judge` zählt `core_paths` der Basis:** Die Modellwahl liest `.ce-repo.json` › `core_paths` vom Basis-Ref (wie `merge-check`, nicht vom PR) und gibt einem Diff an einem dieser Pfade, Quellen von Umbenennungen eingeschlossen, `gpt-6.1-sol` mit dem Grund „Kernpfad laut … core_paths der Basis“. Nicht auswertbare `core_paths` stufen vorsichtshalber hoch; die Unity-Erkennung bleibt. Auslöser: In 0.44 bekam ein Diff an `ce_merge_check.py` Luna. Tests in `test_judge_routing.py` (`BaseCorePathsRoutingTests`).

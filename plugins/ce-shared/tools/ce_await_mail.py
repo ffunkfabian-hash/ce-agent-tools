@@ -463,12 +463,13 @@ def mailbox_cache() -> Path:
     return Path(os.environ.get("CE_POSTFACH_CACHE") or Path.home() / ".cache" / "ce-agent-tools" / "postfach.json")
 
 
-def mailboxes(repo: str = REPO, runner=subprocess.run, cache: Path | None = None, now=time.time, offline: bool = False) -> list:
+def mailboxes(repo: str = REPO, runner=None, cache: Path | None = None, now=None, offline: bool = False) -> list:
     """0.43.1: the Postfach issues, `[0]` is the current one (newest open issue with label `postfach`, the only one written to),
     `[1]` the one before it (read too, so nothing is lost at the turn of the month; without an older labelled issue: #16).
     `offline` (hooks that must not wait for the network) never asks gh: the cache as it is, else [16]. Kept for an hour in ~/.cache/ce-agent-tools/postfach.json; no such issue or gh unreachable: the last cached value, else [16]."""
     if repo != REPO:
         return [MAILBOX]
+    runner, now = runner or subprocess.run, now or time.time  # 0.44.2: looked up per call, so a patched clock or runner is seen
     try:
         path = cache or mailbox_cache()
         stored = read_json(path)
