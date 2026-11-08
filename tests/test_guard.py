@@ -759,8 +759,9 @@ class AgentModelTests(unittest.TestCase):
         (agents / "two-models.md").write_text("---\nname: two-models\nmodel: opus\nmodel: inherit\n---\n")
         (agents / "long-tag.md").write_text("---\n!!map\n!<tag:yaml.org,2002:str> name: long-tagged\nmodel: x\n---\n")
         (agents / "flow-lines.md").write_text("---\n{meta: x,\n name: flow-lines\n}\n---\n")  # ended by the next line
+        (agents / "braced.md").write_text("---\n!!map\ndescription: uses {x}\nname: braced\nmodel: x\n---\n")  # round 4
         for name in ("second", "nested", "str-keyed", "next-model", "comma,ed", "first", "twice", "two-models",
-                     "long-tagged", "flow-lines"):
+                     "long-tagged", "flow-lines", "braced"):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
         for name, model in (("general-purpose", "inherit"), ("doc-keeper", "sonnet"), ("mine", "opus")):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
@@ -774,7 +775,10 @@ class AgentModelTests(unittest.TestCase):
                   "sequence-explicit": "[? name : worker]", "flow-alias-key": "{*k: worker, name: x}",
                   "flow-folded": "{name: wor\n  ker, model: sonnet}",
                   "flow-continued": "{meta: x, name: wor\n  ker, model: sonnet}",  # judge round 3
-                  "flow-continued-left": "{meta: x,\n name: wor\nker}"}
+                  "flow-continued-left": "{meta: x,\n name: wor\nker}",
+                  "quoted-bracket": '{meta: "}", name: wor\n  ker, model: sonnet}',  # judge round 4
+                  "tag-continued": "!!map\n!!str name: wor\n  ker\nmodel: sonnet", "anchor-continued": "!!map\n&k name: wor\n  ker",
+                  "plain-closer": "!!map\ndescription: a }\n{name: wor\nker}"}
         for case, text in hidden.items():
             folder = Path(self.scratch.name) / case
             (folder / ".claude" / "agents").mkdir(parents=True)

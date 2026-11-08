@@ -36,7 +36,10 @@ FIELD = re.compile(r"^(['\"]?)(name|model)\1[ \t]*:[ \t]*(.*?)[ \t]*$", re.MULTI
 # flow mapping after `{` or `,`, also behind an anchor or a str tag; the value is read from the end of the match on
 KEY_START = r"(?:^[ \t]*(?:[-?][ \t]+)*|[{\[,][ \t]*)"
 STR_PROPERTIES = r"(?:(?:&\S+|!!str|!<tag:yaml\.org,2002:str>|!)(?:[ \t]+|$))*"  # anchors and tags that keep a string
-NAME_KEY = re.compile(KEY_START + STR_PROPERTIES + r"(?P<key>(['\"]?)name\2)[ \t]*:", re.MULTILINE)
+NAME_KEY = re.compile(KEY_START + r"(?P<entry>" + STR_PROPERTIES + r"(['\"]?)name\2)[ \t]*:", re.MULTILINE)
+# quoted scalars (opening after a space or an indicator, so `it's` is no quote) and comments: no flow brackets there
+QUOTED_OR_COMMENT = re.compile(r"(?:^|(?<=[\s{\[,:]))(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*')|(?:^|(?<=[ \t]))#.*$",
+                               re.MULTILINE)
 # a key this reader cannot read that may be `name` (judge rounds 1 and 2): escapes in a quoted key, an alias as key,
 # an explicit key `? …` anywhere (also `{? name: x}` in a flow mapping), a tag other than str on a key
 HIDDEN_KEY = re.compile(r"\"[^\"\n]*\\[^\"\n]*\"[ \t]*:|'[^'\n]*''[^'\n]*'[ \t]*:|(?:^|[\s{\[,])\*[^\s,\]}]+[ \t]*:"
@@ -62,7 +65,7 @@ class Unparsed:
 
 def name_values(text, match):
     """The names the scalar after a NAME_KEY match may be (anchors and str tags skipped; a plain one both as cut at a
-    flow indicator and as a whole, as this reader does not track flow context), None when this reader cannot be sure:
+    flow indicator and as a whole), None when this reader cannot be sure:
     another tag, an alias, a block or flow node, an escape, a plain scalar that goes on in the next line, a value on
     the next line."""
     end = text.find("\n", match.end())
@@ -78,16 +81,23 @@ def name_values(text, match):
     head = re.split(r"[,}\]]", whole, maxsplit=1)[0].strip()  # flow context: they end it
     if not head or head[0] in "*|>[{#!&@`%":
         return None
-    before = text[:match.start("key")]
-    if len(re.findall(r"[{\[]", before)) > len(re.findall(r"[}\]]", before)):  # in a flow collection (judge round 3)
-        follow = next((line.strip() for line in text[end + 1:].splitlines() if line.strip()), "")
-        if head != whole or follow[:1] in ("}", "]", ","):
-            return {head, whole}
-        return None  # not ended in this line nor at the start of the next: it may go on at any indentation
-    line_start = before.rfind("\n") + 1
-    if deeper_next_line(text, end, match.start("key") - line_start):
-        return None  # a plain scalar in block context goes on in a line indented beyond its key
+    follow = next((line.strip() for line in text[end + 1:].splitlines() if line.strip()), "")
+    if follow[:1] in ("", "}", "]", ",", "#"):
+        return {head, whole}  # nothing, a flow end or a comment follows: the scalar ends in its line
+    before = text[:match.start("entry")]
+    if flow_depth(QUOTED_OR_COMMENT.sub("", before)):  # judge rounds 3/4: in a flow collection
+        return {head, whole} if head != whole else None  # not ended in its line: it may go on at any indentation
+    if deeper_next_line(text, end, match.start("entry") - (before.rfind("\n") + 1)):
+        return None  # block context: it goes on in a line indented beyond its entry (tag and anchor included)
     return {head, whole}
+
+
+def flow_depth(text):
+    """Open `{`/`[` in text without quotes and comments; a closer without opener (plain text) never goes below 0."""
+    depth = 0
+    for char in re.findall(r"[{}\[\]]", text):
+        depth = depth + 1 if char in "{[" else max(0, depth - 1)
+    return depth
 
 
 def deeper_next_line(text, end, column):
