@@ -27,6 +27,10 @@ or dropped when splitting (test with a large diff).
 exactly where a diff has a real defect: at least six cut runs on 06.11., 3 of 3 cut with two seeded bugs; `low` stayed under 1300 of 2048 tokens and
 named both bugs in 3 of 3 runs (docs: README › Erfahrungen). A run without a usable verdict says so in a line "kein verwertbares Urteil".
 
+0.44.1: the model choice also reads `.ce-repo.json` › core_paths of the base ref (not the PR's, as ce_merge_check does) and gives
+sol to a diff that touches one of them, rename sources included (diff_of lists them, --no-renames); unreadable core_paths there route up too. The Unity rules stay. diff_of reads names with -z: git C-quotes non-ASCII names, and
+a quoted name as pathspec matched nothing, so the file was silently missing from the reviewed diff.
+
 Exit 0 Freigabe, 1 Nachbessern (also: incomplete API verdict), 2 codex/API not usable before any paid call / nothing to review.
 """
 from __future__ import annotations
@@ -57,6 +61,7 @@ INFRASTRUCTURE = re.compile(
     r"(^|/)(ce_(?:check|contract|interfaces|judge|report|sync|nightly|lint|docs|api(?:_budget)?)|"
     r"heavy_lock|testplan|quick_check|check_docs|check_skills|guard|precommit|verify)(\.py|\.sh)?$|schema|contract", re.I)
 CORE_CANDIDATE = re.compile(r"^(?:Assets/Scripts/|Assets/Tests/Runner/|Packages/|ProjectSettings/)|\.asmdef$", re.I)
+CONFIG_NAME = ".ce-repo.json"  # (0.44.1) its core_paths at the base count as core paths, as in ce_merge_check
 LARGE_DIFF_LINES = 1500
 LARGE_DIFF_BYTES = 100_000
 API_MODEL = "opus"
@@ -92,12 +97,14 @@ def template() -> str:
 
 
 def diff_of(base: str, files, cwd) -> tuple[str, list[str]]:
-    names = [n for n in git("diff", "--name-only", base, cwd=cwd).splitlines() if n and not GENERATED.search(n)]
+    # (0.44.1) -z: names as they are, not C-quoted ("src/\303\244.py"), which as a pathspec matched nothing and dropped the file.
+    # --no-renames: a rename's source is listed too (a core path it leaves); with both in the pathspec the diff still shows the rename.
+    names = [n for n in git("diff", "--name-only", "--no-renames", "-z", base, cwd=cwd).split("\0") if n and not GENERATED.search(n)]
     if files:
         names = [n for n in names if any(n.startswith(f) for f in files)]
     if not names:
         return "", []
-    return git("diff", base, "--", *names, cwd=cwd), names
+    return git("--literal-pathspecs", "diff", base, "--", *names, cwd=cwd), names
 
 
 def _core_patterns(repo_root: Path | None) -> tuple[list[str], bool]:
@@ -130,7 +137,39 @@ def _core_patterns(repo_root: Path | None) -> tuple[list[str], bool]:
     return patterns, False
 
 
-def _route(diff: str, names: list[str], repo_root: Path | None = None) -> tuple[str, str]:
+def _base_core_paths(repo_root: Path | None, base: str | None) -> tuple[list, bool]:
+    """(core_paths of .ce-repo.json at the base ref, malformed?) - the base, so a pull request cannot take its own files off the list."""
+    if repo_root is None or not base:
+        return [], False
+    text = git("show", f"{base}:{CONFIG_NAME}", cwd=repo_root)
+    if not text.strip():  # no config at the base (or the base is unknown): nothing listed; an empty one is malformed
+        return [], git("cat-file", "-t", f"{base}:{CONFIG_NAME}", cwd=repo_root).strip() == "blob"
+    try:
+        config = json.loads(text)
+    except ValueError:
+        return [], True
+    if not isinstance(config, dict):
+        return [], True
+    if "core_paths" not in config:
+        return [], False
+    patterns = config["core_paths"]
+    return (patterns, False) if isinstance(patterns, list) else ([], True)  # null or a string is not a list either
+
+
+def _listed_core_hits(names: list[str], patterns: list) -> list[str] | None:
+    """Names of the diff (diff_of lists rename sources too) that match core_paths, matched exactly as ce_merge_check.core_hits
+    does; None if ce_merge_check does not load (the caller routes up rather than guessing the glob rules)."""
+    if not patterns:
+        return []
+    files = [{"filename": name} for name in names]
+    try:
+        import ce_merge_check  # lazy: only needed when the base lists core_paths
+    except Exception:  # fail toward the stronger judge, never stop the review
+        return None
+    return ce_merge_check.core_hits(files, patterns)
+
+
+def _route(diff: str, names: list[str], repo_root: Path | None = None, base: str | None = None) -> tuple[str, str]:
     lines = sum(1 for line in diff.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---")))
     if lines >= 300:
         return "sol", f"{lines} Diff-Zeilen (Schwelle 300)"
@@ -140,6 +179,13 @@ def _route(diff: str, names: list[str], repo_root: Path | None = None) -> tuple[
         return "sol", "bekannter Save-/Settings-Kernpfad (Offline-Fallback)"
     if any(INFRASTRUCTURE.search(name) for name in names):
         return "sol", "Prüf-, Paket-, Schema- oder Sperrinfrastruktur"
+    listed, listed_malformed = _base_core_paths(repo_root, base)
+    hits = _listed_core_hits(names, listed)
+    if hits:
+        more = f" (+{len(hits) - 1})" if len(hits) > 1 else ""
+        return "sol", f"Kernpfad laut {CONFIG_NAME} › core_paths der Basis {base}: {hits[0]}{more}"
+    if listed_malformed or hits is None:
+        return "sol", f"core_paths in {CONFIG_NAME} der Basis {base} nicht auswertbar; vorsichtshalber hochgestuft"
 
     patterns, malformed = _core_patterns(repo_root)
     if any(fnmatch.fnmatchcase(name, pattern) for name in names for pattern in patterns):
@@ -152,11 +198,12 @@ def _route(diff: str, names: list[str], repo_root: Path | None = None) -> tuple[
     return "luna", f"Routineänderung ({lines} Diff-Zeilen, kein erkannter Kern-/Vertragspfad)"
 
 
-def choose_model(diff: str, names: list[str], wanted: str | None, repo_root: Path | str | None = None) -> str:
+def choose_model(diff: str, names: list[str], wanted: str | None, repo_root: Path | str | None = None,
+                 base: str | None = None) -> str:
     if wanted:
         return wanted
     root = Path(repo_root) if repo_root is not None else None
-    return _route(diff, names, root)[0]
+    return _route(diff, names, root, base)[0]
 
 
 def _file_pieces(block: str, limit: int) -> list[str]:
@@ -434,7 +481,7 @@ def main(argv: list[str]) -> int:
         label = "Opus-Unteragent (Prompt unten)" if args.opus else "Opus über ./ce api" if way == "api" else "Codex"
         print(f"ce_judge: Weg: {label} – {way_reason}")
     args.api = way == "api"
-    automatic_model, routing_reason = _route(diff, names, cwd)
+    automatic_model, routing_reason = _route(diff, names, cwd, base)
     model = args.model or automatic_model
     if args.model:
         routing_reason = f"expliziter --model={args.model}; automatisch wäre {automatic_model} ({routing_reason})"

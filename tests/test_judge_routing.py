@@ -3,6 +3,7 @@ import json
 import contextlib
 import io
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -106,6 +107,138 @@ class JudgeRoutingTests(unittest.TestCase):
         model, reason = ce_judge._route("+x\n" * 300, ["src/a.py"])
         self.assertEqual(model, "sol")
         self.assertIn("Schwelle 300", reason)
+
+
+class BaseCorePathsRoutingTests(unittest.TestCase):
+    """0.44.1: core_paths of .ce-repo.json at the base count as core paths (incident 0.44: ce_merge_check.py got luna)."""
+
+    CORE = ["plugins/ce-shared/tools/ce_merge_check.py", "plugins/ce-shared/rules/*.md", "src/core/**", "docs/guarded/"]
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+                              cwd=self.root, check=True, capture_output=True, text=True).stdout
+
+    def make_repo(self, config):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.git("init", "-q", "-b", "main")
+        if config is not None:
+            text = config if isinstance(config, str) else json.dumps(config)
+            (self.root / ".ce-repo.json").write_text(text, encoding="utf-8")
+        (self.root / "README.md").write_text("x\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        return self.root
+
+    def route(self, path, diff="+small change", base="main"):
+        return ce_judge._route(diff, [path], self.root, base)
+
+    def test_listed_core_paths_route_to_sol(self):
+        self.make_repo({"core_paths": self.CORE})
+        for path in ("plugins/ce-shared/tools/ce_merge_check.py", "plugins/ce-shared/rules/commit-on-main.md",
+                     "src/core/deep/inner/loader.py", "docs/guarded/save.md"):
+            with self.subTest(path=path):
+                model, reason = self.route(path)
+                self.assertEqual(model, "sol")
+                self.assertIn("core_paths der Basis main", reason)
+                self.assertIn(path, reason)
+                self.assertEqual(ce_judge.choose_model("+small", [path], None, self.root, "main"), "sol")
+
+    def test_paths_outside_core_paths_stay_luna(self):
+        self.make_repo({"core_paths": self.CORE})
+        for path in ("plugins/ce-shared/tools/ce_session_name.py",   # same folder, not listed
+                     "plugins/ce-shared/rules/sub/extra.md",          # `*` stays inside the folder
+                     "plugins/ce-shared/tools/ce_merge_check.py.bak",  # exact name, not a prefix
+                     "src/corelib/a.py", "docs/guarded.md", "README.md"):
+            with self.subTest(path=path):
+                model, reason = self.route(path)
+                self.assertEqual(model, "luna")
+                self.assertIn("kein erkannter Kern-/Vertragspfad", reason)
+
+    def test_base_decides_not_the_pull_request(self):
+        self.make_repo({"core_paths": self.CORE})
+        self.git("checkout", "-q", "-b", "feature")
+        (self.root / ".ce-repo.json").write_text(json.dumps({"core_paths": ["other/*"]}), encoding="utf-8")
+        self.git("commit", "-q", "-am", "drop core path")
+        self.assertEqual(self.route("plugins/ce-shared/tools/ce_merge_check.py")[0], "sol")
+        self.assertEqual(self.route("other/x.py")[0], "luna")  # added only by the PR: not a core path of the base
+
+    def commit(self, message, files=(), moves=()):
+        for name, text in dict(files).items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text(text, encoding="utf-8")
+        for old, new in moves:
+            (self.root / new).parent.mkdir(parents=True, exist_ok=True)
+            self.git("mv", old, new)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+
+    def test_rename_out_of_core_path_counts(self):
+        # real git: --name-only lists only the target, and a pathspec without the source loses the rename
+        self.make_repo({"core_paths": self.CORE})
+        source = "src/core/\u00e4.py"
+        self.commit("core files", {"src/core/a.py": "a = 1\n" * 5, source: "b = 2\n" * 5})
+        self.git("checkout", "-q", "-b", "feature")
+        self.commit("move out", moves=(("src/core/a.py", "src/a.py"), (source, "src/\u00e4.py")))
+        diff, names = ce_judge.diff_of("main", None, self.root)
+        self.assertEqual(sorted(names), sorted(["src/a.py", "src/core/a.py", "src/\u00e4.py", source]))
+        self.assertIn("rename from src/core/a.py", diff)  # both in the pathspec: the judge still sees a rename
+        model, reason = ce_judge._route(diff, names, self.root, "main")
+        self.assertEqual(model, "sol")
+        self.assertIn("core_paths der Basis main: src/core/a.py (+1)", reason)
+
+    def test_non_ascii_and_glob_names_reach_the_diff(self):
+        # git C-quotes non-ASCII names ("src/core/\\303\\244.py"); as a pathspec that matched nothing and the file was dropped
+        self.make_repo({"core_paths": self.CORE})
+        self.git("checkout", "-q", "-b", "feature")
+        self.commit("new files", {"src/core/\u00e4.py": "x = 1\n", "src/core/[x].py": "y = 2\n", "docs/\u00fc.md": "z\n"})
+        diff, names = ce_judge.diff_of("main", None, self.root)
+        self.assertEqual(sorted(names), ["docs/\u00fc.md", "src/core/[x].py", "src/core/\u00e4.py"])
+        for line in ("+x = 1", "+y = 2", "+z"):
+            self.assertIn(line, diff)
+        model, reason = ce_judge._route(diff, names, self.root, "main")
+        self.assertEqual(model, "sol")
+        self.assertIn("core_paths", reason)
+        self.assertEqual(ce_judge._route(diff, ["docs/\u00fc.md"], self.root, "main")[0], "luna")
+
+    def test_no_config_or_no_core_paths_keeps_old_routing(self):
+        for config in (None, {"name": "x"}, {"core_paths": []}):
+            with self.subTest(config=config):
+                self.make_repo(config)
+                self.assertEqual(self.route("plugins/ce-shared/tools/ce_merge_check.py")[0], "luna")
+                self.assertEqual(self.route("Assets/Scripts/Core/SaveSystem.cs")[0], "sol")  # Unity rules stay
+        self.assertEqual(self.route("src/core/a.py", base="no-such-ref")[0], "luna")
+        self.assertEqual(ce_judge._route("+small", ["src/core/a.py"], self.root)[0], "luna")  # no base given
+
+    def test_unreadable_core_paths_route_up(self):
+        for config in ("{not json", json.dumps({"core_paths": "src/core/**"}), json.dumps({"core_paths": None}),
+                       json.dumps(["src/core/**"]), "", "  \n"):
+            with self.subTest(config=config):
+                self.make_repo(config)
+                model, reason = self.route("README.md")
+                self.assertEqual(model, "sol")
+                self.assertIn("nicht auswertbar", reason)
+
+    def test_merge_check_not_loadable_routes_up(self):
+        self.make_repo({"core_paths": self.CORE})
+        with mock.patch.dict(sys.modules, {"ce_merge_check": None}):
+            model, reason = self.route("README.md")
+        self.assertEqual(model, "sol")
+        self.assertIn("nicht auswertbar", reason)
+
+    def test_main_names_core_path_for_the_incident(self):
+        self.make_repo({"core_paths": self.CORE})
+        self.git("checkout", "-q", "-b", "feature")
+        target = self.root / "plugins" / "ce-shared" / "tools" / "ce_merge_check.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("x = 1\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "touch core")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(ce_judge.main(["--repo", str(self.root), "--base", "main", "--codex", "--dry-run"]), 0)
+        self.assertIn("Richter sol", output.getvalue())
+        self.assertIn("core_paths der Basis main: plugins/ce-shared/tools/ce_merge_check.py", output.getvalue())
 
 
 if __name__ == "__main__":
