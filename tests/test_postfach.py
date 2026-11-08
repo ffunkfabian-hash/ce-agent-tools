@@ -445,6 +445,22 @@ class MonthlyPostfach(unittest.TestCase):
         original = pf.am.time.time
         pf.am.time.time = lambda: self.now
         self.addCleanup(setattr, pf.am.time, "time", original)
+        # 0.44.2: a real gh call would reach the live Postfach (on a signed-in Mac #83): fail loudly instead
+        def no_real_gh(command, **kwargs):
+            raise AssertionError(f"echter Aufruf im Test: {command}")
+        original_run = pf.am.subprocess.run
+        pf.am.subprocess.run = no_real_gh
+        self.addCleanup(setattr, pf.am.subprocess, "run", original_run)
+
+    def test_patched_clock_and_runner_are_seen_per_call(self):
+        """0.44.2: `now=time.time` as default was bound once, use_cache() then patched nothing and the Mac asked GitHub"""
+        self.use_cache([30, 25])
+        self.assertEqual(am.mailboxes(), [30, 25])  # fresh by the patched clock: no gh call (no_real_gh would raise)
+        self.now += 4000
+        fake = Fake(stdout=json.dumps([self.issue(41), self.issue(30)]))
+        pf.am.subprocess.run = fake
+        self.assertEqual(am.mailboxes(cache=self.cache), [41, 30])
+        self.assertEqual(len(fake.calls), 1)
 
     def test_say_writes_only_to_the_current_issue(self):
         self.use_cache([30, 25])
