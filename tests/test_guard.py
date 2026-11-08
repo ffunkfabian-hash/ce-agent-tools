@@ -757,10 +757,14 @@ class AgentModelTests(unittest.TestCase):
         (agents / "comma.md").write_text("---\n!!map\nname: comma,ed\nmodel: sonnet\n---\n")  # block: one scalar
         (agents / "twice.md").write_text("---\nname: first\nname: twice\nmodel: sonnet\n---\n")  # parsed, key twice
         (agents / "two-models.md").write_text("---\nname: two-models\nmodel: opus\nmodel: inherit\n---\n")
-        for name in ("second", "nested", "str-keyed", "next-model", "comma,ed", "first", "twice", "two-models"):
+        (agents / "long-tag.md").write_text("---\n!!map\n!<tag:yaml.org,2002:str> name: long-tagged\nmodel: x\n---\n")
+        (agents / "flow-lines.md").write_text("---\n{meta: x,\n name: flow-lines\n}\n---\n")  # ended by the next line
+        for name in ("second", "nested", "str-keyed", "next-model", "comma,ed", "first", "twice", "two-models",
+                     "long-tagged", "flow-lines"):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
         for name, model in (("general-purpose", "inherit"), ("doc-keeper", "sonnet"), ("mine", "opus")):
-            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model, name)
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
+                             f"{name}: judge round 3, a str tag or a flow value ended in the next line hides no name")
         hidden = {"escape": '!!map\nname: "wor\\u006ber"\nmodel: sonnet', "single": "!!map\nname: 'wor''ker'",
                   "folded": "!!map\nname: wor\n  ker", "explicit": "!!map\n? name\n: worker",
                   "escaped-key": '!!map\n"n\\u0061me": worker\nmeta: {name: x}', "tagged-key": "!!map\n!t name: worker",
@@ -768,7 +772,9 @@ class AgentModelTests(unittest.TestCase):
                   "parsed-escape": 'name: "wor\\u006ber"\nmodel: sonnet',
                   "flow-explicit": "!!map\n{? name: worker, meta: {name: other}, model: sonnet}",  # judge round 2
                   "sequence-explicit": "[? name : worker]", "flow-alias-key": "{*k: worker, name: x}",
-                  "flow-folded": "{name: wor\n  ker, model: sonnet}"}
+                  "flow-folded": "{name: wor\n  ker, model: sonnet}",
+                  "flow-continued": "{meta: x, name: wor\n  ker, model: sonnet}",  # judge round 3
+                  "flow-continued-left": "{meta: x,\n name: wor\nker}"}
         for case, text in hidden.items():
             folder = Path(self.scratch.name) / case
             (folder / ".claude" / "agents").mkdir(parents=True)

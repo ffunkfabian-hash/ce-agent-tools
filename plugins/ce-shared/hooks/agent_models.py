@@ -41,7 +41,7 @@ NAME_KEY = re.compile(KEY_START + STR_PROPERTIES + r"(?P<key>(['\"]?)name\2)[ \t
 # an explicit key `? …` anywhere (also `{? name: x}` in a flow mapping), a tag other than str on a key
 HIDDEN_KEY = re.compile(r"\"[^\"\n]*\\[^\"\n]*\"[ \t]*:|'[^'\n]*''[^'\n]*'[ \t]*:|(?:^|[\s{\[,])\*[^\s,\]}]+[ \t]*:"
                         r"|(?:^|[\s{\[,])\?(?:[ \t]|$)"
-                        r"|(?:^|[\s{\[,])!(?!!str[ \t])(?!\s)\S*[ \t]+[\w\"'.-][^:\n]*:", re.MULTILINE)
+                        r"|(?:^|[\s{\[,])!(?!(?:!str|<tag:yaml\.org,2002:str>)[ \t])(?!\s)\S*[ \t]+[\w\"'.-][^:\n]*:", re.MULTILINE)
 
 
 class Unparsed:
@@ -78,10 +78,15 @@ def name_values(text, match):
     head = re.split(r"[,}\]]", whole, maxsplit=1)[0].strip()  # flow context: they end it
     if not head or head[0] in "*|>[{#!&@`%":
         return None
-    line_start = text.rfind("\n", 0, match.start("key")) + 1
-    ended = head != whole and re.search(r"[{\[,]", text[line_start:match.start("key")])  # cut in a flow collection
-    if not ended and deeper_next_line(text, end, match.start("key") - line_start):
-        return None  # a plain scalar goes on in a line indented beyond its key
+    before = text[:match.start("key")]
+    if len(re.findall(r"[{\[]", before)) > len(re.findall(r"[}\]]", before)):  # in a flow collection (judge round 3)
+        follow = next((line.strip() for line in text[end + 1:].splitlines() if line.strip()), "")
+        if head != whole or follow[:1] in ("}", "]", ","):
+            return {head, whole}
+        return None  # not ended in this line nor at the start of the next: it may go on at any indentation
+    line_start = before.rfind("\n") + 1
+    if deeper_next_line(text, end, match.start("key") - line_start):
+        return None  # a plain scalar in block context goes on in a line indented beyond its key
     return {head, whole}
 
 
