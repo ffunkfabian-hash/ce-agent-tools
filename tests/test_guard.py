@@ -716,6 +716,136 @@ class AgentModelTests(unittest.TestCase):
         self.assertEqual(agent_models.call_model({"subagent_type": "shadow"}, str(other), self.home), "unknown")
         self.assertEqual(self.verdict(dict(agent(subagent_type="shadow"), cwd=str(other))), {}, "fail open")
 
+    def test_an_unparsed_frontmatter_under_another_file_name_fails_open(self):
+        """0.46 Nameplate (judge 5 of 0.45): a tag `!!map` or anchor `&definition` on top made the frontmatter unparsed,
+        and as the file stem was not the name, `worker` inherited and was blocked although its definition names sonnet.
+        An unparsed file is "unknown" for its stem and every name a `name` key in it shows, and for every name only when
+        a `name` value cannot be read; built-ins and other definitions keep their verdict."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "profile.md").write_text("---\n!!map\nname: worker\nmodel: sonnet\n---\nbody\n")
+        (agents / "anchor.md").write_text("---\n&definition\nname: anchored\nmodel: sonnet\n---\n")
+        (agents / "quoted-tag.md").write_text("---\n!!map\n  'name': \"tagged-quoted\"  # x\n  model: haiku\n---\n")
+        (agents / "flow-file.md").write_text("---\n{\"name\": \"flow-worker\", model: opus}\n---\n")
+        (agents / "value.md").write_text("---\nname: &n valued\nmodel: sonnet\n---\n")  # a parsed mapping, anchored name
+        for name in ("worker", "anchored", "tagged-quoted", "flow-worker", "valued"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
+            self.assertEqual(self.verdict(dict(agent(subagent_type=name), cwd=sub)), {}, f"{name}: no block")
+        for name, model in (("general-purpose", "inherit"), ("Explore", "inherit"), ("nobody", "inherit"),
+                            ("doc-keeper", "sonnet"), ("lazy", "inherit"), ("mine", "opus")):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
+                             f"{name}: a readable name elsewhere is no reason for unknown")
+        self.assertTrue(denied(self.verdict(dict(agent(subagent_type="general-purpose"), cwd=sub))))
+        self.assertTrue(denied(self.verdict(dict(agent(subagent_type="worke"), cwd=sub))), "only the whole name")
+        other = Path(self.scratch.name) / "aliased"
+        (other / ".claude" / "agents").mkdir(parents=True)
+        (other / ".claude" / "agents" / "alias.md").write_text("---\n!!map\nname: *who\nmodel: sonnet\n---\n")
+        for name in ("someone", "general-purpose"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, str(other), self.home), "unknown",
+                             f"{name}: a name not read here may be any name, like an unreadable file")
+        self.assertEqual(agent_models.call_model({"subagent_type": "mine"}, str(other), self.home), "unknown",
+                         "the unreadable name sits before the user definition")
+
+    def test_names_the_reader_cannot_be_sure_of_fail_open(self):
+        """0.46 judge round 1: a second `name` key in one line, a str tag on the key, YAML escapes, a plain scalar that
+        goes on in the next line, a hidden key - each was "inherit" for `worker` under another file name."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "two.md").write_text("---\n{meta: {name: nested}, name: second, model: sonnet}\n---\n")
+        (agents / "str-key.md").write_text("---\n!!map\n!!str name: str-keyed\nmodel: sonnet\n---\n")
+        (agents / "next-model.md").write_text("---\nname: next-model\nmodel:\n  sonnet\n---\n")  # parsed, model below
+        (agents / "comma.md").write_text("---\n!!map\nname: comma,ed\nmodel: sonnet\n---\n")  # block: one scalar
+        (agents / "twice.md").write_text("---\nname: first\nname: twice\nmodel: sonnet\n---\n")  # parsed, key twice
+        (agents / "two-models.md").write_text("---\nname: two-models\nmodel: opus\nmodel: inherit\n---\n")
+        (agents / "long-tag.md").write_text("---\n!!map\n!<tag:yaml.org,2002:str> name: long-tagged\nmodel: x\n---\n")
+        (agents / "flow-lines.md").write_text("---\n{meta: x,\n name: flow-lines\n}\n---\n")  # ended by the next line
+        (agents / "braced.md").write_text("---\n!!map\ndescription: uses {x}\nname: braced\nmodel: x\n---\n")  # round 4
+        for name in ("second", "nested", "str-keyed", "next-model", "comma,ed", "first", "twice", "two-models",
+                     "long-tagged", "flow-lines", "braced"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
+        for name, model in (("general-purpose", "inherit"), ("doc-keeper", "sonnet"), ("mine", "opus")):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
+                             f"{name}: judge round 3, a str tag or a flow value ended in the next line hides no name")
+        hidden = {"escape": '!!map\nname: "wor\\u006ber"\nmodel: sonnet', "single": "!!map\nname: 'wor''ker'",
+                  "folded": "!!map\nname: wor\n  ker", "explicit": "!!map\n? name\n: worker",
+                  "escaped-key": '!!map\n"n\\u0061me": worker\nmeta: {name: x}', "tagged-key": "!!map\n!t name: worker",
+                  "tagged-value": "!!map\nname: !t worker", "no-name": "!!map\nmodel: sonnet",
+                  "parsed-escape": 'name: "wor\\u006ber"\nmodel: sonnet',
+                  "flow-explicit": "!!map\n{? name: worker, meta: {name: other}, model: sonnet}",  # judge round 2
+                  "sequence-explicit": "[? name : worker]", "flow-alias-key": "{*k: worker, name: x}",
+                  "flow-folded": "{name: wor\n  ker, model: sonnet}",
+                  "flow-continued": "{meta: x, name: wor\n  ker, model: sonnet}",  # judge round 3
+                  "flow-continued-left": "{meta: x,\n name: wor\nker}",
+                  "quoted-bracket": '{meta: "}", name: wor\n  ker, model: sonnet}',  # judge round 4
+                  "tag-continued": "!!map\n!!str name: wor\n  ker\nmodel: sonnet", "anchor-continued": "!!map\n&k name: wor\n  ker",
+                  "plain-closer": "!!map\ndescription: a }\n{name: wor\nker}"}
+        for case, text in hidden.items():
+            folder = Path(self.scratch.name) / case
+            (folder / ".claude" / "agents").mkdir(parents=True)
+            (folder / ".claude" / "agents" / "profile.md").write_text(f"---\n{text}\n---\n")
+            for name in ("worker", "general-purpose"):
+                self.assertEqual(agent_models.call_model({"subagent_type": name}, str(folder), self.home), "unknown",
+                                 f"{case}: the name may be {name}")
+
+    def test_a_positive_list_decides_what_an_unparsed_frontmatter_may_hide(self):
+        """0.46 judge round 5: a quoted key with an escaped line break (`"na\\` / `me": worker`) is `name` for YAML and
+        gave "inherit" for worker; ` ? ` in a comment or a description opened every name. Only the narrow YAML of
+        plain_yaml() keeps the other names closed; comments and text in values open nothing. Judge round 6:
+        `# {name: general-purpose}` in a comment or a string made general-purpose "unknown". Rounds 7 and 8: forms YAML
+        rejects (`&a &b`, `w?x` and `?foo` in a flow mapping, `&a#b`) were read as plain and kept the other names closed.
+        Round 9: so were C1 controls and U+FFFE, round 10 a tab after `-` or before a blank or comment line."""
+        import agent_models
+        agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
+        (agents / "asked.md").write_text('---\n!!map\n# Why ? now: {x}\nname: helper\ndescription: "Why ? now: {x}"\n'
+                                         "model: sonnet\n---\n")
+        (agents / "plain-text.md").write_text("---\n!!map\nname: plain-helper\ndescription: Why ? now, uses {x} and "
+                                              "http://x  # note: {y} ?\ntools:\n  - Read\n  - Grep\nmeta:\n  colour: red"
+                                              "\n---\n")
+        (agents / "single.md").write_text("---\n&d\nname: 'single-helper'  # a: ? {x}\ntools: [Read, Grep]\n---\n")
+        (agents / "said.md").write_text('---\n!!map\nname: said  # {name: general-purpose}\n# - name: Explore\n'
+                                        'description: "{name: general-purpose}"\nmeta: {note: \'x, name: nobody\'}\n---\n')
+        for name in ("helper", "plain-helper", "single-helper", "said"):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
+        for name, model in (("general-purpose", "inherit"), ("Explore", "inherit"), ("nobody", "inherit"),
+                            ("doc-keeper", "sonnet"), ("mine", "opus")):
+            self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
+                             f"{name}: a comment or a string with ?, {{x}}, : or a `name` key hides no name (round 6)")
+        self.assertTrue(denied(self.verdict(dict(agent(subagent_type="general-purpose"), cwd=sub))))
+        hidden = {"escaped-line-key": ('"na\\\nme": worker\nmeta: {name: other}\nmodel: sonnet', "worker"),
+                  "escaped-line-key-tagged": ('!!map\n"na\\\nme": worker\nmeta: {name: other}', "worker"),
+                  "line-separator": ("!!map\nmeta: {name: other}\ndescription: x\u2028name: worker", "worker"),
+                  "closer-continues": ("!!map\nname : worker\n  }\nmodel: sonnet", "worker }"),  # YAML: "worker }"
+                  # judge round 7: two anchors or two tags on a node are no YAML; round 8: libyaml ends a flow plain
+                  # scalar at `?`
+                  "two-anchors": ("!!map\nname: helper\nmodel: &a &b sonnet", "helper"),
+                  "two-tags": ("!!map\nname: helper\nmodel: !!str !!str sonnet", "helper"),
+                  "two-anchors-on-top": ("&a &b\nname: helper", "helper"),
+                  "two-tags-on-top": ("!!map !!map\nname: helper", "helper"),
+                  "flow-question": ("{name: helper, description: w?x}", "helper"),
+                  # judge round 8: more forms libyaml rejects, and a `name` YAML reads as null
+                  "flow-question-first": ("{name: helper, description: ?foo}", "helper"),
+                  "flow-colon-first": ("{name: helper, description: :foo}", "helper"),
+                  "anchor-hash": ("!!map\nname: helper\nmodel: &a#b sonnet", "helper"),
+                  "anchor-bang": ("!!map\nname: helper\nmodel: &a!b sonnet", "helper"),
+                  "anchor-umlaut": ("!!map\nname: helper\nmodel: &\u00e4 sonnet", "helper"),
+                  "flow-colon-comma": ("{meta:,name: helper}", "helper"),
+                  "null-name": ("!!map\nname: ~\nmodel: sonnet", "~"),
+                  # judge round 9: libyaml reads only c-printable characters, not C1 controls nor U+FFFE/U+FFFF
+                  "c1-control": ("!!map\nname: helper\ndescription: x\u0090y", "helper"),
+                  "non-character": ("!!map\nname: helper\ndescription: x\ufffey", "helper"),
+                  # round 10: nor a tab after a `-` or before a blank or comment line in a block
+                  "tab-after-dash": ("!!map\nname: helper\ntools:\n- \tRead", "helper"),
+                  "tab-before-comment": ("!!map\nname: helper\n\t# c\nmodel: sonnet", "helper"),
+                  "tab-blank-line": ("!!map\nname: helper\n\t\nmodel: sonnet", "helper")}
+        for case, (text, name) in hidden.items():
+            folder = Path(self.scratch.name) / case
+            (folder / ".claude" / "agents").mkdir(parents=True)
+            (folder / ".claude" / "agents" / "profile.md").write_text(f"---\n{text}\n---\n", encoding="utf-8")
+            for asked in (name, "general-purpose"):
+                self.assertEqual(agent_models.call_model({"subagent_type": asked}, str(folder), self.home), "unknown",
+                                 f"{case}: the name may be {asked}")
+                self.assertEqual(self.verdict(dict(agent(subagent_type=asked), cwd=str(folder))), {}, case)
+
     def test_an_unreadable_definition_fails_open(self):
         """judge 1: a definition that cannot be read may be the one asked for - unknown, so the call passes."""
         sub = str(self.repo / "sub")
