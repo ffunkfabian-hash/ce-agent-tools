@@ -41,7 +41,7 @@ NAME_KEY = re.compile(KEY_START + r"(?P<entry>" + STR_PROPERTIES + r"(['\"]?)nam
 # 0.46 judge round 5: the narrow YAML plain_yaml() reads, with the whole value of every `name` key in its line; any
 # other form (escapes, explicit keys, aliases, block scalars, other tags, multi-line scalars, a value on the next line,
 # YAML errors) may hide every name.
-ANCHOR = r"&[^\s,\[\]{}]+"
+ANCHOR = r"&[A-Za-z0-9_-]+"  # judge round 8: as libyaml has it, not `&a#b`, `&a!b`, `&ä`
 STR_TAG = r"(?:!!str|!<tag:yaml\.org,2002:str>)"
 MAP_TAG = r"(?:!!map|!<tag:yaml\.org,2002:map>)"
 
@@ -53,16 +53,18 @@ def one_each(tag):
 
 NODE_PROPS = one_each(STR_TAG)  # anchor and str tag before a node
 QUOTED = r"\"[^\"\\\n]*\"|'[^'\n]*'(?!')"  # closed in its line, without an escape (`\` or `''`)
-FIRST = r"(?:[^\s\-?:,\[\]{}#&*!|>'\"%@`]|[-?:](?=[^\s,\[\]{}]))"  # a plain scalar starts with no indicator
+FIRST = r"[^\s\-?:,\[\]{}#&*!|>'\"%@`]"  # a plain scalar starts with no indicator (round 8: nor with - ? :)
 END = r"[ \t]*(?:(?<=[ \t])#[^\n]*)?(?:\n|\Z)"  # the rest of a line: spaces and a comment after a space
 LINE_END = re.compile(END)
 TOP_PROPS = re.compile(rf"(?:{ANCHOR}(?:[ \t]+{MAP_TAG})?|{MAP_TAG}(?:[ \t]+{ANCHOR})?)" + END)  # alone on top
 ITEM = re.compile(r"-[ \t]+(?=[^\s#])")
 BLOCK_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t]|\n|\Z)")
-FLOW_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t,\]}]|\n|\Z)")
+FLOW_KEY = BLOCK_KEY  # judge round 8: libyaml rejects `{meta:,name: x}`, a space follows the `:` in flow too
 BLOCK_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#\n]|:(?=\S)|(?<=\S)#)*)")
 FLOW_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#,\[\]{}\n?]|(?<=\S)#)*)")  # libyaml: no ?
 FLOW_PROPS = re.compile(NODE_PROPS + r"(?=[{\[])")
+# a plain scalar YAML (1.1 or 1.2) may resolve to no string: null, bool, number, date (judge round 8: `name: ~`)
+NOT_STR = re.compile(r"(?i)~|null|true|false|yes|no|on|off|y|n|[-+]?\.(?:inf|nan)|[-+.]?\d.*")
 SPACES = re.compile(r"[ \t]*(?:(?<=[ \t])#[^\n]*)?")  # spaces and a comment, within the line
 GAP = re.compile(r"(?:[ \t\n]|(?<=\s)#[^\n]*)*")  # spaces, line breaks and comments
 LINE_BREAKS = re.compile("[\r\x85\u2028\u2029\ufeff\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # YAML 1.1 breaks, controls
@@ -128,6 +130,8 @@ def scalar_value(found, names):
     need(found)
     if names is not None:
         value = unquoted(found.group(1))
+        if value == found.group(1).strip() and NOT_STR.fullmatch(value.strip()):
+            raise NotPlain  # a plain `name` that is no string
         names.update(need({value, value.strip()} - {""}))
     return found.end()
 
