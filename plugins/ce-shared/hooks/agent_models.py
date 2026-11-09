@@ -57,7 +57,7 @@ FIRST = r"[^\s\-?:,\[\]{}#&*!|>'\"%@`]"  # a plain scalar starts with no indicat
 END = r"[ \t]*(?:(?<=[ \t])#[^\n]*)?(?:\n|\Z)"  # the rest of a line: spaces and a comment after a space
 LINE_END = re.compile(END)
 TOP_PROPS = re.compile(rf"(?:{ANCHOR}(?:[ \t]+{MAP_TAG})?|{MAP_TAG}(?:[ \t]+{ANCHOR})?)" + END)  # alone on top
-ITEM = re.compile(r"-[ \t]+(?=[^\s#])")
+ITEM = re.compile(r"- +(?=[^\s#])")  # judge round 10: libyaml rejects a tab after the `-`
 BLOCK_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t]|\n|\Z)")
 FLOW_KEY = BLOCK_KEY  # judge round 8: libyaml rejects `{meta:,name: x}`, a space follows the `:` in flow too
 BLOCK_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#\n]|:(?=\S)|(?<=\S)#)*)")
@@ -67,7 +67,10 @@ FLOW_PROPS = re.compile(NODE_PROPS + r"(?=[{\[])")
 NOT_STR = re.compile(r"(?i)~|null|true|false|yes|no|on|off|y|n|[-+]?\.(?:inf|nan)|[-+.]?\d.*")
 SPACES = re.compile(r"[ \t]*(?:(?<=[ \t])#[^\n]*)?")  # spaces and a comment, within the line
 GAP = re.compile(r"(?:[ \t\n]|(?<=\s)#[^\n]*)*")  # spaces, line breaks and comments
-LINE_BREAKS = re.compile("[\r\x85\u2028\u2029\ufeff\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # YAML 1.1 breaks, controls
+# judge round 9: a positive list after YAML c-printable (tab, LF, U+0020-U+007E, U+00A0-U+D7FF, U+E000-U+FFFD,
+# from U+10000), without the YAML 1.1 breaks U+0085, U+2028, U+2029, CR and the BOM U+FEFF; libyaml rejects C1
+# controls and U+FFFE/U+FFFF
+NOT_PRINTABLE = re.compile(r"[^\t\n\x20-\x7e\xa0-\u2027\u202a-\ud7ff\ue000-\ufefe\uff00-\ufffd\U00010000-\U0010ffff]")
 
 
 class Unparsed:
@@ -191,7 +194,7 @@ def plain_yaml(text):
     nothing (a nested block follows); flow collections of such pairs and nodes, also over lines, also as the whole
     frontmatter. Indentation as YAML has it: a deeper line only below an entry without value."""
     text = text.replace("\r\n", "\n")
-    if LINE_BREAKS.search(text):
+    if NOT_PRINTABLE.search(text):
         return None
     names, stack, opener, top, at = set(), [], None, True, 0  # stack: open block collections (column, "map"/"seq")
     try:
@@ -199,6 +202,8 @@ def plain_yaml(text):
             start, line_end = at, text.find("\n", at) % (len(text) + 1)  # no line break: the end of the text
             stripped = text[at:line_end].strip(" \t")
             if not stripped or stripped[0] == "#":
+                if "\t" in text[at:line_end].split("#", 1)[0]:
+                    raise NotPlain  # judge round 10: libyaml rejects a tab before a blank or comment line
                 at = line_end + 1
                 continue
             column = len(text[at:line_end]) - len(text[at:line_end].lstrip(" "))

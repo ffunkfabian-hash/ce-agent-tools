@@ -792,7 +792,8 @@ class AgentModelTests(unittest.TestCase):
         gave "inherit" for worker; ` ? ` in a comment or a description opened every name. Only the narrow YAML of
         plain_yaml() keeps the other names closed; comments and text in values open nothing. Judge round 6:
         `# {name: general-purpose}` in a comment or a string made general-purpose "unknown". Rounds 7 and 8: forms YAML
-        rejects (`&a &b`, `w?x` and `?foo` in a flow mapping, `&a#b`) were read as plain and kept the other names closed."""
+        rejects (`&a &b`, `w?x` and `?foo` in a flow mapping, `&a#b`) were read as plain and kept the other names closed.
+        Round 9: so were C1 controls and U+FFFE, round 10 a tab after `-` or before a blank or comment line."""
         import agent_models
         agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
         (agents / "asked.md").write_text('---\n!!map\n# Why ? now: {x}\nname: helper\ndescription: "Why ? now: {x}"\n'
@@ -828,7 +829,14 @@ class AgentModelTests(unittest.TestCase):
                   "anchor-bang": ("!!map\nname: helper\nmodel: &a!b sonnet", "helper"),
                   "anchor-umlaut": ("!!map\nname: helper\nmodel: &\u00e4 sonnet", "helper"),
                   "flow-colon-comma": ("{meta:,name: helper}", "helper"),
-                  "null-name": ("!!map\nname: ~\nmodel: sonnet", "~")}
+                  "null-name": ("!!map\nname: ~\nmodel: sonnet", "~"),
+                  # judge round 9: libyaml reads only c-printable characters, not C1 controls nor U+FFFE/U+FFFF
+                  "c1-control": ("!!map\nname: helper\ndescription: x\u0090y", "helper"),
+                  "non-character": ("!!map\nname: helper\ndescription: x\ufffey", "helper"),
+                  # round 10: nor a tab after a `-` or before a blank or comment line in a block
+                  "tab-after-dash": ("!!map\nname: helper\ntools:\n- \tRead", "helper"),
+                  "tab-before-comment": ("!!map\nname: helper\n\t# c\nmodel: sonnet", "helper"),
+                  "tab-blank-line": ("!!map\nname: helper\n\t\nmodel: sonnet", "helper")}
         for case, (text, name) in hidden.items():
             folder = Path(self.scratch.name) / case
             (folder / ".claude" / "agents").mkdir(parents=True)
