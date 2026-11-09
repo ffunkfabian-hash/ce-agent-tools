@@ -38,9 +38,9 @@ KEY_START = r"(?:^[ \t]*(?:[-?][ \t]+)*|[{\[,][ \t]*)"
 STR_PROPERTIES = r"(?:(?:&\S+|!!str|!<tag:yaml\.org,2002:str>|!)(?:[ \t]+|$))*"  # anchors and tags that keep a string
 NAME_KEY = re.compile(KEY_START + r"(?P<entry>" + STR_PROPERTIES + r"(['\"]?)name\2)[ \t]*:", re.MULTILINE)
 
-# 0.46 judge round 5: the narrow YAML plain_yaml() accepts. Every `name` key in it is one NAME_KEY finds, with its whole
-# value in its line; any other form (escapes, explicit keys, aliases, block scalars, other tags, multi-line scalars, a
-# value on the next line, YAML errors) may hide every name.
+# 0.46 judge round 5: the narrow YAML plain_yaml() reads, with the whole value of every `name` key in its line; any
+# other form (escapes, explicit keys, aliases, block scalars, other tags, multi-line scalars, a value on the next line,
+# YAML errors) may hide every name.
 ANCHOR = r"&[^\s,\[\]{}]+"
 NODE_PROPS = r"(?:(?:" + ANCHOR + r"|!!str|!<tag:yaml\.org,2002:str>)[ \t]+)*"  # anchor and str tags before a node
 QUOTED = r"\"[^\"\\\n]*\"|'[^'\n]*'(?!')"  # closed in its line, without an escape (`\` or `''`)
@@ -63,11 +63,13 @@ class Unparsed:
     """frontmatter() of a readable file whose frontmatter is not read here (judge 4: never "inherit"). 0.46 Nameplate:
     it stands for its file stem and for every name a `name` key in it shows (judge 5 of 0.45: `!!map` or `&definition`
     on top of `name: worker` in profile.md blocked "worker"). `any` - it may be every definition, like an unreadable
-    file - unless it is plain_yaml() and shows a `name` key (judge round 5: a positive list)."""
+    file - unless it is plain_yaml() and shows a `name` key (judge round 5: a positive list). Its names are then those
+    of real `name` keys (judge round 6: not `# {name: general-purpose}` in a comment or a string)."""
 
     def __init__(self, text):
-        self.names = set().union(*(name_values(text, match) for match in NAME_KEY.finditer(text))) - {""}
-        self.any = not self.names or not plain_yaml(text)
+        names = plain_yaml(text)
+        self.any = not names  # not plain or no `name` key
+        self.names = names or set().union(*(name_values(text, match) for match in NAME_KEY.finditer(text))) - {""}
 
     def __repr__(self):
         return f"Unparsed(names={sorted(self.names)}, any={self.any})"
@@ -75,7 +77,7 @@ class Unparsed:
 
 def name_values(text, match):
     """The names the scalar after a NAME_KEY match may show (anchors and str tags skipped, quotes taken off; a plain
-    one both as cut at a flow indicator and as a whole). Exact for plain_yaml(), a best guess otherwise."""
+    one both as cut at a flow indicator and as a whole): a best guess where plain_yaml() does not read the file."""
     end = text.find("\n", match.end())
     rest = re.sub(r"\A[ \t]*" + STR_PROPERTIES, "", text[match.end():len(text) if end < 0 else end]).strip()
     if rest[:1] in ("'", '"'):
@@ -103,35 +105,41 @@ def need(found):
     return found
 
 
-def is_name(key):
-    return (key[1:-1] if key[:1] in ("'", '"') else key) == "name"
+def unquoted(scalar):
+    return scalar[1:-1] if scalar[:1] in ("'", '"') else scalar.strip()
 
 
-def scalar_value(found, name):
-    """A scalar of BLOCK_SCALAR or FLOW_SCALAR; a `name` needs a value that is not empty."""
+def name_of(key, names):
+    """The collector for the value of `key`: `names` for a `name` key, else None."""
+    return names if unquoted(key) == "name" else None
+
+
+def scalar_value(found, names):
+    """The end of a scalar of BLOCK_SCALAR or FLOW_SCALAR; the value of a `name` (not empty) goes to `names`."""
     need(found)
-    if name and not found.group(1).strip("'\" \t"):
-        raise NotPlain
+    if names is not None:
+        value = unquoted(found.group(1))
+        names.update(need({value, value.strip()} - {""}))
     return found.end()
 
 
-def flow(text, at):
+def flow(text, at, names):
     """The end of the flow collection opening at text[at]: mappings of FLOW_KEY pairs, sequences of nodes, nested; a
     line break only after an opening bracket or a comma and before a comma or a closing bracket (judge rounds 3/4)."""
     close = "}" if text[at] == "{" else "]"
     at = GAP.match(text, at + 1).end()
     while text[at:at + 1] != close:
-        name = False
+        name = None
         if close == "}":
             key = need(FLOW_KEY.match(text, at))
-            name, at = is_name(key.group(2)), SPACES.match(text, key.end()).end()
+            name, at = name_of(key.group(2), names), SPACES.match(text, key.end()).end()
         if text[at:at + 1] in (",", "}", "\n", ""):
-            if name or close == "]":
+            if name is not None or close == "]":
                 raise NotPlain  # a null `name` or an empty entry
         elif props := FLOW_PROPS.match(text, at):
-            if name:
+            if name is not None:
                 raise NotPlain  # a `name` that is no string
-            at = flow(text, props.end())
+            at = flow(text, props.end(), names)
         else:
             at = scalar_value(FLOW_SCALAR.match(text, at), name)
         at = SPACES.match(text, at).end()
@@ -144,24 +152,26 @@ def flow(text, at):
     return at + 1
 
 
-def block_value(text, at, name):
-    """(end of the line, whether the value is empty: a nested block may follow) for the value of a block entry."""
+def block_value(text, at, name, names):
+    """(end of the line, whether the value is empty: a nested block may follow) for the value of a block entry; `name`
+    collects the value of a `name` key."""
     if empty := LINE_END.match(text, at):
-        if name:
+        if name is not None:
             raise NotPlain  # a null `name` or a node in the next lines
         return empty.end(), True
     at = re.compile(r"[ \t]*").match(text, at).end()
     if props := FLOW_PROPS.match(text, at):
-        if name:
+        if name is not None:
             raise NotPlain
-        at = flow(text, props.end())
+        at = flow(text, props.end(), names)
     else:
         at = scalar_value(BLOCK_SCALAR.match(text, at), name)
     return need(LINE_END.match(text, at)).end(), False
 
 
 def plain_yaml(text):
-    """0.46 Nameplate (judge round 5): whether a frontmatter is of the narrow YAML whose `name` keys NAME_KEY all finds:
+    """0.46 Nameplate (judge round 5): the values of all `name` keys (at any depth) of a frontmatter in a narrow YAML,
+    None for any other form:
     blank and comment lines, one line of `!!map` and anchors on top, block mappings and sequences (`- key: value`,
     `- value`) of `key: value` entries with a plain or quoted key (no escape, anchor and str tag allowed) and a value
     that is a plain scalar ending in its line, a quoted one closed in its line without escape, a flow collection or
@@ -169,8 +179,8 @@ def plain_yaml(text):
     frontmatter. Indentation as YAML has it: a deeper line only below an entry without value."""
     text = text.replace("\r\n", "\n")
     if LINE_BREAKS.search(text):
-        return False
-    stack, opener, top, at = [], None, True, 0  # open block collections (column, "map"/"seq"), column of a `key:`
+        return None
+    names, stack, opener, top, at = set(), [], None, True, 0  # open block collections (column, "map"/"seq"), column of a `key:`
     try:
         while at < len(text):
             start, line_end = at, text.find("\n", at) % (len(text) + 1)  # no line break: the end of the text
@@ -186,7 +196,7 @@ def plain_yaml(text):
                 at, top = props.end(), False  # `!!map` / `&definition` on top, only once
                 continue
             if not stack and text[at] in "{[":
-                at, top = need(LINE_END.match(text, flow(text, at))).end(), None  # the whole frontmatter
+                at, top = need(LINE_END.match(text, flow(text, at, names))).end(), None  # the whole frontmatter
                 continue
             top = False
             item = ITEM.match(text, at)
@@ -208,15 +218,15 @@ def plain_yaml(text):
             if key:
                 if item:
                     stack.append((key.start() - start, "map"))  # `- key: value`: a mapping at the key's column
-                at, empty = block_value(text, key.end(), is_name(key.group(2)))
+                at, empty = block_value(text, key.end(), name_of(key.group(2), names), names)
                 opener = key.start() - start if empty else None
             elif item:
-                at = block_value(text, item.end(), False)[0]  # `- value`
+                at = block_value(text, item.end(), None, names)[0]  # `- value`
             else:
                 raise NotPlain
     except (NotPlain, IndexError):
-        return False
-    return True
+        return None
+    return names
 
 
 def plugin_name(plugin_dir=PLUGIN_DIR):

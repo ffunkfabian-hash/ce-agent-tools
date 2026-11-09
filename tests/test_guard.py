@@ -790,7 +790,8 @@ class AgentModelTests(unittest.TestCase):
     def test_a_positive_list_decides_what_an_unparsed_frontmatter_may_hide(self):
         """0.46 judge round 5: a quoted key with an escaped line break (`"na\\` / `me": worker`) is `name` for YAML and
         gave "inherit" for worker; ` ? ` in a comment or a description opened every name. Only the narrow YAML of
-        plain_yaml() keeps the other names closed; comments and text in values open nothing."""
+        plain_yaml() keeps the other names closed; comments and text in values open nothing. Judge round 6:
+        `# {name: general-purpose}` in a comment or a string made general-purpose "unknown"."""
         import agent_models
         agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
         (agents / "asked.md").write_text('---\n!!map\n# Why ? now: {x}\nname: helper\ndescription: "Why ? now: {x}"\n'
@@ -799,12 +800,14 @@ class AgentModelTests(unittest.TestCase):
                                               "http://x  # note: {y} ?\ntools:\n  - Read\n  - Grep\nmeta:\n  colour: red"
                                               "\n---\n")
         (agents / "single.md").write_text("---\n&d\nname: 'single-helper'  # a: ? {x}\ntools: [Read, Grep]\n---\n")
-        for name in ("helper", "plain-helper", "single-helper"):
+        (agents / "said.md").write_text('---\n!!map\nname: said  # {name: general-purpose}\n# - name: Explore\n'
+                                        'description: "{name: general-purpose}"\nmeta: {note: \'x, name: nobody\'}\n---\n')
+        for name in ("helper", "plain-helper", "single-helper", "said"):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), "unknown", name)
         for name, model in (("general-purpose", "inherit"), ("Explore", "inherit"), ("nobody", "inherit"),
                             ("doc-keeper", "sonnet"), ("mine", "opus")):
             self.assertEqual(agent_models.call_model({"subagent_type": name}, sub, self.home), model,
-                             f"{name}: a comment or a description with ?, {{x}} or : hides no name")
+                             f"{name}: a comment or a string with ?, {{x}}, : or a `name` key hides no name (round 6)")
         self.assertTrue(denied(self.verdict(dict(agent(subagent_type="general-purpose"), cwd=sub))))
         hidden = {"escaped-line-key": ('"na\\\nme": worker\nmeta: {name: other}\nmodel: sonnet', "worker"),
                   "escaped-line-key-tagged": ('!!map\n"na\\\nme": worker\nmeta: {name: other}', "worker"),
