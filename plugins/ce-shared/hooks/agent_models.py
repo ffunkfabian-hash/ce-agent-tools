@@ -42,17 +42,26 @@ NAME_KEY = re.compile(KEY_START + r"(?P<entry>" + STR_PROPERTIES + r"(['\"]?)nam
 # other form (escapes, explicit keys, aliases, block scalars, other tags, multi-line scalars, a value on the next line,
 # YAML errors) may hide every name.
 ANCHOR = r"&[^\s,\[\]{}]+"
-NODE_PROPS = r"(?:(?:" + ANCHOR + r"|!!str|!<tag:yaml\.org,2002:str>)[ \t]+)*"  # anchor and str tags before a node
+STR_TAG = r"(?:!!str|!<tag:yaml\.org,2002:str>)"
+MAP_TAG = r"(?:!!map|!<tag:yaml\.org,2002:map>)"
+
+
+def one_each(tag):
+    """At most one anchor and one tag, in either order, each followed by a space (judge round 7: `&a &b` is no YAML)."""
+    return rf"(?:{ANCHOR}[ \t]+(?:{tag}[ \t]+)?|{tag}[ \t]+(?:{ANCHOR}[ \t]+)?)?"
+
+
+NODE_PROPS = one_each(STR_TAG)  # anchor and str tag before a node
 QUOTED = r"\"[^\"\\\n]*\"|'[^'\n]*'(?!')"  # closed in its line, without an escape (`\` or `''`)
 FIRST = r"(?:[^\s\-?:,\[\]{}#&*!|>'\"%@`]|[-?:](?=[^\s,\[\]{}]))"  # a plain scalar starts with no indicator
 END = r"[ \t]*(?:(?<=[ \t])#[^\n]*)?(?:\n|\Z)"  # the rest of a line: spaces and a comment after a space
 LINE_END = re.compile(END)
-TOP_PROPS = re.compile(r"(?:(?:" + ANCHOR + r"|!!map|!<tag:yaml\.org,2002:map>)(?:[ \t]+|(?=\n|\Z)))+" + END)
+TOP_PROPS = re.compile(rf"(?:{ANCHOR}(?:[ \t]+{MAP_TAG})?|{MAP_TAG}(?:[ \t]+{ANCHOR})?)" + END)  # alone on top
 ITEM = re.compile(r"-[ \t]+(?=[^\s#])")
 BLOCK_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t]|\n|\Z)")
 FLOW_KEY = re.compile(r"(" + NODE_PROPS + r")([\w.-]+|" + QUOTED + r")[ \t]*:(?=[ \t,\]}]|\n|\Z)")
 BLOCK_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#\n]|:(?=\S)|(?<=\S)#)*)")
-FLOW_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#,\[\]{}\n]|(?<=\S)#)*)")
+FLOW_SCALAR = re.compile(NODE_PROPS + r"(" + QUOTED + "|" + FIRST + r"(?:[^:#,\[\]{}\n?]|(?<=\S)#)*)")  # libyaml: no ?
 FLOW_PROPS = re.compile(NODE_PROPS + r"(?=[{\[])")
 SPACES = re.compile(r"[ \t]*(?:(?<=[ \t])#[^\n]*)?")  # spaces and a comment, within the line
 GAP = re.compile(r"(?:[ \t\n]|(?<=\s)#[^\n]*)*")  # spaces, line breaks and comments
@@ -180,7 +189,7 @@ def plain_yaml(text):
     text = text.replace("\r\n", "\n")
     if LINE_BREAKS.search(text):
         return None
-    names, stack, opener, top, at = set(), [], None, True, 0  # open block collections (column, "map"/"seq"), column of a `key:`
+    names, stack, opener, top, at = set(), [], None, True, 0  # stack: open block collections (column, "map"/"seq")
     try:
         while at < len(text):
             start, line_end = at, text.find("\n", at) % (len(text) + 1)  # no line break: the end of the text

@@ -791,7 +791,8 @@ class AgentModelTests(unittest.TestCase):
         """0.46 judge round 5: a quoted key with an escaped line break (`"na\\` / `me": worker`) is `name` for YAML and
         gave "inherit" for worker; ` ? ` in a comment or a description opened every name. Only the narrow YAML of
         plain_yaml() keeps the other names closed; comments and text in values open nothing. Judge round 6:
-        `# {name: general-purpose}` in a comment or a string made general-purpose "unknown"."""
+        `# {name: general-purpose}` in a comment or a string made general-purpose "unknown". Rounds 7 and 8: forms YAML
+        rejects (`&a &b`, `w?x` in a flow mapping) were read as plain and kept the other names closed."""
         import agent_models
         agents, sub = self.repo / ".claude" / "agents", str(self.repo / "sub")
         (agents / "asked.md").write_text('---\n!!map\n# Why ? now: {x}\nname: helper\ndescription: "Why ? now: {x}"\n'
@@ -812,7 +813,14 @@ class AgentModelTests(unittest.TestCase):
         hidden = {"escaped-line-key": ('"na\\\nme": worker\nmeta: {name: other}\nmodel: sonnet', "worker"),
                   "escaped-line-key-tagged": ('!!map\n"na\\\nme": worker\nmeta: {name: other}', "worker"),
                   "line-separator": ("!!map\nmeta: {name: other}\ndescription: x\u2028name: worker", "worker"),
-                  "closer-continues": ("!!map\nname : worker\n  }\nmodel: sonnet", "worker }")}  # YAML: "worker }"
+                  "closer-continues": ("!!map\nname : worker\n  }\nmodel: sonnet", "worker }"),  # YAML: "worker }"
+                  # judge round 7: two anchors or two tags on a node are no YAML; round 8: libyaml ends a flow plain
+                  # scalar at `?`
+                  "two-anchors": ("!!map\nname: helper\nmodel: &a &b sonnet", "helper"),
+                  "two-tags": ("!!map\nname: helper\nmodel: !!str !!str sonnet", "helper"),
+                  "two-anchors-on-top": ("&a &b\nname: helper", "helper"),
+                  "two-tags-on-top": ("!!map !!map\nname: helper", "helper"),
+                  "flow-question": ("{name: helper, description: w?x}", "helper")}
         for case, (text, name) in hidden.items():
             folder = Path(self.scratch.name) / case
             (folder / ".claude" / "agents").mkdir(parents=True)
