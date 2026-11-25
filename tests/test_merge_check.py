@@ -981,9 +981,11 @@ class ReplacedCiTests(unittest.TestCase):
     def test_a_failure_the_check_list_no_longer_shows_is_not_outvoted(self):
         """`gh run rerun` replaces the failed check runs of the head by new pending ones; a closed and reopened pull request starts a second run."""
         self.red("Lauf check ist eine Wiederholung", runs=[{**OPEN_RUN, "run_attempt": 2}])
+        for repeated in (2, 3, None):  # Richter Runde 1: red, then a green repeat, beside another workflow that still runs
+            self.red("Lauf lint ist eine Wiederholung", runs=[OPEN_RUN, {"name": "lint", "status": "completed", "conclusion": "success", "run_attempt": repeated}])
         for conclusion in ("failure", "cancelled", "timed_out", "startup_failure", "action_required", "stale", None):
             self.red(f"Lauf check ist {conclusion or 'ohne Ergebnis'}", runs=[OPEN_RUN, {"name": "check", "status": "completed", "conclusion": conclusion}])
-        fine = mc.evaluate(running_facts(runs=[OPEN_RUN, {"name": "docs", "status": "completed", "conclusion": "skipped", "run_attempt": 2}]))
+        fine = mc.evaluate(running_facts(runs=[OPEN_RUN, {"name": "docs", "status": "completed", "conclusion": "skipped", "run_attempt": 1}]))
         self.assertTrue(fine["green"], fine)
 
     def test_what_does_not_simply_run_is_not_replaced(self):
@@ -1060,7 +1062,7 @@ class ReplacedCiAftermathTests(unittest.TestCase):
     def write(self, **change):
         self.pr = {"merged": True, "state": "closed", "head": {"sha": HEAD}, "base": {"ref": "main"}, "merge_commit_sha": self.MERGE}
         self.checks, self.runs, self.tip = {}, {}, self.MERGE
-        mc.write_json(self.path, {"repo": "o/r", "pr": 7, "head": HEAD, "base": "main", "pending": ["tests"], "time": time.time(), **change})
+        mc.write_json(self.path, {"repo": "o/r", "pr": 7, "head": HEAD, "base": "main", "pending": ["tests"], "time": time.time() - 2 * mc.SETTLE_SECONDS, **change})
 
     def gh(self, *args):
         target = args[-1]
@@ -1118,7 +1120,7 @@ class ReplacedCiAftermathTests(unittest.TestCase):
             self.checks[self.TIP] = "success"
             (state, text), = self.rows()
             self.assertEqual((state, self.path.exists()), ("fertig", False))
-            self.assertIn("main ist wieder grün", text)
+            self.assertIn("CI war rot", text)
 
     def test_a_failed_run_without_a_failed_check_is_red_too(self):
         self.write()
@@ -1138,6 +1140,35 @@ class ReplacedCiAftermathTests(unittest.TestCase):
             self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), checks)
         self.checks, self.runs = {HEAD: "success"}, {HEAD: [OPEN_RUN]}
         self.assertEqual(self.rows()[0][0], "offen", "a second workflow still runs")
+
+    def test_one_green_run_does_not_settle_while_the_other_runs(self):
+        """Richter Runde 1: a green head dropped the record while the merge commit still ran, its failure was never reported - both orders."""
+        for green, late in ((HEAD, self.MERGE), (self.MERGE, HEAD)):
+            for queued in (True, False):  # without a check entry yet, or with a running one
+                self.write()
+                self.checks = {green: "success"} if queued else {green: "success", late: None}
+                self.runs = {late: [OPEN_RUN]} if queued else {}
+                self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), (green, queued))
+                self.checks, self.runs = {green: "success", late: "failure"}, {}
+                self.assertEqual((self.rows()[0][0], self.path.exists()), ("rot", True), (green, queued))
+
+    def test_a_run_cancelled_half_way_is_not_green(self):
+        self.write()
+        self.checks, self.runs = {HEAD: "success"}, {HEAD: [{"name": "check", "status": "completed", "conclusion": "cancelled"}]}
+        self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), "one job passed, the others never ran")
+
+    def test_right_after_the_merge_nothing_is_settled(self):
+        self.write(time=time.time())
+        self.checks = {HEAD: "success"}
+        self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), "the run of the merge commit may not exist yet")
+        self.checks = {HEAD: "failure"}
+        self.assertEqual(self.rows()[0][0], "rot", "a failure needs no waiting")
+
+    def test_when_both_were_cancelled_the_tip_of_the_base_speaks(self):
+        for tip, state in (("success", "fertig"), ("failure", "rot"), (None, "offen"), ("cancelled", "offen")):
+            self.write()
+            self.tip, self.checks = self.TIP, {HEAD: "cancelled", self.MERGE: "cancelled", self.TIP: tip}
+            self.assertEqual((self.rows()[0][0], self.path.exists()), (state, state != "fertig"), tip)
 
     def test_a_pull_request_that_was_not_merged_is_dropped_or_waited_for(self):
         for change, state in (({"merged": False, "state": "open"}, "offen"), ({"merged": False}, "fertig"), ({"head": {"sha": self.TIP}}, "fertig")):

@@ -37,7 +37,7 @@ CI still running (0.48 Interlude): where the CI of the head is queued or in prog
 stands in for it - merge-check then is green, but never stage 1: the clean Linux run in a fresh checkout is missing, so this merge always
 needs the user's Ja. All of it must hold (replacement_problem): repo, head and check.quick as above, the run was on a Mac and this is no
 cloud session, the receipt is at most REPLACE_HOURS old, the base is contained. A receipt never outvotes a failure: a failed check, a
-failed or cancelled run of this head, a repeated run (`gh run rerun` takes the earlier failure off the list) and a check that waits for
+failed or cancelled run of this head, a repeated run, finished or not (`gh run rerun` takes the earlier failure off the list) and a check that waits for
 anything but a runner (an approval, stale) leave it red. `ci_replaced_by_verify` is in the result and in the merge receipt; with the merge
 receipt a record goes to the cache (replaced_path), and the nightly run reports when that CI ends red after the merge (replaced_rows).
 
@@ -93,6 +93,7 @@ CI_FINE = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 CI_OPEN = {"QUEUED", "IN_PROGRESS", "PENDING", "REQUESTED"}  # will end by itself; WAITING wants an approval, STALE never ends
 REPLACE_HOURS = 12  # head and base are bound by SHA, what ages is the Mac around them (neighbour repositories, Python, caches): one working day, so a run of yesterday counts no more
 REPLACED_KEEP_DAYS = 30
+SETTLE_SECONDS = 3600  # a run of the merge commit has surely appeared by then (the receipt opens the door for 30 minutes)
 
 
 class NotCheckable(Exception):
@@ -395,13 +396,12 @@ def ci_blockers(rollup, runs):
             found.append(f"{item.get('name') or item.get('context') or '?'} ist {str(state).lower() or 'ohne Ergebnis'}")
     for run in runs or []:
         name, status, conclusion = run.get("name") or "?", str(run.get("status")).upper(), str(run.get("conclusion") or "").upper()
-        attempt = run.get("run_attempt", 1)
+        if run.get("run_attempt", 1) != 1:  # a green repeat too: the failure before it stays one
+            found.append(f"Lauf {name} ist eine Wiederholung")
         if status == "COMPLETED" and conclusion not in CI_FINE:
             found.append(f"Lauf {name} ist {conclusion.lower() or 'ohne Ergebnis'}")
         elif status != "COMPLETED" and status not in CI_OPEN:
             found.append(f"Lauf {name} ist {status.lower()}")
-        elif status != "COMPLETED" and attempt != 1:
-            found.append(f"Lauf {name} ist eine Wiederholung")
     return list(dict.fromkeys(found))
 
 
@@ -797,20 +797,21 @@ def write_json(path, data):
 # ------------------------------------------------------------------------------- CI after a merge over a receipt (0.48)
 
 def commit_verdict(repo, sha):
-    """"rot" (a check or run failed), "grün" (finished, one success), else "offen": running, cancelled by a newer push, or no CI at all."""
+    """"rot" (a check or run failed), "läuft", "grün" (finished, one success), else "ohne": no CI here, or only cancelled runs."""
     checks = read_checks(repo, sha)
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs") or []
-    failed, pending = ci_state(checks)
+    _, pending = ci_state(checks)
     ended = [item.get("conclusion") or item.get("state") for item in checks] + [str(run.get("conclusion") or "").upper() for run in runs]
     if set(ended) & (CI_BAD - {"CANCELLED"}):  # cancelled says nothing: on main a newer push cancels the run before it
         return "rot"
-    if failed or pending or any(run.get("status") != "completed" for run in runs):
-        return "offen"
-    return "grün" if ci_passed(checks) else "offen"
+    if pending or any(run.get("status") != "completed" for run in runs):
+        return "läuft"
+    return "grün" if ci_passed(checks) and "CANCELLED" not in ended else "ohne"
 
 
-def replaced_verdict(record):
-    """(state, text) of one record: "rot" is reported, "offen" is asked again the next night, "fertig" goes."""
+def replaced_verdict(record, now):
+    """(state, text) of one record: "rot" is reported, "offen" is asked again the next night, "fertig" goes. Settled only when nothing
+    of the head and the merge commit runs any more; without a verdict of its own (both cancelled) the tip of the base speaks."""
     repo, number, head = record["repo"], record["pr"], record["head"]
     where = f"{repo}#{number} {head[:7]}"
     pr = gh_json("api", f"repos/{repo}/pulls/{number}")
@@ -822,14 +823,17 @@ def replaced_verdict(record):
     merge, base = pr.get("merge_commit_sha"), (pr.get("base") or {}).get("ref")
     verdicts = {name: commit_verdict(repo, sha) for name, sha in (("PR-Head", head), ("Merge-Commit", merge)) if sha}
     red = [name for name, verdict in verdicts.items() if verdict == "rot"]
-    if red:
-        tip = (gh_json("api", f"repos/{repo}/commits/{quote(base or '', safe='')}") or {}).get("sha")
-        if tip and tip != merge and commit_verdict(repo, tip) == "grün":
-            return "fertig", f"{where}: CI war rot ({', '.join(red)}), {base} ist wieder grün ({tip[:7]})"
-        return "rot", f"{where}: CI nach Merge über ./ce verify rot ({', '.join(red)})"
-    if "grün" in verdicts.values():
+    if not red and ("läuft" in verdicts.values() or now - record["time"] < SETTLE_SECONDS):
+        return "offen", f"{where}: CI läuft noch"
+    if not red and "grün" in verdicts.values():
         return "fertig", f"{where}: CI nachträglich grün"
-    return "offen", f"{where}: CI noch ohne Ergebnis"
+    tip = gh_json("api", f"repos/{repo}/commits/{quote(base or '', safe='')}").get("sha")
+    tip_verdict = commit_verdict(repo, tip) if tip and tip != merge else "ohne"
+    if tip_verdict == "grün":
+        return "fertig", f"{where}: CI {'war rot (' + ', '.join(red) + ')' if red else 'abgebrochen'}, {base} ist grün ({tip[:7]})"
+    if red or tip_verdict == "rot":
+        return "rot", f"{where}: CI nach Merge über ./ce verify rot ({', '.join(red) or base + ' ' + tip[:7]})"
+    return "offen", f"{where}: CI ohne Ergebnis"
 
 
 def replaced_rows(now=time.time):
@@ -839,7 +843,7 @@ def replaced_rows(now=time.time):
     for path in sorted(replaced_path("x/y", "z").parent.parent.glob("*/*.json")):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            state, text = replaced_verdict(record)
+            state, text = replaced_verdict(record, now())
         except (NotCheckable, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             state, text = "offen", f"{path.parent.name} {path.stem[:7]}: nicht prüfbar ({error})"
         try:
