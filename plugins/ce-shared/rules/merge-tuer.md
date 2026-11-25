@@ -17,7 +17,8 @@ den Arbeitsbranch (main einholen) bleibt erlaubt.
 1. **Stufe 1, ohne Ja:** Patch bis 100 Zeilen ohne Format, Vertrag und Kernpfad, `core_paths` in der Basis. Der grüne Lauf meldet
    `ohne_ja: true` und schreibt die Quittung der Art `patch` selbst. Wer zweifelt, nimmt Stufe 2.
 2. **Stufe 2, nach Ja:** alles andere. Der Nutzer sagt Ja in der Sitzung, dann `./ce merge-check <owner/repo> <PR> --ja
-   "<Wortlaut des Nutzers>"`. Nie ohne Ja: Die Quittung hält den Wortlaut fest und beweist ihn nicht.
+   "<Wortlaut des Nutzers>"`. Nie ohne Ja: Die Quittung hält den Wortlaut fest und beweist ihn nicht. Läuft die CI noch und ersetzt
+   eine Quittung von `./ce verify` sie (`ci_replaced_by_verify: true`, höchstens 12 h alt), ist es immer Stufe 2.
 3. **Stufe 3, Sightline:** Cloud-Sitzungen und jede Sitzung, die nicht selbst mergen darf, schicken eine Merge-Bitte mit
    PR-Nummer und Head-SHA ins Postfach (`./ce session say`). Sightline ist die Sitzung mit dem reservierten Namen `Sightline`
    oder `CE_ROLE=sightline`.

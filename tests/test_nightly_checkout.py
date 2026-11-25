@@ -221,14 +221,28 @@ class RunOneCheckout(unittest.TestCase):
 
 
 class ReportOfTheNight(unittest.TestCase):
-    def night(self, state):
+    def night(self, state, replaced=()):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), \
              mock.patch.object(ce_nightly, "has_nightly", return_value=True), mock.patch.object(ce_nightly, "tidy"), \
+             mock.patch.object(ce_nightly, "replaced_ci", return_value=list(replaced)), \
              mock.patch.object(ce_nightly, "run_one", return_value=(state, 60.0)), \
              mock.patch.object(ce_nightly, "notify") as notify, mock.patch("ce_search.build", side_effect=RuntimeError("aus")), \
              contextlib.redirect_stdout(io.StringIO()) as out:
             code = ce_nightly.run(mock.Mock(repo=[str(Path(tmp) / "Spiel")], dry_run=False, report_issues=False))
         return code, notify.call_args.args[1], out.getvalue()
+
+    def test_red_ci_after_a_merge_over_a_receipt_is_in_report_notification_and_exit_code(self):
+        """0.48 Interlude: the row stands beside the repos of the night, whatever they say."""
+        code, text, report = self.night("green", [("o/r#7 ccccccc", "red (ci)", 0.0)])
+        self.assertEqual((code, text), (1, "rot: o/r#7 ccccccc"))
+        self.assertRegex(report, r"o/r#7 ccccccc\s+red \(ci\)")
+
+    def test_a_merge_nobody_could_ask_about_is_named_and_the_night_is_not_all_green(self):
+        """Richter 0.48 Runde 6: a failed query must not end as "alle grün"; the exit code stays that of the checks."""
+        row = ("o__r ccccccc", ce_nightly.UNCLEAR, 0.0)
+        self.assertEqual(self.night("green", [row])[:2], (0, "Prüfungen grün; CI nach Merge nicht prüfbar: o__r ccccccc"))
+        self.assertEqual(self.night("red (exit 1)", [row])[:2], (1, "rot: Spiel; CI nach Merge nicht prüfbar: o__r ccccccc"))
+        self.assertEqual(self.night("übersprungen", [row])[:2], (2, "keine Prüfungen ausgeführt; CI nach Merge nicht prüfbar: o__r ccccccc"))
 
     def test_warning_is_in_report_and_notification_and_stays_green(self):
         code, text, report = self.night("green (Warnung)")

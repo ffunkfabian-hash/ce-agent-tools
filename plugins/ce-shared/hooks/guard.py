@@ -753,6 +753,8 @@ def git_commits(command, cwd):
 # user's words, it does not prove them, and it is a file: the guard is a net, not a boundary.
 # 0.35 (Keel, Punkt 13): the patch door. A green run that meets stage 1 (merge-check > ohne_ja) writes a receipt of kind `patch`
 # without words; same line, same binding to repo, PR and head, same 30 minutes. Whether a change is a patch only merge-check decides.
+# 0.48 (Interlude): a receipt with ci_replaced_by_verify (CI still running, ./ce verify stood in for it) opens the door only with the
+# user's words, never as a patch.
 
 MERGE_TOOLS = ("mcp__github__merge_pull_request", "mcp__github__enable_pr_auto_merge")
 MERGE_MUTATIONS = ("mergePullRequest", "enablePullRequestAutoMerge")
@@ -829,11 +831,11 @@ def is_sightline(cwd):
 
 
 def receipt_valid(receipt, now):
-    """True for a green, young receipt that carries the user's words or is of kind `patch` (stage 1)."""
+    """True for a green, young receipt that carries the user's words or is of kind `patch` (stage 1) with finished CI."""
     age = now - receipt["time"] if isinstance(receipt.get("time"), (int, float)) else -1
     words = isinstance(receipt.get("ja"), str) and bool(receipt["ja"].strip())
     return (receipt.get("green") is True and 0 <= age <= RECEIPT_MAX_AGE and isinstance(receipt.get("pr"), int)
-            and (words or receipt.get("kind") == "patch")
+            and (words or (receipt.get("kind") == "patch" and not receipt.get("ci_replaced_by_verify")))
             and isinstance(receipt.get("repo"), str) and re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("head"))) is not None)
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ce_verify.py <owner/repo> <PR> [--minutes N] - a clean run of check.quick on the head of a pull request (0.37 Waybill).
 
-For repositories without GitHub CI: the Mac does what a runner would do. Fetches exactly the head SHA into a throwaway folder in the
+For repositories without GitHub CI, and since 0.48 as a stand-in while the CI of a head still runs (stage 2 only, ce_merge_check.py): the Mac does what a runner would do. Fetches exactly the head SHA into a throwaway folder in the
 cache (never a checkout, never the worktree list of a repo), runs check.quick of the BASE branch there - a pull request cannot swap the
 command, the same rule as in merge-check; the scripts and tests that command starts are the head's, weakened tests stay with merge-check
 and the judge - and writes a receipt per head SHA. `./ce merge-check` reads it; a new head has none.
@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ce_check  # noqa: E402
 import ce_common  # noqa: E402
 import ce_merge_check as mc  # noqa: E402
+import ce_session_name  # noqa: E402
 import heavy_lock  # noqa: E402
 
 MINUTES = 60  # Formgen v2 needs about 9
@@ -214,7 +215,8 @@ def write_receipt(result, quick):
     path = mc.verify_path(result["repo"], result["head"])
     path.parent.mkdir(parents=True, exist_ok=True)
     receipt = {"repo": result["repo"], "pr": result["pr"], "head": result["head"], "base": result["base"], "green": True, "check": quick,
-               "tests": result["tests"], "skipped": result["skipped"], "seconds": result["seconds"], "time": time.time()}
+               "tests": result["tests"], "skipped": result["skipped"], "seconds": result["seconds"],
+               "place": ce_session_name.detect_place(platform.system(), dict(os.environ), "auto"), "time": time.time()}  # place: merge-check lets only a run on a Mac stand in for CI (0.48)
     temp = path.with_suffix(f".{os.getpid()}.tmp")  # two runs of one head must not share it
     temp.write_text(json.dumps(receipt, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(temp, path)

@@ -97,6 +97,7 @@ class CrosscurrentTests(unittest.TestCase):
             root = Path(tmp) / "repo"; root.mkdir()
             (root / ".ce-repo.json").write_text('{"check": {"nightly": ["true"]}}')
             with mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), \
+                 mock.patch.object(ce_nightly, "replaced_ci", return_value=[]), \
                  mock.patch.object(ce_nightly, "notify") as notify, mock.patch.object(ce_search, "build") as build, \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ce_nightly.main(["--repo", str(root), "--dry-run"]), 0)
@@ -531,7 +532,7 @@ class CrosscurrentTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], check=True)
             all_eight = [root, Path(tmp) / "nexogen", Path(tmp) / "tools"]
             with mock.patch.object(ce_nightly, "LOG_DIR", Path(tmp) / "logs"), \
-                 mock.patch.object(ce_nightly, "notify"), \
+                 mock.patch.object(ce_nightly, "notify"), mock.patch.object(ce_nightly, "replaced_ci", return_value=[]), \
                  mock.patch.object(ce_nightly, "repos", return_value=[root]), \
                  mock.patch.object(ce_search, "repos", return_value=all_eight) as search_repos, \
                  mock.patch.object(ce_search, "build", return_value={"total_chunks": 10, "seconds": 0.1, "embeddings": False}) as build, \

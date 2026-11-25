@@ -8,6 +8,8 @@ only categories with nightly: true in .ce-repo.json › tidy, lists the rest; --
 0.36: a checkout that is not clean main stops a repo as red (checkout), unless own_main_script() shows that everything the
 run enters through is a state of origin/main and the repo's nightly.sh tests origin/main in a worktree of its own: then it
 runs with a warning in the report and the notification. Unsure means red; the warning does not change the exit code.
+0.48: then the merges over a replaced CI (ce_merge_check.replaced_rows): CI that ended red after such a merge is a red row, whatever
+repos this run covers; one that cannot be asked is named in the notification, which then never says "alle grün" (exit code unchanged).
 0.42.2: a green run whose nightly.sh writes a `Stand: <sha> (<ref>)` line (Cube Escape) is only green if that line, found in the
 run's output or in the report the script wrote during the run, names origin/main and the sha origin/main has (before or after
 the run); else `red (stand)`. 05.-06.11.: an old launch-clone script tested local main of 24.10. and was reported green.
@@ -46,6 +48,7 @@ DEFAULT_REPOS = ["cubeescape", "cubeescape-toolgen", "cubeescape-robogen", "cube
                  "cubeescape-motiongen"]
 LOG_DIR = Path(heavy_lock.cache_dir("nightly"))  # 0.31: %LOCALAPPDATA%\CubeEscape\nightly on Windows
 LABEL = "com.cubeescape.ce-nightly"
+UNCLEAR = "nicht prüfbar (ci)"  # 0.48: a merge over a replaced CI nobody could ask about this night
 WARNED = " (Warnung)"  # suffix of a state: the run went on from a checkout that is not clean main
 SHELLS = ("sh", "bash", "zsh")
 OWN_WORKTREE = re.compile(r"\bworktree\s+add\b")
@@ -261,6 +264,7 @@ def run(args) -> int:
         log(f"=== Suchindex: {summary['total_chunks']} Abschnitte, {summary['seconds']} s, Embeddings {'ja' if summary['embeddings'] else 'nein'}")
     except Exception as error:  # noqa: BLE001
         log(f"=== Suchindex: übersprungen ({error})")
+    results += replaced_ci(args, log)
     log("--- Ergebnis")
     for name, state, seconds in results:
         log(f"{name:24} {state:16} {seconds / 60:5.1f} min")
@@ -269,7 +273,9 @@ def run(args) -> int:
     executed = any(state.startswith(("green", "red")) for _, state, _ in results)
     warned = [name for name, state, _ in results if state.endswith(WARNED)]
     if not args.dry_run:
-        text = ("rot: " + ", ".join(red)) if red else "alle grün" if executed else "keine Prüfungen ausgeführt"
+        unclear = [name for name, state, _ in results if state == UNCLEAR]
+        text = ("rot: " + ", ".join(red)) if red else ("Prüfungen grün" if unclear else "alle grün") if executed else "keine Prüfungen ausgeführt"
+        text += ("; CI nach Merge nicht prüfbar: " + ", ".join(unclear)) if unclear else ""
         notify("CE Nachtlauf", text + ("; Checkout-Warnung: " + ", ".join(warned) if warned else ""))
     print(f"Bericht: {report}")
     return 1 if red else 0 if executed or args.dry_run else 2
@@ -286,6 +292,22 @@ def tidy(args, targets: list[Path], log) -> None:
             log("=== Aufräumen: mit Fehlern (siehe oben), Nachtlauf bleibt davon unberührt")
     except Exception as error:  # noqa: BLE001
         log(f"=== Aufräumen: übersprungen ({error})")
+
+
+def replaced_ci(args, log) -> list[tuple[str, str, float]]:
+    """0.48: one red row per merge that went over a receipt of ./ce verify and whose CI ended red, one UNCLEAR row per merge that could not
+    be asked; never red for any other reason."""
+    if args.dry_run:
+        return []
+    try:
+        import ce_merge_check
+        rows = ce_merge_check.replaced_rows()
+    except Exception as error:  # noqa: BLE001
+        log(f"=== CI nach Merge: nicht prüfbar ({error})")
+        return [("CI nach Merge", UNCLEAR, 0.0)]
+    for state, text in rows:
+        log(f"=== CI nach Merge [{state}] {text}")
+    return [(text.split(":")[0], {"rot": "red (ci)", "unklar": UNCLEAR}[state], 0.0) for state, text in rows if state in ("rot", "unklar")]
 
 
 def report_issue(root: Path, lines: list[str], log) -> None:

@@ -755,7 +755,7 @@ class DocsAndNightlyTests(unittest.TestCase):
         git(other, "init", "-q", "-b", "main")
         git(other, "add", "-A")
         git(other, "commit", "-qm", "init")
-        with mock.patch.object(ce_nightly, "LOG_DIR", Path(self.tmp.name) / "logs"), mock.patch.object(ce_nightly, "notify"):
+        with mock.patch.object(ce_nightly, "LOG_DIR", Path(self.tmp.name) / "logs"), mock.patch.object(ce_nightly, "notify"), mock.patch.object(ce_nightly, "replaced_ci", return_value=[]):
             code, out = run_main(ce_nightly, "--repo", str(self.root), "--repo", str(other))
         self.assertEqual(code, 0, out)
         self.assertIn("übersprungen", out)

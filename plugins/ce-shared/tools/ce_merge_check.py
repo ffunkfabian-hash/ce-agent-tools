@@ -33,6 +33,14 @@ merge-check is red; a new head has none. A base without check.quick has nothing 
 A check.quick of the wrong form (`"quick": "pytest"`) is not checkable there (0.43 Errata): ./ce verify refuses it, so no receipt could ever
 turn it green. Only the pull request that repairs it gets the warning of a base without check.quick instead.
 
+CI still running (0.48 Interlude): where the CI of the head is queued or in progress, a green receipt of `./ce verify` for this very head
+stands in for it - merge-check then is green, but never stage 1: the clean Linux run in a fresh checkout is missing, so this merge always
+needs the user's Ja. All of it must hold (replacement_problem): repo, head and check.quick as above, the run was on a Mac and this is no
+cloud session, the receipt is at most REPLACE_HOURS old, the base is contained. A receipt never outvotes a failure: a failed check, a
+failed or cancelled run of this head, a repeated run, finished or not (`gh run rerun` takes the earlier failure off the list) and a check that waits for
+anything but a runner (an approval, stale) leave it red. `ci_replaced_by_verify` is in the result and in the merge receipt; with the merge
+receipt a record goes to the cache (replaced_path), and the nightly run reports when that CI ends red after the merge (replaced_rows).
+
 Output: the result as JSON on stdout, one text line on stderr. Exit 0 green, 1 red, 2 not checkable (never green).
 
 Receipt: every run first removes the receipt of this worktree; a green run then writes a new one to <git dir>/ce-merge-check.json:
@@ -82,6 +90,10 @@ QUOTED_MODULE = re.compile(r"""^\s*(?:import\b|export\b|\}).*\bfrom\s+['"]([\w./
 PYTHON_IMPORT = re.compile(r"\s*from\s+([\w.]+)\s+import\s+(.+)|\s*import\s+(\S[\w., ]*)$")
 CI_BAD = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
 CI_FINE = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+CI_OPEN = {"QUEUED", "IN_PROGRESS", "PENDING", "REQUESTED"}  # will end by itself; WAITING wants an approval, STALE never ends
+REPLACE_HOURS = 12  # head and base are bound by SHA, what ages is the Mac around them (neighbour repositories, Python, caches): one working day, so a run of yesterday counts no more
+REPLACED_KEEP_DAYS = 30
+SETTLE_SECONDS = 3600  # a run of the merge commit has surely appeared by then (the receipt opens the door for 30 minutes)
 
 
 class NotCheckable(Exception):
@@ -192,13 +204,41 @@ def read_pr(repo, number, sleep=time.sleep):
     return pr
 
 
+def read_check_runs(repo, head):
+    runs, capped = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
+    if capped:
+        raise NotCheckable(f"Checks zu {head[:7]} nicht vollständig lesbar")
+    return [{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()} for run in runs]
+
+
+def read_statuses(repo, head):
+    statuses, capped = paged(f"repos/{repo}/commits/{head}/status", "statuses")
+    if capped:
+        raise NotCheckable(f"Checks zu {head[:7]} nicht vollständig lesbar")
+    return [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses]
+
+
 def read_checks(repo, head):
     """The checks of a head commit in the shape of GraphQL's statusCheckRollup: check runs and commit statuses."""
-    runs, _ = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
-    statuses, _ = paged(f"repos/{repo}/commits/{head}/status", "statuses")
-    return ([{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()}
-             for run in runs] +
-            [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses])
+    return read_check_runs(repo, head) + read_statuses(repo, head)
+
+
+def read_runs(repo, sha):
+    """All workflow runs of a commit, repeats and failures of earlier runs among them; NotCheckable when GitHub does not hand out every
+    one (it stops at 1000), since a failure could be in the rest."""
+    runs, page = {}, 1
+    while True:
+        data = gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page={PAGE}&page={page}")
+        batch = data.get("workflow_runs") or []
+        for place, run in enumerate(batch):
+            runs[run.get("id") or (page, place)] = run  # a run that starts meanwhile moves one to the next page
+        if len(batch) < PAGE or page >= MAX_PAGES:
+            break
+        page += 1
+    total = data.get("total_count")
+    if len(batch) >= PAGE or (isinstance(total, int) and len(runs) < total):
+        raise NotCheckable(f"Workflow-Läufe zu {sha[:7]} nicht vollständig lesbar ({len(runs)} von {total})")
+    return list(runs.values())
 
 
 def workflow_count(repo):
@@ -238,6 +278,12 @@ def read_verify(repo, head):
         return json.loads(verify_path(repo, head).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def replaced_path(repo, head, number):
+    """Where a merge receipt over a replaced CI leaves its record; next to the receipts of ./ce verify, the worktree may be gone by night.
+    The number belongs to it: one head can be merged by two pull requests into two bases."""
+    return verify_path(repo, head).parent.parent.parent / "replaced" / repo.replace("/", "__") / f"{head}-{number}.json"
 
 
 def pin_of(config):
@@ -305,11 +351,11 @@ def gather(repo, number):
     versions = {"base": version_at(repo, spec, base), "head": version_at(repo, spec, head)} if spec else None
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
     compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}?per_page=1")
-    runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
+    runs = read_runs(repo, head)
     workflows = workflow_count(repo)
     facts = {"repo": repo, "workflows": workflows, "workflow_files": workflow_files(repo, base) if workflows else 0, "verify": read_verify(repo, head),
              "pin_problem": pin_problem(base_config, head_config) if only_pin_changed(base_config, head_config) else None, "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
-             "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
+             "runs_open": [run.get("name") or "?" for run in runs if run.get("status") != "completed"], "runs": runs, "now": time.time(), "pr": pr, "checks": read_checks(repo, head), "files": files, "files_capped": capped, "sizes": blob_sizes(repo, head, present), "behind_by": compare.get("behind_by"),
              "base_config": base_config, "head_config": head_config, "versions": versions, "changelog_name": changelog_name,
              "changelog": read_file(repo, changelog_name, head) if changelog_name else None}
     now = (gh_json("api", f"repos/{repo}/pulls/{number}").get("head") or {}).get("sha")
@@ -365,6 +411,27 @@ def ci_state(rollup):
         elif state not in CI_FINE:
             pending.append(name)
     return failed, pending
+
+
+def ci_blockers(rollup, runs):
+    """What keeps a receipt from standing in for the CI of a head: checks that do not simply run, a run of this head that already failed
+    or was cancelled, and a repeated one - its check runs replace those of the earlier attempt, a failure there is no longer listed."""
+    found = []
+    for item in rollup or []:
+        state = item.get("state") if "state" in item and "status" not in item else item.get("status")
+        if state == "COMPLETED":
+            state = item.get("conclusion")
+        if state not in CI_FINE | CI_OPEN:
+            found.append(f"{item.get('name') or item.get('context') or '?'} ist {str(state).lower() or 'ohne Ergebnis'}")
+    for run in runs or []:
+        name, status, conclusion = run.get("name") or "?", str(run.get("status")).upper(), str(run.get("conclusion") or "").upper()
+        if run.get("run_attempt", 1) != 1:  # a green repeat too: the failure before it stays one
+            found.append(f"Lauf {name} ist eine Wiederholung")
+        if status == "COMPLETED" and conclusion not in CI_FINE:
+            found.append(f"Lauf {name} ist {conclusion.lower() or 'ohne Ergebnis'}")
+        elif status != "COMPLETED" and status not in CI_OPEN:
+            found.append(f"Lauf {name} ist {status.lower()}")
+    return list(dict.fromkeys(found))
 
 
 def ci_passed(rollup):
@@ -573,6 +640,40 @@ def verify_problem(receipt, repo, head, config):
     return ""
 
 
+def receipt_age(receipt, now):
+    """Seconds since the run of ./ce verify, None when the receipt carries no usable time (the future counts as none)."""
+    written = receipt.get("time") if isinstance(receipt, dict) else None
+    if isinstance(written, bool) or not isinstance(written, (int, float)) or not 0 <= now - written < float("inf"):
+        return None
+    return now - written
+
+
+def age_text(seconds):
+    minutes = int(seconds // 60)
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
+def replacement_problem(facts, config):
+    """"" when the receipt of ./ce verify may stand in for a CI that still runs (0.48); else why not."""
+    head, receipt, quick = facts["pr"]["headRefOid"], facts.get("verify"), quick_of(config)
+    if facts.get("behind_by") != 0:
+        return "Basis nicht enthalten"
+    if facts.get("cloud"):
+        return "Cloud-Sitzung"
+    if not quick or not quick_fits(quick):
+        return "check.quick der Basis fehlt oder ist ungültig"
+    problem = verify_problem(receipt, facts["repo"], head, config)
+    if problem:
+        return problem
+    if not str(receipt.get("place")).endswith("Mac"):  # written since 0.48; an older receipt does not say where it ran
+        return "Quittung von ./ce verify nennt keinen Lauf am Mac (neu prüfen mit ce-shared ab 0.48)"
+    age = receipt_age(receipt, facts.get("now") or time.time())
+    if age is None or age > REPLACE_HOURS * 3600:
+        return f"Quittung von ./ce verify ist {'ohne gültige Zeit' if age is None else age_text(age) + ' alt'}, höchstens {REPLACE_HOURS} h"
+    blockers = ci_blockers(facts.get("checks"), facts.get("runs"))
+    return f"nicht nur laufend: {', '.join(blockers[:5])}" if blockers else ""
+
+
 def evaluate(facts, expected_sha=""):
     pr, files = facts["pr"], facts["files"]
     head = pr["headRefOid"]
@@ -602,8 +703,14 @@ def evaluate(facts, expected_sha=""):
         warnings.append("Keine Checks zum Head gemeldet: direkt nach einem Push kann der CI-Lauf noch fehlen")
     if failed:
         reasons.append(f"CI rot: {', '.join(failed[:5])}")
-    if pending:
-        reasons.append(f"CI läuft noch: {', '.join(pending[:5])}")
+    no_replacement = replacement_problem(facts, facts.get("base_config") or {}) if pending and not failed else ""  # nothing stands in for a failure
+    replaced = bool(pending) and not failed and not no_replacement
+    replaced_line = ""
+    if replaced:
+        age = receipt_age(facts["verify"], facts.get("now") or time.time())
+        replaced_line = f"CI läuft noch, ersetzt durch ./ce verify {head[:7]} ({age_text(age)})"
+    elif pending:
+        reasons.append(f"CI läuft noch: {', '.join(pending[:5])}" + (f" (kein Ersatz: {no_replacement})" if no_replacement else ""))
     sizes = facts.get("sizes") or {}
     big = sorted(((size, name) for name, size in sizes.items() if size > BIG_FILE), reverse=True)
     if big:
@@ -658,18 +765,21 @@ def evaluate(facts, expected_sha=""):
                  (lines > NO_JA_LINES, f"{lines} Zeilen, ohne Ja höchstens {NO_JA_LINES}"),
                  (pr.get("baseRefName") != pr.get("defaultBranch"), "Basis ist nicht der Standardbranch"),
                  (not pr.get("sameRepo"), "PR aus einem anderen Repo"), (facts.get("local_head") != head, "Head ist nicht der Stand dieses Ordners"),
-                 (bool(facts.get("cloud")), "Cloud-Sitzung: Merge-Bitte an Sightline"), (unchecked, "Teile nicht geprüft"),
+                 (bool(facts.get("cloud")), "Cloud-Sitzung: Merge-Bitte an Sightline"),
+                 (replaced, "CI läuft noch, nur durch ./ce verify ersetzt: kein sauberer Linux-Lauf"), (unchecked, "Teile nicht geprüft"),
                  (bool(spared), f"Tests gelöscht, weil ihre Quelle entfällt: {', '.join(item[0] for item in spared)}; ob die Tests wirklich nur diese Quelle prüften, entscheidet der Nutzer"))
     why = [text for failed, text in stage_one if failed]
     return {"repo": facts["repo"], "pr": pr["number"], "url": pr.get("url"), "head": head, "base": pr["baseRefName"],
             "green": not reasons, "classification": classification, "lines": lines, "code_lines": code_lines, "files": len(files),
             "ohne_ja": not why, "ja_noetig_weil": why, "core_paths_touched": touched, "pin_bestaetigt": pin_fine, "verify_noetig": verify_due,
+            "ci_replaced_by_verify": replaced, "ci_pending": pending, "ci_hinweis": replaced_line,
             "reasons": reasons, "warnings": warnings}
 
 
 def text_line(result):
     where = f"{result['repo']}#{result['pr']} {result['head'][:7]}"
     size = f"Einstufung {result['classification']} ({result['lines']} Zeilen)"
+    size += f" · {result['ci_hinweis']}" if result.get("ci_hinweis") else ""
     if result["green"]:
         return f"merge-check {where}: grün · {size}"
     return f"merge-check {where}: rot · {size} · " + "; ".join(result["reasons"])
@@ -691,16 +801,124 @@ def update_receipt(result, ja, cwd=None, now=time.time):
     path.unlink(missing_ok=True)
     if not (result and result["green"]):
         return ""
-    kind = "ja" if ja.strip() else "patch" if result.get("ohne_ja") is True else ""
+    replaced = result.get("ci_replaced_by_verify") is True
+    kind = "ja" if ja.strip() else "patch" if result.get("ohne_ja") is True and not replaced else ""
     if not kind:
         return ""
     receipt = {"repo": result["repo"], "pr": result["pr"], "head": result["head"], "green": True, "kind": kind, "time": now()}
     if kind == "ja":
         receipt["ja"] = ja.strip()
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(receipt, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(temp, path)
+    if replaced:  # the record first: no merge over a replaced CI that nobody looks after
+        receipt["ci_replaced_by_verify"] = True
+        record = {"repo": result["repo"], "pr": result["pr"], "head": result["head"], "base": result["base"], "pending": result.get("ci_pending"), "time": receipt["time"]}
+        write_json(replaced_path(result["repo"], result["head"], result["pr"]), record)
+    write_json(path, receipt)
     return kind
+
+
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(f".{os.getpid()}.tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+# ------------------------------------------------------------------------------- CI after a merge over a receipt (0.48)
+
+def commit_state(repo, sha):
+    """{"rot", "läuft", "wiederholt", "grün"} of a commit, each on its own: red and running at once is both. "grün" is finished with a
+    success, nothing failed or cancelled and no run repeated (a repeat hides the failure before it); none: no CI here, or only cancelled runs."""
+    answers, error = [], None
+    for read in (read_check_runs, read_statuses, read_runs):  # each on its own: a failed query must not hide what another one found
+        try:
+            answers.append(read(repo, sha))
+        except NotCheckable as problem:
+            answers.append([])
+            error = problem
+    checks, runs = answers[0] + answers[1], answers[2]
+    _, pending = ci_state(checks)
+    ended = {item.get("conclusion") or item.get("state") for item in checks} | {str(run.get("conclusion") or "").upper() for run in runs}
+    red = bool(ended & (CI_BAD - {"CANCELLED"}))  # cancelled says nothing: on main a newer push cancels the run before it
+    if error and not red:
+        raise error
+    running = error is not None or bool(pending) or any(run.get("status") != "completed" for run in runs)  # not read counts as not finished
+    repeated = any(run.get("run_attempt", 1) != 1 for run in runs)
+    return {"rot": red, "läuft": running, "wiederholt": repeated,
+            "grün": ci_passed(checks) and not red and not running and not repeated and "CANCELLED" not in ended}
+
+
+def settle(head, merge, tip, fresh, known=False):
+    """"rot", "offen" or "fertig" from the states of PR head, merge commit and tip of the base. Settled only when nothing of the first two
+    runs any more and a run of the merge commit has had time to appear; a red one (`known`: seen red on an earlier night) then needs a green
+    tip, so does a repeated one; two without a verdict ask the tip."""
+    red, waits = known or head["rot"] or merge["rot"], fresh or head["läuft"] or merge["läuft"]
+    if red:
+        return "fertig" if tip["grün"] and not waits else "rot"
+    if waits:
+        return "offen"
+    repeated = head["wiederholt"] or merge["wiederholt"]
+    if tip["grün"] or (not repeated and (head["grün"] or merge["grün"])):
+        return "fertig"
+    return "rot" if tip["rot"] else "offen"
+
+
+def replaced_verdict(record, now):
+    """(state, text) of one record: "rot" is reported, "offen" is asked again the next night, "fertig" goes."""
+    repo, number, head = record["repo"], record["pr"], record["head"]
+    where = f"{repo}#{number} {head[:7]}"
+    pr = gh_json("api", f"repos/{repo}/pulls/{number}")
+    fresh = now - record["time"] < SETTLE_SECONDS
+    if not pr.get("merged"):  # fresh: the receipt may still open the door after a reopen
+        return ("fertig", f"{where}: ohne Merge geschlossen") if pr.get("state") == "closed" and not fresh else ("offen", f"{where}: noch nicht gemergt")
+    merged_head = (pr.get("head") or {}).get("sha")
+    if merged_head != head:
+        return "fertig", f"{where}: mit anderem Head {str(merged_head)[:7]} gemergt"
+    merge, base = pr["merge_commit_sha"], pr["base"]["ref"]
+    states, error = {}, None
+    for sha in (head, merge):
+        try:
+            states[sha] = commit_state(repo, sha)
+        except NotCheckable as problem:
+            error = problem
+            continue
+        if states[sha]["rot"] and not record.get("rot"):  # kept at once: a repeat may turn it green, the next query may fail
+            record["rot"] = True
+            write_json(replaced_path(repo, head, number), record)
+    if error:
+        raise error
+    tip = gh_json("api", f"repos/{repo}/commits/{quote(base, safe='')}")["sha"]
+    states[tip] = states.get(tip) or commit_state(repo, tip)
+    if tip == merge:  # the same run cannot answer for itself: a red head beside a green merge commit stays visible until a newer green one
+        tip, states[""] = "", {"rot": False, "läuft": False, "wiederholt": False, "grün": False}
+    state = settle(states[head], states[merge], states[tip], fresh, record.get("rot") is True)
+    red = [name for name, sha in (("PR-Head", head), ("Merge-Commit", merge), (f"Spitze von {base}", tip)) if states[sha]["rot"]]
+    red = red or (["früherer Lauf"] if record.get("rot") is True else [])
+    text = {"rot": f"CI nach Merge über ./ce verify rot ({', '.join(red)})", "offen": "CI noch ohne Ergebnis",
+            "fertig": f"CI war rot ({', '.join(red)}), {base} ist grün" if red else "CI nachträglich grün"}[state]
+    return state, f"{where}: {text}"
+
+
+def replaced_rows(now=time.time):
+    """[(state, text)] of every merge receipt over a replaced CI; drops what is settled or too old. One record that cannot be read or
+    asked never hides the others; it is "unklar" (known red: "rot"), and the night that says so is not "alle grün"."""
+    rows = []
+    for path in sorted(replaced_path("x/y", "z", 0).parent.parent.glob("*/*.json")):
+        record = None
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            state, text = replaced_verdict(record, now())
+        except (NotCheckable, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            known = isinstance(record, dict) and record.get("rot") is True  # a failed query does not take a known failure back
+            state, text = "rot" if known else "unklar", f"{path.parent.name} {path.stem[:7]}: {'CI war rot, jetzt ' if known else ''}nicht prüfbar ({error})"
+        try:
+            if state != "fertig" and now() - path.stat().st_mtime > REPLACED_KEEP_DAYS * 86400:
+                state, text = "fertig", f"{text}, nach {REPLACED_KEEP_DAYS} Tagen nicht mehr verfolgt"
+            if state == "fertig":
+                path.unlink(missing_ok=True)
+        except OSError:  # another run was faster
+            pass
+        rows.append((state, text))
+    return rows
 
 
 def main(argv=None):
