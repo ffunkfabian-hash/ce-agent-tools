@@ -204,15 +204,23 @@ def read_pr(repo, number, sleep=time.sleep):
     return pr
 
 
+def read_check_runs(repo, head):
+    runs, capped = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
+    if capped:
+        raise NotCheckable(f"Checks zu {head[:7]} nicht vollständig lesbar")
+    return [{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()} for run in runs]
+
+
+def read_statuses(repo, head):
+    statuses, capped = paged(f"repos/{repo}/commits/{head}/status", "statuses")
+    if capped:
+        raise NotCheckable(f"Checks zu {head[:7]} nicht vollständig lesbar")
+    return [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses]
+
+
 def read_checks(repo, head):
     """The checks of a head commit in the shape of GraphQL's statusCheckRollup: check runs and commit statuses."""
-    runs, runs_capped = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
-    statuses, statuses_capped = paged(f"repos/{repo}/commits/{head}/status", "statuses")
-    if runs_capped or statuses_capped:
-        raise NotCheckable(f"Checks zu {head[:7]} nicht vollständig lesbar")
-    return ([{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()}
-             for run in runs] +
-            [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses])
+    return read_check_runs(repo, head) + read_statuses(repo, head)
 
 
 def read_runs(repo, sha):
@@ -820,12 +828,20 @@ def write_json(path, data):
 def commit_state(repo, sha):
     """{"rot", "läuft", "wiederholt", "grün"} of a commit, each on its own: red and running at once is both. "grün" is finished with a
     success, nothing failed or cancelled and no run repeated (a repeat hides the failure before it); none: no CI here, or only cancelled runs."""
-    checks = read_checks(repo, sha)
-    runs = read_runs(repo, sha)
+    answers, error = [], None
+    for read in (read_check_runs, read_statuses, read_runs):  # each on its own: a failed query must not hide what another one found
+        try:
+            answers.append(read(repo, sha))
+        except NotCheckable as problem:
+            answers.append([])
+            error = problem
+    checks, runs = answers[0] + answers[1], answers[2]
     _, pending = ci_state(checks)
     ended = {item.get("conclusion") or item.get("state") for item in checks} | {str(run.get("conclusion") or "").upper() for run in runs}
     red = bool(ended & (CI_BAD - {"CANCELLED"}))  # cancelled says nothing: on main a newer push cancels the run before it
-    running = bool(pending) or any(run.get("status") != "completed" for run in runs)
+    if error and not red:
+        raise error
+    running = error is not None or bool(pending) or any(run.get("status") != "completed" for run in runs)  # not read counts as not finished
     repeated = any(run.get("run_attempt", 1) != 1 for run in runs)
     return {"rot": red, "läuft": running, "wiederholt": repeated,
             "grün": ci_passed(checks) and not red and not running and not repeated and "CANCELLED" not in ended}
@@ -858,12 +874,18 @@ def replaced_verdict(record, now):
     if merged_head != head:
         return "fertig", f"{where}: mit anderem Head {str(merged_head)[:7]} gemergt"
     merge, base = pr["merge_commit_sha"], pr["base"]["ref"]
-    states = {}
+    states, error = {}, None
     for sha in (head, merge):
-        states[sha] = commit_state(repo, sha)
+        try:
+            states[sha] = commit_state(repo, sha)
+        except NotCheckable as problem:
+            error = problem
+            continue
         if states[sha]["rot"] and not record.get("rot"):  # kept at once: a repeat may turn it green, the next query may fail
             record["rot"] = True
             write_json(replaced_path(repo, head, number), record)
+    if error:
+        raise error
     tip = gh_json("api", f"repos/{repo}/commits/{quote(base, safe='')}")["sha"]
     states[tip] = states.get(tip) or commit_state(repo, tip)
     if tip == merge:  # the same run cannot answer for itself: a red head beside a green merge commit stays visible until a newer green one
@@ -878,7 +900,7 @@ def replaced_verdict(record, now):
 
 def replaced_rows(now=time.time):
     """[(state, text)] of every merge receipt over a replaced CI; drops what is settled or too old. One record that cannot be read or
-    asked never hides the others."""
+    asked never hides the others; it is "unklar" (known red: "rot"), and the night that says so is not "alle grün"."""
     rows = []
     for path in sorted(replaced_path("x/y", "z", 0).parent.parent.glob("*/*.json")):
         record = None
@@ -887,7 +909,7 @@ def replaced_rows(now=time.time):
             state, text = replaced_verdict(record, now())
         except (NotCheckable, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             known = isinstance(record, dict) and record.get("rot") is True  # a failed query does not take a known failure back
-            state, text = "rot" if known else "offen", f"{path.parent.name} {path.stem[:7]}: {'CI war rot, jetzt ' if known else ''}nicht prüfbar ({error})"
+            state, text = "rot" if known else "unklar", f"{path.parent.name} {path.stem[:7]}: {'CI war rot, jetzt ' if known else ''}nicht prüfbar ({error})"
         try:
             if state != "fertig" and now() - path.stat().st_mtime > REPLACED_KEEP_DAYS * 86400:
                 state, text = "fertig", f"{text}, nach {REPLACED_KEEP_DAYS} Tagen nicht mehr verfolgt"

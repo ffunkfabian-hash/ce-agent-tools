@@ -237,6 +237,13 @@ class ReportOfTheNight(unittest.TestCase):
         self.assertEqual((code, text), (1, "rot: o/r#7 ccccccc"))
         self.assertRegex(report, r"o/r#7 ccccccc\s+red \(ci\)")
 
+    def test_a_merge_nobody_could_ask_about_is_named_and_the_night_is_not_all_green(self):
+        """Richter 0.48 Runde 6: a failed query must not end as "alle grün"; the exit code stays that of the checks."""
+        row = ("o__r ccccccc", ce_nightly.UNCLEAR, 0.0)
+        self.assertEqual(self.night("green", [row])[:2], (0, "Prüfungen grün; CI nach Merge nicht prüfbar: o__r ccccccc"))
+        self.assertEqual(self.night("red (exit 1)", [row])[:2], (1, "rot: Spiel; CI nach Merge nicht prüfbar: o__r ccccccc"))
+        self.assertEqual(self.night("übersprungen", [row])[:2], (2, "keine Prüfungen ausgeführt; CI nach Merge nicht prüfbar: o__r ccccccc"))
+
     def test_warning_is_in_report_and_notification_and_stays_green(self):
         code, text, report = self.night("green (Warnung)")
         self.assertEqual(code, 0)

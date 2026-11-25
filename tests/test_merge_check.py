@@ -1297,7 +1297,50 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         self.write()
         self.checks = {HEAD: "success", self.MERGE: "success"}
         with mock.patch.object(mc, "gh", self.gh), mock.patch.object(mc, "read_runs", side_effect=mc.NotCheckable("unvollständig")):
-            self.assertEqual((mc.replaced_rows()[0][0], self.path.exists()), ("offen", True))
+            self.assertEqual((mc.replaced_rows()[0][0], self.path.exists()), ("unklar", True))
+
+    def test_whatever_was_read_red_counts_whichever_other_query_fails(self):
+        """Richter Runde 6: a red check, then the runs of the same commit failed to load - nothing was kept. All combinations."""
+        failed_run = [{"name": "check", "status": "completed", "conclusion": "failure"}]
+        for where, other in ((HEAD, self.MERGE), (self.MERGE, HEAD)):
+            for source, mark in (("check-runs", where + "/check-runs"), ("runs", "head_sha=" + where)):
+                for failing in (where + "/check-runs", where + "/status", "head_sha=" + where, other + "/check-runs", other + "/status", "head_sha=" + other, "/commits/main"):
+                    if failing == mark:
+                        continue
+                    self.write()
+                    self.checks, self.runs = ({where: "failure"}, {}) if source == "check-runs" else ({}, {where: failed_run})
+
+                    def answer(*args, failing=failing):
+                        if failing in args[-1]:
+                            raise mc.NotCheckable("offline")
+                        return self.gh(*args)
+                    with mock.patch.object(mc, "gh", answer):
+                        self.assertEqual((mc.replaced_rows()[0][0], self.path.exists()), ("rot", True), (source, where, failing))
+                    self.assertIs(json.loads(self.path.read_text(encoding="utf-8")).get("rot"), True, (source, where, failing))
+
+    def test_a_red_commit_that_was_not_read_to_the_end_is_not_settled_by_a_green_tip(self):
+        self.write()
+        self.tip, self.checks = self.TIP, {HEAD: "failure", self.TIP: "success"}
+
+        def answer(*args):
+            if "head_sha=" + HEAD in args[-1]:
+                raise mc.NotCheckable("offline")
+            return self.gh(*args)
+        with mock.patch.object(mc, "gh", answer):
+            self.assertEqual((mc.replaced_rows()[0][0], self.path.exists()), ("rot", True))
+
+    def test_any_failed_query_without_a_failure_is_unclear_never_settled(self):
+        for failing in ("/pulls/", HEAD + "/check-runs", HEAD + "/status", "head_sha=" + HEAD, self.MERGE + "/check-runs", self.MERGE + "/status", "head_sha=" + self.MERGE,
+                        "/commits/main", self.TIP + "/check-runs", self.TIP + "/status", "head_sha=" + self.TIP):
+            self.write()
+            self.tip, self.checks = self.TIP, {HEAD: "success", self.MERGE: "success", self.TIP: "success"}
+
+            def answer(*args, failing=failing):
+                if failing in args[-1]:
+                    raise mc.NotCheckable("offline")
+                return self.gh(*args)
+            with mock.patch.object(mc, "gh", answer):
+                self.assertEqual((mc.replaced_rows()[0][0], self.path.exists()), ("unklar", True), failing)
 
     def test_two_pull_requests_of_one_head_keep_a_record_each(self):
         """Richter Runde 4: the same head into two bases, the second receipt overwrote the record of the first."""
@@ -1343,9 +1386,9 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         broken = mc.replaced_path("o/a", "b" * 40, 3)
         broken.parent.mkdir(parents=True)
         broken.write_text("kaputt", encoding="utf-8")
-        self.assertEqual([state for state, _ in self.rows()], ["offen", "rot"])
+        self.assertEqual([state for state, _ in self.rows()], ["unklar", "rot"])
         with mock.patch.object(mc, "gh", side_effect=mc.NotCheckable("offline")):
-            self.assertEqual([state for state, _ in mc.replaced_rows()], ["offen", "rot"], "known red stays red offline (Richter Runde 5)")
+            self.assertEqual([state for state, _ in mc.replaced_rows()], ["unklar", "rot"], "known red stays red offline (Richter Runde 5)")
             later = time.time() + (mc.REPLACED_KEEP_DAYS + 1) * 86400
             self.assertEqual([state for state, _ in mc.replaced_rows(now=lambda: later)], ["fertig", "fertig"])
         self.assertFalse(self.path.exists() or broken.exists())
@@ -1353,12 +1396,12 @@ class ReplacedCiAftermathTests(unittest.TestCase):
     def test_the_nightly_run_gets_a_red_row_and_never_dies_of_it(self):
         import ce_nightly
         lines, args = [], mock.Mock(dry_run=False)
-        with mock.patch.object(mc, "replaced_rows", return_value=[("rot", "o/r#7 ccccccc: rot"), ("offen", "o/r#8 x: y"), ("fertig", "o/r#9 x: y")]):
-            self.assertEqual(ce_nightly.replaced_ci(args, lines.append), [("o/r#7 ccccccc", "red (ci)", 0.0)])
-            self.assertEqual(len(lines), 3)
+        with mock.patch.object(mc, "replaced_rows", return_value=[("rot", "o/r#7 ccccccc: rot"), ("offen", "o/r#8 x: y"), ("fertig", "o/r#9 x: y"), ("unklar", "o__r d: y")]):
+            self.assertEqual(ce_nightly.replaced_ci(args, lines.append), [("o/r#7 ccccccc", "red (ci)", 0.0), ("o__r d", ce_nightly.UNCLEAR, 0.0)])
+            self.assertEqual(len(lines), 4)
             self.assertEqual(ce_nightly.replaced_ci(mock.Mock(dry_run=True), lines.append), [], "a dry run asks nobody")
         with mock.patch.object(mc, "replaced_rows", side_effect=OSError("x")):
-            self.assertEqual(ce_nightly.replaced_ci(args, lines.append), [])
+            self.assertEqual(ce_nightly.replaced_ci(args, lines.append), [("CI nach Merge", ce_nightly.UNCLEAR, 0.0)])
 
 
 class ReceiptTests(unittest.TestCase):
