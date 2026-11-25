@@ -796,22 +796,33 @@ def write_json(path, data):
 
 # ------------------------------------------------------------------------------- CI after a merge over a receipt (0.48)
 
-def commit_verdict(repo, sha):
-    """"rot" (a check or run failed), "läuft", "grün" (finished, one success), else "ohne": no CI here, or only cancelled runs."""
+def commit_state(repo, sha):
+    """{"rot", "läuft", "grün"} of a commit, each on its own: red and running at once is both. "grün" is finished with a success and
+    nothing failed or cancelled; none of them: no CI here, or only cancelled runs."""
     checks = read_checks(repo, sha)
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs") or []
     _, pending = ci_state(checks)
-    ended = [item.get("conclusion") or item.get("state") for item in checks] + [str(run.get("conclusion") or "").upper() for run in runs]
-    if set(ended) & (CI_BAD - {"CANCELLED"}):  # cancelled says nothing: on main a newer push cancels the run before it
-        return "rot"
-    if pending or any(run.get("status") != "completed" for run in runs):
-        return "läuft"
-    return "grün" if ci_passed(checks) and "CANCELLED" not in ended else "ohne"
+    ended = {item.get("conclusion") or item.get("state") for item in checks} | {str(run.get("conclusion") or "").upper() for run in runs}
+    red = bool(ended & (CI_BAD - {"CANCELLED"}))  # cancelled says nothing: on main a newer push cancels the run before it
+    running = bool(pending) or any(run.get("status") != "completed" for run in runs)
+    return {"rot": red, "läuft": running, "grün": ci_passed(checks) and not red and not running and "CANCELLED" not in ended}
+
+
+def settle(head, merge, tip, fresh):
+    """"rot", "offen" or "fertig" from the states of PR head, merge commit and tip of the base. Settled only when nothing of the first two
+    runs any more and a run of the merge commit has had time to appear; a red one then needs a green tip, two without a verdict ask the tip."""
+    red, waits = head["rot"] or merge["rot"], fresh or head["läuft"] or merge["läuft"]
+    if red:
+        return "fertig" if tip["grün"] and not waits else "rot"
+    if waits:
+        return "offen"
+    if head["grün"] or merge["grün"] or tip["grün"]:
+        return "fertig"
+    return "rot" if tip["rot"] else "offen"
 
 
 def replaced_verdict(record, now):
-    """(state, text) of one record: "rot" is reported, "offen" is asked again the next night, "fertig" goes. Settled only when nothing
-    of the head and the merge commit runs any more; without a verdict of its own (both cancelled) the tip of the base speaks."""
+    """(state, text) of one record: "rot" is reported, "offen" is asked again the next night, "fertig" goes."""
     repo, number, head = record["repo"], record["pr"], record["head"]
     where = f"{repo}#{number} {head[:7]}"
     pr = gh_json("api", f"repos/{repo}/pulls/{number}")
@@ -820,20 +831,16 @@ def replaced_verdict(record, now):
     merged_head = (pr.get("head") or {}).get("sha")
     if merged_head != head:
         return "fertig", f"{where}: mit anderem Head {str(merged_head)[:7]} gemergt"
-    merge, base = pr.get("merge_commit_sha"), (pr.get("base") or {}).get("ref")
-    verdicts = {name: commit_verdict(repo, sha) for name, sha in (("PR-Head", head), ("Merge-Commit", merge)) if sha}
-    red = [name for name, verdict in verdicts.items() if verdict == "rot"]
-    if not red and ("läuft" in verdicts.values() or now - record["time"] < SETTLE_SECONDS):
-        return "offen", f"{where}: CI läuft noch"
-    if not red and "grün" in verdicts.values():
-        return "fertig", f"{where}: CI nachträglich grün"
-    tip = gh_json("api", f"repos/{repo}/commits/{quote(base or '', safe='')}").get("sha")
-    tip_verdict = commit_verdict(repo, tip) if tip and tip != merge else "ohne"
-    if tip_verdict == "grün":
-        return "fertig", f"{where}: CI {'war rot (' + ', '.join(red) + ')' if red else 'abgebrochen'}, {base} ist grün ({tip[:7]})"
-    if red or tip_verdict == "rot":
-        return "rot", f"{where}: CI nach Merge über ./ce verify rot ({', '.join(red) or base + ' ' + tip[:7]})"
-    return "offen", f"{where}: CI ohne Ergebnis"
+    merge, base = pr["merge_commit_sha"], pr["base"]["ref"]
+    tip = gh_json("api", f"repos/{repo}/commits/{quote(base, safe='')}")["sha"]
+    states = {sha: commit_state(repo, sha) for sha in dict.fromkeys((head, merge, tip))}
+    if tip == merge:  # the same run cannot answer for itself: a red head beside a green merge commit stays visible until a newer green one
+        tip, states[""] = "", {"rot": False, "läuft": False, "grün": False}
+    state = settle(states[head], states[merge], states[tip], now - record["time"] < SETTLE_SECONDS)
+    red = [name for name, sha in (("PR-Head", head), ("Merge-Commit", merge), (f"Spitze von {base}", tip)) if states[sha]["rot"]]
+    text = {"rot": f"CI nach Merge über ./ce verify rot ({', '.join(red)})", "offen": "CI noch ohne Ergebnis",
+            "fertig": f"CI war rot ({', '.join(red)}), {base} ist grün" if red else "CI nachträglich grün"}[state]
+    return state, f"{where}: {text}"
 
 
 def replaced_rows(now=time.time):

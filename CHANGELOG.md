@@ -8,7 +8,7 @@ Nutzerentscheid 25.11.2026; gemessener Engpass in Formgen v2: 36 min CI je Head,
 - **Ein Fehlschlag wird nie überstimmt:** rote oder abgebrochene Checks und Läufe dieses Heads, auch solche, die ein `gh run rerun` aus der Check-Liste verdrängt hat (Wiederholung eines Laufs, auch eine grüne), sowie Checks, die auf eine Freigabe warten oder verfallen sind, bleiben rot.
 - **Immer Stufe 2:** kein `ohne_ja`, keine Quittung der Art `patch`; der Wächter (`merge_attempt`) nimmt eine Quittung mit `ci_replaced_by_verify` nur mit Wortlaut an.
 - **Nachlauf:** Mit der Merge-Quittung entsteht ein Eintrag im Cache (`ce_verify/replaced/`). Der Nachtlauf fragt CI von PR-Head und Merge-Commit nach; erledigt ist er erst, wenn davon nichts mehr läuft; rot ist eine Zeile `red (ci)` mit Meldung und Exit 1, bis die Basis wieder grün ist (höchstens 30 Tage). Sind beide abgebrochen, gilt die Spitze der Basis.
-- Tests: `ReplacedCiTests`, `ReplacedCiAftermathTests` in `test_merge_check.py`, Ort der Quittung in `test_verify.py`, Nachtlauf in `test_nightly_checkout.py`; 22 gezielte Mutationen am Werkzeug, alle rot. [Version](docs/versions/0.48.md).
+- Tests: `ReplacedCiTests`, `ReplacedCiAftermathTests` in `test_merge_check.py`, Ort der Quittung in `test_verify.py`, Nachtlauf in `test_nightly_checkout.py`; 25 gezielte Mutationen am Werkzeug, alle rot, und die ganze Zustandstabelle des Nachlaufs. [Version](docs/versions/0.48.md).
 
 ## 0.46.0 „Nameplate“ – unveröffentlicht (08.11.2026)
 

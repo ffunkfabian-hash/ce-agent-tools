@@ -1157,6 +1157,43 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         self.checks, self.runs = {HEAD: "success"}, {HEAD: [{"name": "check", "status": "completed", "conclusion": "cancelled"}]}
         self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), "one job passed, the others never ran")
 
+    def test_settled_is_never_red_unseen_or_still_running(self):
+        """Richter Runde 2: the whole table instead of single cases - every state of head, merge commit and tip."""
+        states = [{"rot": red, "läuft": runs, "grün": green} for red in (False, True) for runs in (False, True) for green in (False, True)
+                  if not (green and (red or runs))]
+        seen = set()
+        for head in states:
+            for merge in states:
+                for tip in states:
+                    for fresh in (False, True):
+                        state, case = mc.settle(head, merge, tip, fresh), (head, merge, tip, fresh)
+                        seen.add(state)
+                        red, running = head["rot"] or merge["rot"], head["läuft"] or merge["läuft"]
+                        if state == "fertig":
+                            self.assertFalse(running or fresh, case)
+                            self.assertTrue(tip["grün"] or (not red and (head["grün"] or merge["grün"])), case)
+                        if red and not (tip["grün"] and not running and not fresh):
+                            self.assertEqual(state, "rot", case)
+                        if not red and (running or fresh):
+                            self.assertEqual(state, "offen", case)
+        self.assertEqual(seen, {"rot", "offen", "fertig"})
+
+    def test_red_and_running_at_once_is_both(self):
+        """Richter Runde 2: red head, running merge commit, green tip was settled; so was a red job beside a running one."""
+        self.write()
+        self.tip, self.checks = self.TIP, {HEAD: "failure", self.MERGE: None, self.TIP: "success"}
+        self.assertEqual((self.rows()[0][0], self.path.exists()), ("rot", True))
+        self.checks, self.runs = {HEAD: "failure", self.MERGE: "success", self.TIP: "success"}, {HEAD: [OPEN_RUN]}
+        self.assertEqual((self.rows()[0][0], self.path.exists()), ("rot", True))
+        self.runs = {}
+        self.assertEqual((self.rows()[0][0], self.path.exists()), ("fertig", False))
+
+    def test_a_tip_that_runs_or_failed_beside_a_success_does_not_settle(self):
+        for run in (OPEN_RUN, {"name": "check", "status": "completed", "conclusion": "failure"}, {"name": "check", "status": "completed", "conclusion": "cancelled"}):
+            self.write()
+            self.tip, self.checks, self.runs = self.TIP, {HEAD: "failure", self.TIP: "success"}, {self.TIP: [run]}
+            self.assertEqual((self.rows()[0][0], self.path.exists()), ("rot", True), run)
+
     def test_right_after_the_merge_nothing_is_settled(self):
         self.write(time=time.time())
         self.checks = {HEAD: "success"}
