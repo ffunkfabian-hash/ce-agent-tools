@@ -8,6 +8,8 @@ only categories with nightly: true in .ce-repo.json › tidy, lists the rest; --
 0.36: a checkout that is not clean main stops a repo as red (checkout), unless own_main_script() shows that everything the
 run enters through is a state of origin/main and the repo's nightly.sh tests origin/main in a worktree of its own: then it
 runs with a warning in the report and the notification. Unsure means red; the warning does not change the exit code.
+0.48: then the merges over a replaced CI (ce_merge_check.replaced_rows): CI that ended red after such a merge is a red row, whatever
+repos this run covers; a failed query is a note, never a red night.
 0.42.2: a green run whose nightly.sh writes a `Stand: <sha> (<ref>)` line (Cube Escape) is only green if that line, found in the
 run's output or in the report the script wrote during the run, names origin/main and the sha origin/main has (before or after
 the run); else `red (stand)`. 05.-06.11.: an old launch-clone script tested local main of 24.10. and was reported green.
@@ -261,6 +263,7 @@ def run(args) -> int:
         log(f"=== Suchindex: {summary['total_chunks']} Abschnitte, {summary['seconds']} s, Embeddings {'ja' if summary['embeddings'] else 'nein'}")
     except Exception as error:  # noqa: BLE001
         log(f"=== Suchindex: übersprungen ({error})")
+    results += replaced_ci(args, log)
     log("--- Ergebnis")
     for name, state, seconds in results:
         log(f"{name:24} {state:16} {seconds / 60:5.1f} min")
@@ -286,6 +289,21 @@ def tidy(args, targets: list[Path], log) -> None:
             log("=== Aufräumen: mit Fehlern (siehe oben), Nachtlauf bleibt davon unberührt")
     except Exception as error:  # noqa: BLE001
         log(f"=== Aufräumen: übersprungen ({error})")
+
+
+def replaced_ci(args, log) -> list[tuple[str, str, float]]:
+    """0.48: one red row per merge that went over a receipt of ./ce verify and whose CI ended red; never red for any other reason."""
+    if args.dry_run:
+        return []
+    try:
+        import ce_merge_check
+        rows = ce_merge_check.replaced_rows()
+    except Exception as error:  # noqa: BLE001
+        log(f"=== CI nach Merge: übersprungen ({error})")
+        return []
+    for state, text in rows:
+        log(f"=== CI nach Merge [{state}] {text}")
+    return [(text.split(":")[0], "red (ci)", 0.0) for state, text in rows if state == "rot"]
 
 
 def report_issue(root: Path, lines: list[str], log) -> None:

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -930,6 +931,242 @@ class VerifyReceiptTests(unittest.TestCase):
             path.write_text("kaputt", encoding="utf-8")
             self.assertIsNone(mc.read_verify("o/r", HEAD))
             self.assertIsNone(mc.read_verify("o/r", "d" * 40))
+
+
+NOW = 1_800_000_000.0
+RUNNING = [{"name": "tests (1/3)", "status": "COMPLETED", "conclusion": "SUCCESS"}, {"name": "tests (2/3)", "status": "IN_PROGRESS", "conclusion": ""},
+           {"name": "tests (3/3)", "status": "QUEUED", "conclusion": ""}]
+OPEN_RUN = {"name": "check", "status": "in_progress", "conclusion": None, "run_attempt": 1}
+
+
+def running_facts(**change):
+    """A repository with GitHub CI that still runs at the head, and a fresh receipt of ./ce verify from this Mac."""
+    change.setdefault("checks", RUNNING)
+    change.setdefault("runs", [OPEN_RUN])
+    change.setdefault("runs_open", [run["name"] for run in change["runs"] if run["status"] != "completed"])
+    change.setdefault("verify", receipt(place="Mac", time=NOW - 3900))
+    return no_ci_facts(workflow_files=1, workflows=1, now=NOW, **change)
+
+
+class ReplacedCiTests(unittest.TestCase):
+    """0.48 Interlude (Nutzerentscheid 25.11.2026): a green receipt of ./ce verify stands in for a CI that still runs, stage 2 only."""
+
+    def red(self, text, **change):
+        result = mc.evaluate(running_facts(**change))
+        self.assertEqual((result["green"], result["ci_replaced_by_verify"], result["ci_hinweis"], result["ohne_ja"]), (False, False, "", False), change)
+        self.assertIn(text, " | ".join(result["reasons"]), change)
+        return result
+
+    def test_running_ci_with_a_receipt_is_green_but_only_stage_two(self):
+        for place in ("Mac", "Codex-Mac", "Gemini-Mac"):
+            result = mc.evaluate(running_facts(verify=receipt(place=place, time=NOW - 3900)))
+            self.assertEqual((result["green"], result["ci_replaced_by_verify"], result["ohne_ja"]), (True, True, False), result)
+            self.assertEqual(result["ja_noetig_weil"], ["CI läuft noch, nur durch ./ce verify ersetzt: kein sauberer Linux-Lauf"])
+            self.assertEqual(result["ci_pending"], ["tests (2/3)", "tests (3/3)", "check"])
+            line = f"CI läuft noch, ersetzt durch ./ce verify {HEAD[:7]} (1 h 5 min)"
+            self.assertEqual(mc.text_line(result), f"merge-check o/r#7 {HEAD[:7]}: grün · Einstufung Patch (35 Zeilen) · {line}")
+
+    def test_only_a_queued_run_without_a_check_is_replaced_too(self):
+        result = mc.evaluate(running_facts(checks=[], runs=[{**OPEN_RUN, "status": "queued"}]))
+        self.assertEqual((result["green"], result["ci_replaced_by_verify"], result["ohne_ja"]), (True, True, False), result)
+
+    def test_red_ci_stays_red_whatever_the_receipt_says(self):
+        for conclusion in sorted(mc.CI_BAD):
+            failed = {"name": "tests (1/3)", "status": "COMPLETED", "conclusion": conclusion}
+            result = self.red("CI rot: tests (1/3)", checks=[failed, *RUNNING[1:]])
+            self.assertIn("CI läuft noch: tests (2/3), tests (3/3), check", result["reasons"], "no hint at a receipt beside a failure")
+        self.red("CI rot: tests", checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "FAILURE"}], runs=[])
+        self.red("CI rot: ext", checks=[{"context": "ext", "state": "FAILURE"}, *RUNNING])
+
+    def test_a_failure_the_check_list_no_longer_shows_is_not_outvoted(self):
+        """`gh run rerun` replaces the failed check runs of the head by new pending ones; a closed and reopened pull request starts a second run."""
+        self.red("Lauf check ist eine Wiederholung", runs=[{**OPEN_RUN, "run_attempt": 2}])
+        for conclusion in ("failure", "cancelled", "timed_out", "startup_failure", "action_required", "stale", None):
+            self.red(f"Lauf check ist {conclusion or 'ohne Ergebnis'}", runs=[OPEN_RUN, {"name": "check", "status": "completed", "conclusion": conclusion}])
+        fine = mc.evaluate(running_facts(runs=[OPEN_RUN, {"name": "docs", "status": "completed", "conclusion": "skipped", "run_attempt": 2}]))
+        self.assertTrue(fine["green"], fine)
+
+    def test_what_does_not_simply_run_is_not_replaced(self):
+        self.red("tests ist waiting", checks=[{"name": "tests", "status": "WAITING", "conclusion": ""}])
+        self.red("tests ist stale", checks=[{"name": "tests", "status": "COMPLETED", "conclusion": "STALE"}])
+        self.red("tests ist ohne Ergebnis", checks=[{"name": "tests", "status": "COMPLETED", "conclusion": ""}])
+        self.red("Lauf check ist waiting", runs=[{**OPEN_RUN, "status": "waiting"}])
+
+    def test_running_ci_without_a_receipt_stays_red(self):
+        result = self.red("CI läuft noch: tests (2/3), tests (3/3), check (kein Ersatz: Keine Quittung von ./ce verify zu Head", verify=None)
+        self.assertNotIn("Repo ohne GitHub-CI", " ".join(result["reasons"]))
+        for broken in ("kaputt", [], 1, {}):
+            self.red("kein Ersatz", verify=broken)
+
+    def test_a_receipt_of_another_head_repo_or_check_stays_red(self):
+        fresh = {"place": "Mac", "time": NOW - 60}
+        self.red("gilt nicht für Head", verify=receipt(head="d" * 40, **fresh))
+        self.red("gilt nicht für Head", verify=receipt(repo="o/other", **fresh))
+        self.red("gilt nicht für Head", verify=receipt(green=False, **fresh))
+        self.red("nicht das check.quick der Basis", verify=receipt(check=["true"], **fresh))
+
+    def test_the_age_limit_is_exact_and_a_time_must_be_one(self):
+        limit = mc.REPLACE_HOURS * 3600
+        self.assertTrue(mc.evaluate(running_facts(verify=receipt(place="Mac", time=NOW - limit)))["green"])
+        self.red("ist 12 h 0 min alt, höchstens 12 h", verify=receipt(place="Mac", time=NOW - limit - 1))
+        for value in (None, "gestern", True, NOW + 60, float("nan"), float("-inf")):
+            self.red("ohne gültige Zeit", verify=receipt(place="Mac", time=value))
+
+    def test_a_run_in_the_cloud_or_of_unknown_place_stays_red(self):
+        for place in ("Cloud", "Codex-Cloud", "Windows", "", None):
+            self.red("nennt keinen Lauf am Mac", verify=receipt(place=place, time=NOW - 60))
+        self.red("nennt keinen Lauf am Mac", verify=receipt(time=NOW - 60))
+        self.red("Cloud-Sitzung", cloud=True)
+
+    def test_a_stale_base_stays_red(self):
+        self.red("Basis nicht enthalten", behind_by=1)
+        self.red("Basis nicht enthalten", behind_by=None)
+
+    def test_a_base_without_a_usable_check_stays_red(self):
+        for check in ({}, {"quick": "pytest"}, {"quick": []}):
+            config = {**CONFIG, "check": check}
+            self.red("check.quick der Basis", base_config=config, head_config=config, verify=receipt(place="Mac", time=NOW - 60, check=check.get("quick")))
+
+    def test_finished_ci_needs_and_names_no_replacement(self):
+        done = [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        result = mc.evaluate(running_facts(checks=done, runs=[{**OPEN_RUN, "status": "completed", "conclusion": "success"}]))
+        self.assertEqual((result["green"], result["ci_replaced_by_verify"], result["ohne_ja"], result["ci_pending"]), (True, False, True, []), result)
+
+    def test_gather_brings_the_runs_and_the_time(self):
+        with mock.patch.object(mc, "gh", FakeGh(runs=[OPEN_RUN])):
+            found = mc.gather("o/r", 7)
+        self.assertEqual((found["runs"], found["runs_open"]), ([OPEN_RUN], ["check"]))
+        self.assertLess(abs(time.time() - found["now"]), 60)
+
+    def test_other_reasons_keep_a_replaced_run_red(self):
+        result = mc.evaluate(running_facts(pr={"isDraft": True}))
+        self.assertEqual((result["green"], result["reasons"]), (False, ["PR ist ein Entwurf"]))
+
+
+class ReplacedCiAftermathTests(unittest.TestCase):
+    """What became of the CI after a merge over a receipt: the record, and the verdict the nightly run reports."""
+    MERGE, TIP = "e" * 40, "f" * 40
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"CE_VERIFY_CACHE": temp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        subprocess.run(["git", "init", "-q", temp.name], check=True)
+        self.folder = temp.name
+        self.path = mc.replaced_path("o/r", HEAD)
+
+    def write(self, **change):
+        self.pr = {"merged": True, "state": "closed", "head": {"sha": HEAD}, "base": {"ref": "main"}, "merge_commit_sha": self.MERGE}
+        self.checks, self.runs, self.tip = {}, {}, self.MERGE
+        mc.write_json(self.path, {"repo": "o/r", "pr": 7, "head": HEAD, "base": "main", "pending": ["tests"], "time": time.time(), **change})
+
+    def gh(self, *args):
+        target = args[-1]
+        sha = next((sha for sha in (HEAD, self.MERGE, self.TIP) if sha in target), None)
+        if "/pulls/" in target:
+            return json.dumps(self.pr)
+        if "/check-runs" in target:
+            state = self.checks.get(sha)
+            return json.dumps({"check_runs": [{"name": "tests", "status": "completed" if state else "in_progress", "conclusion": state}] if sha in self.checks else []})
+        if target.split("?")[0].endswith("/status"):
+            return json.dumps({"statuses": []})
+        if "/actions/runs" in target:
+            return json.dumps({"workflow_runs": self.runs.get(sha, [])})
+        if target.endswith("/commits/main"):
+            return json.dumps({"sha": self.tip})
+        raise AssertionError(target)
+
+    def rows(self):
+        with mock.patch.object(mc, "gh", self.gh):
+            return mc.replaced_rows()
+
+    def test_the_ja_writes_the_flag_into_the_receipt_and_the_record(self):
+        result = mc.evaluate(running_facts())
+        self.assertEqual(mc.update_receipt(result, "", cwd=self.folder), "", "never a patch receipt")
+        self.assertFalse(self.path.exists())
+        self.assertEqual(mc.update_receipt({**result, "ohne_ja": True}, "", cwd=self.folder), "", "not even when stage 1 slipped through")
+        self.assertEqual(mc.update_receipt(result, "Ja", cwd=self.folder), "ja")
+        written = json.loads((Path(self.folder) / ".git" / mc.RECEIPT_FILE).read_text(encoding="utf-8"))
+        self.assertEqual((written["ci_replaced_by_verify"], written["ja"], written["kind"]), (True, "Ja", "ja"))
+        record = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual((record["pr"], record["base"], record["pending"]), (7, "main", ["tests (2/3)", "tests (3/3)", "check"]))
+        self.assertTrue(guard.receipt_allows(f"gh pr merge 7 -R o/r --match-head-commit {HEAD} --squash", self.folder))
+
+    def test_without_a_replacement_there_is_no_flag_and_no_record(self):
+        self.assertEqual(mc.update_receipt(mc.evaluate(ci_facts()), "Ja", cwd=self.folder), "ja")
+        self.assertNotIn("ci_replaced_by_verify", json.loads((Path(self.folder) / ".git" / mc.RECEIPT_FILE).read_text(encoding="utf-8")))
+        self.assertFalse(self.path.exists())
+
+    def test_the_guard_takes_a_replaced_receipt_only_with_words(self):
+        base = {"repo": "o/r", "pr": 7, "head": HEAD, "green": True, "kind": "patch", "time": time.time()}
+        self.assertTrue(guard.receipt_valid(base, time.time()))
+        self.assertFalse(guard.receipt_valid({**base, "ci_replaced_by_verify": True}, time.time()))
+        self.assertTrue(guard.receipt_valid({**base, "kind": "ja", "ja": "Ja", "ci_replaced_by_verify": True}, time.time()))
+
+    def test_red_after_the_merge_is_reported_every_night_until_main_is_green(self):
+        for where in (HEAD, self.MERGE):
+            self.write()
+            self.checks = {HEAD: "success", self.MERGE: "success", where: "failure"}
+            for _ in range(2):
+                (state, text), = self.rows()
+                self.assertEqual((state, self.path.exists()), ("rot", True), where)
+                self.assertIn(f"o/r#7 {HEAD[:7]}: CI nach Merge über ./ce verify rot", text)
+            self.tip, self.checks[self.TIP] = self.TIP, None
+            self.assertEqual(self.rows()[0][0], "rot", "main still runs")
+            self.checks[self.TIP] = "success"
+            (state, text), = self.rows()
+            self.assertEqual((state, self.path.exists()), ("fertig", False))
+            self.assertIn("main ist wieder grün", text)
+
+    def test_a_failed_run_without_a_failed_check_is_red_too(self):
+        self.write()
+        self.runs = {self.MERGE: [{"name": "check", "status": "completed", "conclusion": "startup_failure"}]}
+        self.assertEqual(self.rows()[0][0], "rot")
+
+    def test_green_settles_the_record(self):
+        for checks in ({HEAD: "success"}, {self.MERGE: "success"}, {HEAD: "cancelled", self.MERGE: "success"}):
+            self.write()
+            self.checks = checks
+            self.assertEqual((self.rows()[0][0], self.path.exists()), ("fertig", False), checks)
+
+    def test_running_or_cancelled_ci_is_asked_again(self):
+        for checks in ({}, {HEAD: None}, {HEAD: "cancelled"}, {HEAD: "cancelled", self.MERGE: None}):
+            self.write()
+            self.checks = checks
+            self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), checks)
+        self.checks, self.runs = {HEAD: "success"}, {HEAD: [OPEN_RUN]}
+        self.assertEqual(self.rows()[0][0], "offen", "a second workflow still runs")
+
+    def test_a_pull_request_that_was_not_merged_is_dropped_or_waited_for(self):
+        for change, state in (({"merged": False, "state": "open"}, "offen"), ({"merged": False}, "fertig"), ({"head": {"sha": self.TIP}}, "fertig")):
+            self.write()
+            self.pr.update(change)
+            self.assertEqual((self.rows()[0][0], self.path.exists()), (state, state == "offen"), change)
+
+    def test_an_unreadable_record_or_query_hides_no_other_and_ends_after_the_limit(self):
+        self.write()
+        self.checks = {HEAD: "failure"}
+        broken = mc.replaced_path("o/a", "b" * 40)
+        broken.parent.mkdir(parents=True)
+        broken.write_text("kaputt", encoding="utf-8")
+        self.assertEqual([state for state, _ in self.rows()], ["offen", "rot"])
+        with mock.patch.object(mc, "gh", side_effect=mc.NotCheckable("offline")):
+            self.assertEqual([state for state, _ in mc.replaced_rows()], ["offen", "offen"])
+            later = time.time() + (mc.REPLACED_KEEP_DAYS + 1) * 86400
+            self.assertEqual([state for state, _ in mc.replaced_rows(now=lambda: later)], ["fertig", "fertig"])
+        self.assertFalse(self.path.exists() or broken.exists())
+
+    def test_the_nightly_run_gets_a_red_row_and_never_dies_of_it(self):
+        import ce_nightly
+        lines, args = [], mock.Mock(dry_run=False)
+        with mock.patch.object(mc, "replaced_rows", return_value=[("rot", "o/r#7 ccccccc: rot"), ("offen", "o/r#8 x: y"), ("fertig", "o/r#9 x: y")]):
+            self.assertEqual(ce_nightly.replaced_ci(args, lines.append), [("o/r#7 ccccccc", "red (ci)", 0.0)])
+            self.assertEqual(len(lines), 3)
+            self.assertEqual(ce_nightly.replaced_ci(mock.Mock(dry_run=True), lines.append), [], "a dry run asks nobody")
+        with mock.patch.object(mc, "replaced_rows", side_effect=OSError("x")):
+            self.assertEqual(ce_nightly.replaced_ci(args, lines.append), [])
 
 
 class ReceiptTests(unittest.TestCase):

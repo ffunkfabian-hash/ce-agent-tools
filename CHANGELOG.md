@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.48.0 „Interlude“ – unveröffentlicht (25.11.2026)
+
+Nutzerentscheid 25.11.2026; gemessener Engpass in Formgen v2: 36 min CI je Head, jeder Push bricht ab und beginnt neu, das grüne lokale `./check` zählte nicht. Nummer 0.47 wurde reserviert und verworfen (Name „Understudy“ war von 0.26 belegt).
+
+- **`merge-check` nimmt bei laufender CI die Quittung von `./ce verify` (Kernpfad):** Läuft oder wartet die CI des Heads auf einen Runner, ersetzt sie eine grüne Quittung für genau diesen Head. Es muss alles gelten: Repo, Head und `check.quick` der Basis gleich, Lauf am Mac (neues Quittungsfeld `place`), keine Cloud-Sitzung, höchstens 12 h alt (`REPLACE_HOURS`), Basis enthalten. Ausgabe „CI läuft noch, ersetzt durch ./ce verify <Kurz-SHA> (<Alter>)“, Ergebnis `ci_replaced_by_verify`, `ci_pending`, `ci_hinweis`; sonst nennt „CI läuft noch: … (kein Ersatz: …)“ den Grund. Quittungen aus der Zeit vor 0.48 ersetzen keine CI, in Repos ohne CI gelten sie weiter.
+- **Ein Fehlschlag wird nie überstimmt:** rote oder abgebrochene Checks und Läufe dieses Heads, auch solche, die ein `gh run rerun` aus der Check-Liste verdrängt hat (Wiederholung eines Laufs), sowie Checks, die auf eine Freigabe warten oder verfallen sind, bleiben rot.
+- **Immer Stufe 2:** kein `ohne_ja`, keine Quittung der Art `patch`; der Wächter (`merge_attempt`) nimmt eine Quittung mit `ci_replaced_by_verify` nur mit Wortlaut an.
+- **Nachlauf:** Mit der Merge-Quittung entsteht ein Eintrag im Cache (`ce_verify/replaced/`). Der Nachtlauf fragt CI von PR-Head und Merge-Commit nach; rot ist eine Zeile `red (ci)` mit Meldung und Exit 1, bis die Basis wieder grün ist (höchstens 30 Tage).
+- Tests: `ReplacedCiTests`, `ReplacedCiAftermathTests` in `test_merge_check.py`, Ort der Quittung in `test_verify.py`, Nachtlauf in `test_nightly_checkout.py`; 17 gezielte Mutationen am Werkzeug, alle rot. [Version](docs/versions/0.48.md).
+
 ## 0.46.0 „Nameplate“ – unveröffentlicht (08.11.2026)
 
 Befund der Richterrunde 5 zu 0.45 (gpt-6.1-sol high, reproduziert).

@@ -85,6 +85,19 @@ class RunTests(VerifyCase):
         self.assertEqual((written["green"], written["head"], written["repo"], written["check"], written["tests"], written["skipped"]), (True, self.head, REPO, GREEN, 4, 1))
         self.assertEqual(self.copies(), [], "the copy is gone")
         self.assertEqual(mc.verify_problem(written, REPO, self.head, {"check": {"quick": GREEN}}), "")
+        self.assertEqual(written["place"], cv.ce_session_name.detect_place(cv.platform.system(), dict(os.environ), "auto"))
+        self.assertLess(abs(time.time() - written["time"]), 60)
+
+    def test_the_receipt_names_the_place_so_only_a_mac_stands_in_for_ci(self):
+        for system, env, place in (("Darwin", {}, "Mac"), ("Darwin", {"CODEX_X": "1"}, "Codex-Mac"), ("Linux", {}, "Cloud")):
+            with mock.patch.object(cv.platform, "system", return_value=system), mock.patch.dict(os.environ, env):
+                for key in [key for key in os.environ if key.startswith(("CODEX_", "ANTIGRAVITY_")) and key not in env]:
+                    os.environ.pop(key)  # patch.dict restores it
+                cv.write_receipt({"repo": REPO, "pr": 7, "head": self.head, "base": "main", "tests": 1, "skipped": 0, "seconds": 1}, GREEN)
+            written = mc.read_verify(REPO, self.head)
+            self.assertEqual(written["place"], place)
+            given = {"repo": REPO, "pr": {"headRefOid": self.head}, "verify": written, "behind_by": 0}
+            self.assertEqual(mc.replacement_problem(given, {"check": {"quick": GREEN}}) == "", place.endswith("Mac"), place)
 
     def test_the_run_stands_on_the_head_and_not_on_a_checkout(self):
         self.quick = ["sh", "-c", 'pwd > "$0"; git rev-parse HEAD >> "$0"; cat a.txt >> "$0"; ls -a >> "$0"'.replace('"$0"', str(self.folder / "where.txt"))]
