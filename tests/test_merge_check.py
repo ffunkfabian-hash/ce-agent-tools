@@ -1034,6 +1034,45 @@ class ReplacedCiTests(unittest.TestCase):
         result = mc.evaluate(running_facts(checks=done, runs=[{**OPEN_RUN, "status": "completed", "conclusion": "success"}]))
         self.assertEqual((result["green"], result["ci_replaced_by_verify"], result["ohne_ja"], result["ci_pending"]), (True, False, True, []), result)
 
+    def pages(self, total, items):
+        def answer(*args):
+            page = int(args[-1].rsplit("page=", 1)[-1])
+            return json.dumps({"total_count": total, "workflow_runs": items[(page - 1) * mc.PAGE:page * mc.PAGE]})
+        return mock.patch.object(mc, "gh", answer)
+
+    def test_a_failure_behind_the_first_hundred_runs_is_seen(self):
+        """Richter Runde 5: only one page of runs was read, an older failure or repeat behind it let the receipt stand in."""
+        many = [{"id": n, "name": "check", "status": "completed", "conclusion": "success", "run_attempt": 1} for n in range(1, 251)]
+        for change, text in (({"conclusion": "failure"}, "Lauf check ist failure"), ({"run_attempt": 2}, "Lauf check ist eine Wiederholung")):
+            items = [*many[:-1], {**many[-1], **change}]
+            with self.pages(250, items):
+                runs = mc.read_runs("o/r", HEAD)
+            self.assertEqual(len(runs), 250)
+            self.red(text, runs=[OPEN_RUN, *runs])
+        with mock.patch.object(mc, "read_runs", return_value=[OPEN_RUN]) as read, mock.patch.object(mc, "gh", FakeGh()):
+            self.assertEqual(mc.gather("o/r", 7)["runs"], [OPEN_RUN])
+        read.assert_called_once_with("o/r", HEAD)
+
+    def test_an_incomplete_list_of_runs_is_not_checkable(self):
+        many = [{"id": n, "name": "check", "status": "completed", "conclusion": "success"} for n in range(1, 1001)]
+        for total, items in ((1001, many), (251, many[:250]), (3, [many[0], many[0], many[1]])):  # GitHub's limit, a gap, a run that moved a page
+            with self.pages(total, items), self.assertRaisesRegex(mc.NotCheckable, "Läufe zu ccccccc nicht vollständig lesbar"):
+                mc.read_runs("o/r", HEAD)
+        for items in ([], many[:100], many[:101], many):
+            with self.pages(len(items), items):
+                self.assertEqual(len(mc.read_runs("o/r", HEAD)), len(items))
+        endless = json.dumps({"workflow_runs": [{"name": "check"}] * mc.PAGE})
+        with mock.patch.object(mc, "gh", lambda *args: endless), self.assertRaises(mc.NotCheckable):
+            mc.read_runs("o/r", HEAD)
+
+    def test_an_incomplete_list_of_checks_is_not_checkable(self):
+        for key in ("check_runs", "statuses"):
+            def answer(*args, key=key):
+                mine = "/check-runs" in args[-1] if key == "check_runs" else "/status" in args[-1]
+                return json.dumps({key: [{"name": "a", "context": "a", "status": "completed", "state": "success"}] * (mc.PAGE if mine else 0)})
+            with mock.patch.object(mc, "gh", answer), self.assertRaisesRegex(mc.NotCheckable, "Checks zu ccccccc nicht vollständig"):
+                mc.read_checks("o/r", HEAD)
+
     def test_gather_brings_the_runs_and_the_time(self):
         with mock.patch.object(mc, "gh", FakeGh(runs=[OPEN_RUN])):
             found = mc.gather("o/r", 7)
@@ -1231,6 +1270,35 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         self.assertEqual(self.rows()[0][0], "rot")
         self.assertNotIn("rot", json.loads(self.path.read_text(encoding="utf-8")))
 
+    def test_a_known_failure_stays_red_when_the_query_fails(self):
+        """Richter Runde 5: offline the record said `offen`, the night could end as "alle grün"."""
+        self.write()
+        self.checks = {HEAD: "failure"}
+        self.assertEqual(self.rows()[0][0], "rot")
+        with mock.patch.object(mc, "gh", side_effect=mc.NotCheckable("offline")):
+            (state, text), = mc.replaced_rows()
+        self.assertEqual((state, self.path.exists()), ("rot", True))
+        self.assertIn("CI war rot, jetzt nicht prüfbar (offline)", text)
+
+    def test_a_failure_is_kept_even_when_a_later_query_of_the_same_night_fails(self):
+        for failing, where in (("/commits/main", HEAD), ("/commits/main", self.MERGE), (self.MERGE, HEAD)):
+            self.write()
+            self.checks = {where: "failure"}
+
+            def answer(*args, failing=failing):
+                if failing in args[-1]:
+                    raise mc.NotCheckable("offline")
+                return self.gh(*args)
+            with mock.patch.object(mc, "gh", answer):
+                self.assertEqual(mc.replaced_rows()[0][0], "rot", (failing, where))
+            self.assertIs(json.loads(self.path.read_text(encoding="utf-8"))["rot"], True)
+
+    def test_an_incomplete_list_of_runs_settles_nothing(self):
+        self.write()
+        self.checks = {HEAD: "success", self.MERGE: "success"}
+        with mock.patch.object(mc, "gh", self.gh), mock.patch.object(mc, "read_runs", side_effect=mc.NotCheckable("unvollständig")):
+            self.assertEqual((mc.replaced_rows()[0][0], self.path.exists()), ("offen", True))
+
     def test_two_pull_requests_of_one_head_keep_a_record_each(self):
         """Richter Runde 4: the same head into two bases, the second receipt overwrote the record of the first."""
         for number, base in ((7, "main"), (8, "release")):
@@ -1277,7 +1345,7 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         broken.write_text("kaputt", encoding="utf-8")
         self.assertEqual([state for state, _ in self.rows()], ["offen", "rot"])
         with mock.patch.object(mc, "gh", side_effect=mc.NotCheckable("offline")):
-            self.assertEqual([state for state, _ in mc.replaced_rows()], ["offen", "offen"])
+            self.assertEqual([state for state, _ in mc.replaced_rows()], ["offen", "rot"], "known red stays red offline (Richter Runde 5)")
             later = time.time() + (mc.REPLACED_KEEP_DAYS + 1) * 86400
             self.assertEqual([state for state, _ in mc.replaced_rows(now=lambda: later)], ["fertig", "fertig"])
         self.assertFalse(self.path.exists() or broken.exists())

@@ -206,11 +206,31 @@ def read_pr(repo, number, sleep=time.sleep):
 
 def read_checks(repo, head):
     """The checks of a head commit in the shape of GraphQL's statusCheckRollup: check runs and commit statuses."""
-    runs, _ = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
-    statuses, _ = paged(f"repos/{repo}/commits/{head}/status", "statuses")
+    runs, runs_capped = paged(f"repos/{repo}/commits/{head}/check-runs", "check_runs")
+    statuses, statuses_capped = paged(f"repos/{repo}/commits/{head}/status", "statuses")
+    if runs_capped or statuses_capped:
+        raise NotCheckable(f"Checks zu {head[:7]} nicht vollständig lesbar")
     return ([{"name": run.get("name"), "status": str(run.get("status")).upper(), "conclusion": str(run.get("conclusion") or "").upper()}
              for run in runs] +
             [{"context": item.get("context"), "state": str(item.get("state")).upper()} for item in statuses])
+
+
+def read_runs(repo, sha):
+    """All workflow runs of a commit, repeats and failures of earlier runs among them; NotCheckable when GitHub does not hand out every
+    one (it stops at 1000), since a failure could be in the rest."""
+    runs, page = {}, 1
+    while True:
+        data = gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page={PAGE}&page={page}")
+        batch = data.get("workflow_runs") or []
+        for place, run in enumerate(batch):
+            runs[run.get("id") or (page, place)] = run  # a run that starts meanwhile moves one to the next page
+        if len(batch) < PAGE or page >= MAX_PAGES:
+            break
+        page += 1
+    total = data.get("total_count")
+    if len(batch) >= PAGE or (isinstance(total, int) and len(runs) < total):
+        raise NotCheckable(f"Workflow-Läufe zu {sha[:7]} nicht vollständig lesbar ({len(runs)} von {total})")
+    return list(runs.values())
 
 
 def workflow_count(repo):
@@ -323,7 +343,7 @@ def gather(repo, number):
     versions = {"base": version_at(repo, spec, base), "head": version_at(repo, spec, head)} if spec else None
     changelog_name = changelog_of(base_config) or changelog_of(head_config)
     compare = gh_json("api", f"repos/{repo}/compare/{quote(base)}...{head}?per_page=1")
-    runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100").get("workflow_runs") or []
+    runs = read_runs(repo, head)
     workflows = workflow_count(repo)
     facts = {"repo": repo, "workflows": workflows, "workflow_files": workflow_files(repo, base) if workflows else 0, "verify": read_verify(repo, head),
              "pin_problem": pin_problem(base_config, head_config) if only_pin_changed(base_config, head_config) else None, "local_head": ce_common.git_out(Path.cwd(), "rev-parse", "HEAD"), "cloud": on_cloud(),
@@ -801,7 +821,7 @@ def commit_state(repo, sha):
     """{"rot", "läuft", "wiederholt", "grün"} of a commit, each on its own: red and running at once is both. "grün" is finished with a
     success, nothing failed or cancelled and no run repeated (a repeat hides the failure before it); none: no CI here, or only cancelled runs."""
     checks = read_checks(repo, sha)
-    runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs") or []
+    runs = read_runs(repo, sha)
     _, pending = ci_state(checks)
     ended = {item.get("conclusion") or item.get("state") for item in checks} | {str(run.get("conclusion") or "").upper() for run in runs}
     red = bool(ended & (CI_BAD - {"CANCELLED"}))  # cancelled says nothing: on main a newer push cancels the run before it
@@ -838,12 +858,14 @@ def replaced_verdict(record, now):
     if merged_head != head:
         return "fertig", f"{where}: mit anderem Head {str(merged_head)[:7]} gemergt"
     merge, base = pr["merge_commit_sha"], pr["base"]["ref"]
+    states = {}
+    for sha in (head, merge):
+        states[sha] = commit_state(repo, sha)
+        if states[sha]["rot"] and not record.get("rot"):  # kept at once: a repeat may turn it green, the next query may fail
+            record["rot"] = True
+            write_json(replaced_path(repo, head, number), record)
     tip = gh_json("api", f"repos/{repo}/commits/{quote(base, safe='')}")["sha"]
-    states = {sha: commit_state(repo, sha) for sha in dict.fromkeys((head, merge, tip))}
-    failed = states[head]["rot"] or states[merge]["rot"]
-    if failed and not record.get("rot"):  # kept in the record: a repeat may turn it green before the next night
-        record["rot"] = True
-        write_json(replaced_path(repo, head, number), record)
+    states[tip] = states.get(tip) or commit_state(repo, tip)
     if tip == merge:  # the same run cannot answer for itself: a red head beside a green merge commit stays visible until a newer green one
         tip, states[""] = "", {"rot": False, "läuft": False, "wiederholt": False, "grün": False}
     state = settle(states[head], states[merge], states[tip], fresh, record.get("rot") is True)
@@ -859,11 +881,13 @@ def replaced_rows(now=time.time):
     asked never hides the others."""
     rows = []
     for path in sorted(replaced_path("x/y", "z", 0).parent.parent.glob("*/*.json")):
+        record = None
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             state, text = replaced_verdict(record, now())
         except (NotCheckable, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-            state, text = "offen", f"{path.parent.name} {path.stem[:7]}: nicht prüfbar ({error})"
+            known = isinstance(record, dict) and record.get("rot") is True  # a failed query does not take a known failure back
+            state, text = "rot" if known else "offen", f"{path.parent.name} {path.stem[:7]}: {'CI war rot, jetzt ' if known else ''}nicht prüfbar ({error})"
         try:
             if state != "fertig" and now() - path.stat().st_mtime > REPLACED_KEEP_DAYS * 86400:
                 state, text = "fertig", f"{text}, nach {REPLACED_KEEP_DAYS} Tagen nicht mehr verfolgt"
