@@ -252,9 +252,10 @@ def read_verify(repo, head):
         return None
 
 
-def replaced_path(repo, head):
-    """Where a merge receipt over a replaced CI leaves its record; next to the receipts of ./ce verify, the worktree may be gone by night."""
-    return verify_path(repo, head).parent.parent.parent / "replaced" / repo.replace("/", "__") / f"{head}.json"
+def replaced_path(repo, head, number):
+    """Where a merge receipt over a replaced CI leaves its record; next to the receipts of ./ce verify, the worktree may be gone by night.
+    The number belongs to it: one head can be merged by two pull requests into two bases."""
+    return verify_path(repo, head).parent.parent.parent / "replaced" / repo.replace("/", "__") / f"{head}-{number}.json"
 
 
 def pin_of(config):
@@ -782,7 +783,7 @@ def update_receipt(result, ja, cwd=None, now=time.time):
     if replaced:  # the record first: no merge over a replaced CI that nobody looks after
         receipt["ci_replaced_by_verify"] = True
         record = {"repo": result["repo"], "pr": result["pr"], "head": result["head"], "base": result["base"], "pending": result.get("ci_pending"), "time": receipt["time"]}
-        write_json(replaced_path(result["repo"], result["head"]), record)
+        write_json(replaced_path(result["repo"], result["head"], result["pr"]), record)
     write_json(path, receipt)
     return kind
 
@@ -830,8 +831,9 @@ def replaced_verdict(record, now):
     repo, number, head = record["repo"], record["pr"], record["head"]
     where = f"{repo}#{number} {head[:7]}"
     pr = gh_json("api", f"repos/{repo}/pulls/{number}")
-    if not pr.get("merged"):
-        return ("fertig", f"{where}: ohne Merge geschlossen") if pr.get("state") == "closed" else ("offen", f"{where}: noch nicht gemergt")
+    fresh = now - record["time"] < SETTLE_SECONDS
+    if not pr.get("merged"):  # fresh: the receipt may still open the door after a reopen
+        return ("fertig", f"{where}: ohne Merge geschlossen") if pr.get("state") == "closed" and not fresh else ("offen", f"{where}: noch nicht gemergt")
     merged_head = (pr.get("head") or {}).get("sha")
     if merged_head != head:
         return "fertig", f"{where}: mit anderem Head {str(merged_head)[:7]} gemergt"
@@ -841,10 +843,10 @@ def replaced_verdict(record, now):
     failed = states[head]["rot"] or states[merge]["rot"]
     if failed and not record.get("rot"):  # kept in the record: a repeat may turn it green before the next night
         record["rot"] = True
-        write_json(replaced_path(repo, head), record)
+        write_json(replaced_path(repo, head, number), record)
     if tip == merge:  # the same run cannot answer for itself: a red head beside a green merge commit stays visible until a newer green one
         tip, states[""] = "", {"rot": False, "läuft": False, "wiederholt": False, "grün": False}
-    state = settle(states[head], states[merge], states[tip], now - record["time"] < SETTLE_SECONDS, record.get("rot") is True)
+    state = settle(states[head], states[merge], states[tip], fresh, record.get("rot") is True)
     red = [name for name, sha in (("PR-Head", head), ("Merge-Commit", merge), (f"Spitze von {base}", tip)) if states[sha]["rot"]]
     red = red or (["früherer Lauf"] if record.get("rot") is True else [])
     text = {"rot": f"CI nach Merge über ./ce verify rot ({', '.join(red)})", "offen": "CI noch ohne Ergebnis",
@@ -856,7 +858,7 @@ def replaced_rows(now=time.time):
     """[(state, text)] of every merge receipt over a replaced CI; drops what is settled or too old. One record that cannot be read or
     asked never hides the others."""
     rows = []
-    for path in sorted(replaced_path("x/y", "z").parent.parent.glob("*/*.json")):
+    for path in sorted(replaced_path("x/y", "z", 0).parent.parent.glob("*/*.json")):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             state, text = replaced_verdict(record, now())

@@ -1057,7 +1057,7 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         subprocess.run(["git", "init", "-q", temp.name], check=True)
         self.folder = temp.name
-        self.path = mc.replaced_path("o/r", HEAD)
+        self.path = mc.replaced_path("o/r", HEAD, 7)
 
     def write(self, **change):
         self.pr = {"merged": True, "state": "closed", "head": {"sha": HEAD}, "base": {"ref": "main"}, "merge_commit_sha": self.MERGE}
@@ -1231,6 +1231,25 @@ class ReplacedCiAftermathTests(unittest.TestCase):
         self.assertEqual(self.rows()[0][0], "rot")
         self.assertNotIn("rot", json.loads(self.path.read_text(encoding="utf-8")))
 
+    def test_two_pull_requests_of_one_head_keep_a_record_each(self):
+        """Richter Runde 4: the same head into two bases, the second receipt overwrote the record of the first."""
+        for number, base in ((7, "main"), (8, "release")):
+            found = running_facts(pr={"number": number, "baseRefName": base})
+            self.assertEqual(mc.update_receipt(mc.evaluate(found), "Ja", cwd=self.folder), "ja")
+        records = [json.loads(path.read_text(encoding="utf-8")) for path in sorted(self.path.parent.glob("*.json"))]
+        self.assertEqual([(item["pr"], item["base"]) for item in records], [(7, "main"), (8, "release")])
+        self.write()
+        self.checks = {HEAD: "failure"}
+        rows = self.rows()
+        self.assertEqual([state for state, _ in rows], ["rot", "rot"])
+        self.assertEqual([path.name for path in sorted(self.path.parent.glob("*.json"))], [f"{HEAD}-7.json", f"{HEAD}-8.json"])
+        self.assertEqual([json.loads(path.read_text(encoding="utf-8"))["pr"] for path in sorted(self.path.parent.glob("*.json"))], [7, 8], "the red mark stays with its own record")
+
+    def test_a_pull_request_closed_while_the_receipt_still_opens_is_waited_for(self):
+        self.write(time=time.time())
+        self.pr["merged"] = False
+        self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True))
+
     def test_right_after_the_merge_nothing_is_settled(self):
         self.write(time=time.time())
         self.checks = {HEAD: "success"}
@@ -1253,7 +1272,7 @@ class ReplacedCiAftermathTests(unittest.TestCase):
     def test_an_unreadable_record_or_query_hides_no_other_and_ends_after_the_limit(self):
         self.write()
         self.checks = {HEAD: "failure"}
-        broken = mc.replaced_path("o/a", "b" * 40)
+        broken = mc.replaced_path("o/a", "b" * 40, 3)
         broken.parent.mkdir(parents=True)
         broken.write_text("kaputt", encoding="utf-8")
         self.assertEqual([state for state, _ in self.rows()], ["offen", "rot"])
