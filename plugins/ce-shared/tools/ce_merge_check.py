@@ -797,26 +797,30 @@ def write_json(path, data):
 # ------------------------------------------------------------------------------- CI after a merge over a receipt (0.48)
 
 def commit_state(repo, sha):
-    """{"rot", "läuft", "grün"} of a commit, each on its own: red and running at once is both. "grün" is finished with a success and
-    nothing failed or cancelled; none of them: no CI here, or only cancelled runs."""
+    """{"rot", "läuft", "wiederholt", "grün"} of a commit, each on its own: red and running at once is both. "grün" is finished with a
+    success, nothing failed or cancelled and no run repeated (a repeat hides the failure before it); none: no CI here, or only cancelled runs."""
     checks = read_checks(repo, sha)
     runs = gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs") or []
     _, pending = ci_state(checks)
     ended = {item.get("conclusion") or item.get("state") for item in checks} | {str(run.get("conclusion") or "").upper() for run in runs}
     red = bool(ended & (CI_BAD - {"CANCELLED"}))  # cancelled says nothing: on main a newer push cancels the run before it
     running = bool(pending) or any(run.get("status") != "completed" for run in runs)
-    return {"rot": red, "läuft": running, "grün": ci_passed(checks) and not red and not running and "CANCELLED" not in ended}
+    repeated = any(run.get("run_attempt", 1) != 1 for run in runs)
+    return {"rot": red, "läuft": running, "wiederholt": repeated,
+            "grün": ci_passed(checks) and not red and not running and not repeated and "CANCELLED" not in ended}
 
 
-def settle(head, merge, tip, fresh):
+def settle(head, merge, tip, fresh, known=False):
     """"rot", "offen" or "fertig" from the states of PR head, merge commit and tip of the base. Settled only when nothing of the first two
-    runs any more and a run of the merge commit has had time to appear; a red one then needs a green tip, two without a verdict ask the tip."""
-    red, waits = head["rot"] or merge["rot"], fresh or head["läuft"] or merge["läuft"]
+    runs any more and a run of the merge commit has had time to appear; a red one (`known`: seen red on an earlier night) then needs a green
+    tip, so does a repeated one; two without a verdict ask the tip."""
+    red, waits = known or head["rot"] or merge["rot"], fresh or head["läuft"] or merge["läuft"]
     if red:
         return "fertig" if tip["grün"] and not waits else "rot"
     if waits:
         return "offen"
-    if head["grün"] or merge["grün"] or tip["grün"]:
+    repeated = head["wiederholt"] or merge["wiederholt"]
+    if tip["grün"] or (not repeated and (head["grün"] or merge["grün"])):
         return "fertig"
     return "rot" if tip["rot"] else "offen"
 
@@ -834,10 +838,15 @@ def replaced_verdict(record, now):
     merge, base = pr["merge_commit_sha"], pr["base"]["ref"]
     tip = gh_json("api", f"repos/{repo}/commits/{quote(base, safe='')}")["sha"]
     states = {sha: commit_state(repo, sha) for sha in dict.fromkeys((head, merge, tip))}
+    failed = states[head]["rot"] or states[merge]["rot"]
+    if failed and not record.get("rot"):  # kept in the record: a repeat may turn it green before the next night
+        record["rot"] = True
+        write_json(replaced_path(repo, head), record)
     if tip == merge:  # the same run cannot answer for itself: a red head beside a green merge commit stays visible until a newer green one
-        tip, states[""] = "", {"rot": False, "läuft": False, "grün": False}
-    state = settle(states[head], states[merge], states[tip], now - record["time"] < SETTLE_SECONDS)
+        tip, states[""] = "", {"rot": False, "läuft": False, "wiederholt": False, "grün": False}
+    state = settle(states[head], states[merge], states[tip], now - record["time"] < SETTLE_SECONDS, record.get("rot") is True)
     red = [name for name, sha in (("PR-Head", head), ("Merge-Commit", merge), (f"Spitze von {base}", tip)) if states[sha]["rot"]]
+    red = red or (["früherer Lauf"] if record.get("rot") is True else [])
     text = {"rot": f"CI nach Merge über ./ce verify rot ({', '.join(red)})", "offen": "CI noch ohne Ergebnis",
             "fertig": f"CI war rot ({', '.join(red)}), {base} ist grün" if red else "CI nachträglich grün"}[state]
     return state, f"{where}: {text}"

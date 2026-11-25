@@ -1159,19 +1159,19 @@ class ReplacedCiAftermathTests(unittest.TestCase):
 
     def test_settled_is_never_red_unseen_or_still_running(self):
         """Richter Runde 2: the whole table instead of single cases - every state of head, merge commit and tip."""
-        states = [{"rot": red, "läuft": runs, "grün": green} for red in (False, True) for runs in (False, True) for green in (False, True)
-                  if not (green and (red or runs))]
+        states = [{"rot": red, "läuft": runs, "wiederholt": again, "grün": green} for red in (False, True) for runs in (False, True)
+                  for again in (False, True) for green in (False, True) if not (green and (red or runs or again))]
         seen = set()
         for head in states:
             for merge in states:
                 for tip in states:
-                    for fresh in (False, True):
-                        state, case = mc.settle(head, merge, tip, fresh), (head, merge, tip, fresh)
+                    for fresh, known in ((False, False), (False, True), (True, False), (True, True)):
+                        state, case = mc.settle(head, merge, tip, fresh, known), (head, merge, tip, fresh, known)
                         seen.add(state)
-                        red, running = head["rot"] or merge["rot"], head["läuft"] or merge["läuft"]
+                        red, repeated, running = known or head["rot"] or merge["rot"], head["wiederholt"] or merge["wiederholt"], head["läuft"] or merge["läuft"]
                         if state == "fertig":
                             self.assertFalse(running or fresh, case)
-                            self.assertTrue(tip["grün"] or (not red and (head["grün"] or merge["grün"])), case)
+                            self.assertTrue(tip["grün"] or (not red and not repeated and (head["grün"] or merge["grün"])), case)
                         if red and not (tip["grün"] and not running and not fresh):
                             self.assertEqual(state, "rot", case)
                         if not red and (running or fresh):
@@ -1193,6 +1193,43 @@ class ReplacedCiAftermathTests(unittest.TestCase):
             self.write()
             self.tip, self.checks, self.runs = self.TIP, {HEAD: "failure", self.TIP: "success"}, {self.TIP: [run]}
             self.assertEqual((self.rows()[0][0], self.path.exists()), ("rot", True), run)
+
+    def test_a_green_repeat_does_not_settle_before_the_base_is_green(self):
+        """Richter Runde 3: red head, then `gh run rerun` green - the record went although neither merge commit nor tip was green."""
+        again = [{"name": "check", "status": "completed", "conclusion": "success", "run_attempt": 2}]
+        for where, merge in ((HEAD, None), (HEAD, "success"), (self.MERGE, "success")):  # None: no CI on the merge commit
+            self.write()
+            self.checks = {HEAD: "success"} | ({self.MERGE: merge} if merge else {})
+            self.runs = {where: again}
+            self.assertEqual((self.rows()[0][0], self.path.exists()), ("offen", True), (where, merge))
+            self.tip, self.runs = self.TIP, {where: again, self.TIP: again}
+            self.checks[self.TIP] = "success"
+            self.assertEqual(self.rows()[0][0], "offen", "a repeated tip is no proof either")
+            self.runs = {where: again}
+            self.assertEqual((self.rows()[0][0], self.path.exists()), ("fertig", False), (where, merge))
+
+    def test_a_failure_once_seen_stays_red_through_the_repeat(self):
+        again = {"name": "check", "conclusion": "success", "run_attempt": 2}
+        for where in (HEAD, self.MERGE):
+            self.write()
+            self.checks = {where: "failure"}
+            self.assertEqual(self.rows()[0][0], "rot")
+            self.checks, self.runs = {where: None}, {where: [{**again, "status": "in_progress", "conclusion": None}]}
+            self.assertEqual(self.rows()[0][0], "rot", "the repeat runs")
+            self.checks, self.runs = {where: "success"}, {where: [{**again, "status": "completed"}]}
+            (state, text), = self.rows()
+            self.assertEqual((state, self.path.exists()), ("rot", True), "the repeat is green")
+            self.assertIn("früherer Lauf", text)
+            self.tip, self.checks[self.TIP] = self.TIP, "success"
+            (state, text), = self.rows()
+            self.assertEqual((state, self.path.exists()), ("fertig", False))
+            self.assertIn("CI war rot (früherer Lauf)", text)
+
+    def test_a_red_tip_alone_is_not_kept_as_a_failure_of_this_merge(self):
+        self.write()
+        self.tip, self.checks = self.TIP, {HEAD: "cancelled", self.MERGE: "cancelled", self.TIP: "failure"}
+        self.assertEqual(self.rows()[0][0], "rot")
+        self.assertNotIn("rot", json.loads(self.path.read_text(encoding="utf-8")))
 
     def test_right_after_the_merge_nothing_is_settled(self):
         self.write(time=time.time())
